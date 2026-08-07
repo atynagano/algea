@@ -23,7 +23,7 @@ include = [
 [dependencies]
 paste = "1"
 # Pin the full version because extensive `bytemuck::cast` use depends on compatible type layouts.
-wide = "=1.6.0"
+wide = "=1.6.1"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support", "html_reports", "plotters"] }
