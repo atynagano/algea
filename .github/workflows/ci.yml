@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - prototype
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  x86-64:
+    name: x86-64 / ${{ matrix.configuration }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: force non-SIMD
+            rustflags: '--cfg algea_force_simd="false"'
+          - configuration: force SIMD / SSE2 only
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,-avx512f,-avx512bw,-avx512vl'
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
+
+  avx-512:
+    name: x86-64 / AVX-512 compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512vl'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Verify requested target features
+        run: |
+          target_cfg="$(rustc --print cfg --target x86_64-unknown-linux-gnu \
+            -C target-cpu=x86-64 \
+            -C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512vl)"
+          for feature in avx512f avx512bw avx512dq avx512vl; do
+            grep -Fqx "target_feature=\"${feature}\"" <<<"${target_cfg}"
+          done
+      - name: Compile tests without executing AVX-512 code
+        run: cargo test --target x86_64-unknown-linux-gnu --no-run
+      - name: Clippy
+        run: cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+
+  arm64:
+    name: ARM64 / ${{ matrix.configuration }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: force non-SIMD
+            rustflags: '--cfg algea_force_simd="false"'
+          - configuration: force SIMD / NEON
+            rustflags: '--cfg algea_force_simd="true" -C target-feature=+neon'
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Verify ARM64 and NEON
+        run: |
+          test "$(uname -m)" = aarch64
+          rustc --print cfg | grep 'target_arch="aarch64"'
+          rustc --print cfg | grep 'target_feature="neon"'
+      - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
+
+  wasm:
+    name: Wasm / ${{ matrix.configuration }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: scalar / force non-SIMD
+            rustflags: '--cfg algea_force_simd="false" -C target-cpu=mvp -C target-feature=-simd128'
+          - configuration: SIMD128 / force SIMD
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=mvp -C target-feature=+simd128'
+    env:
+      CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-wasip1
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: 47.0.3
+      - run: cargo test --target wasm32-wasip1 --lib --tests
+      - run: cargo clippy --target wasm32-wasip1 --lib --tests -- -D warnings
