@@ -1,0 +1,5 @@
+imports_granularity = "Crate"
+imports_layout = "HorizontalVertical"
+fn_single_line = true
+overflow_delimited_expr = true
+use_small_heuristics = "Max"
