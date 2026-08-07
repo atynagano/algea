@@ -29,7 +29,11 @@ cfg_select! {
         mod non_simd;
         use non_simd::kernels;
     }
-    any(target_feature = "sse", target_feature = "simd128",) => {
+    any(
+        target_feature = "sse",
+        all(target_feature = "neon", target_arch = "aarch64"),
+        target_feature = "simd128",
+    ) => {
         mod simd;
         use simd::kernels;
     }

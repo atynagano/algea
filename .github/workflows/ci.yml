@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - prototype
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -80,6 +80,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - configuration: automatic NEON
+            rustflags: ''
           - configuration: force non-SIMD
             rustflags: '--cfg algea_force_simd="false"'
           - configuration: force SIMD / NEON
