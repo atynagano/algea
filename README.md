@@ -1,5 +1,11 @@
 # algea
 
+[![Crates.io](https://img.shields.io/crates/v/algea.svg)](https://crates.io/crates/algea)
+[![Documentation](https://img.shields.io/docsrs/algea)](https://docs.rs/algea)
+[![CI](https://github.com/atynagano/algea/actions/workflows/ci.yml/badge.svg)](https://github.com/atynagano/algea/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/atynagano/algea/blob/main/LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/atynagano/algea/blob/main/LICENSE-APACHE)
+
 Portable, SIMD-accelerated vectors and matrices.
 
 `algea` provides small fixed-size algebra types whose storage and operations
