@@ -5,7 +5,6 @@ use super::{
     Vector,
     marker::{Float, Int, Lane},
     private,
-    private::{Indices2, Indices3, Indices4, SwizzleDispatch},
 };
 use crate::utils::{ArithPrimitive, MaskPrimitive, MaskStorage, if_, impl_default_load};
 
@@ -443,31 +442,20 @@ macro_rules! impl_layout {
                 #[inline(always)]
                 fn swizzle2<const I0: usize, const I1: usize>(
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<2, 1>>::Storage
-                where
-                    Indices2<I0, I1>: SwizzleDispatch,
-                {
-                    <Self as private::SealedElement<2, 1>>::from_array([[a[0][I0], a[0][I1]]])
+                ) -> <Self as private::SealedElement<2, 1>>::Storage {
+                    [[a[0][I0], a[0][I1]]]
                 }
                 #[inline(always)]
                 fn swizzle3<const I0: usize, const I1: usize, const I2: usize>(
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<3, 1>>::Storage
-                where
-                    Indices3<I0, I1, I2>: SwizzleDispatch,
-                {
-                    <Self as private::SealedElement<3, 1>>::from_array([[a[0][I0], a[0][I1], a[0][I2]]])
+                ) -> <Self as private::SealedElement<3, 1>>::Storage {
+                    [[a[0][I0], a[0][I1], a[0][I2]]]
                 }
                 #[inline(always)]
                 fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<4, 1>>::Storage
-                where
-                    Indices4<I0, I1, I2, I3>: SwizzleDispatch,
-                {
-                    <Self as private::SealedElement<4, 1>>::from_array([
-                        [a[0][I0], a[0][I1], a[0][I2], a[0][I3]],
-                    ])
+                ) -> <Self as private::SealedElement<4, 1>>::Storage {
+                    [[a[0][I0], a[0][I1], a[0][I2], a[0][I3]]]
                 }
             }}
 
@@ -961,56 +949,3 @@ impl_layouts_u32! {
         }
     },
 }
-
-macro_rules! impl_swizzle2_for_i0 {
-    ($i0:literal; $($i1:literal),*) => {$(
-        impl SwizzleDispatch for Indices2<$i0, $i1> {
-            #[inline(always)]
-            fn dispatch<T: Copy + crate::utils::Swizzle>(v: T) -> T { v }
-        }
-    )*};
-}
-macro_rules! impl_swizzle3_for_i0_i1 {
-    ($i0:literal, $i1:literal; $($i2:literal),*) => {$(
-        impl SwizzleDispatch for Indices3<$i0, $i1, $i2> {
-            #[inline(always)]
-            fn dispatch<T: Copy + crate::utils::Swizzle>(v: T) -> T { v }
-        }
-    )*};
-}
-macro_rules! impl_swizzle3_for_i0 {
-    ($i0:literal; $($i1:literal),*) => {
-        $(impl_swizzle3_for_i0_i1!($i0, $i1; 0, 1, 2, 3);)*
-    };
-}
-macro_rules! impl_swizzle4_for_i0_i1_i2 {
-    ($i0:literal, $i1:literal, $i2:literal; $($i3:literal),*) => {$(
-        impl SwizzleDispatch for Indices4<$i0, $i1, $i2, $i3> {
-            #[inline(always)]
-            fn dispatch<T: Copy + crate::utils::Swizzle>(v: T) -> T { v }
-        }
-    )*};
-}
-macro_rules! impl_swizzle4_for_i0_i1 {
-    ($i0:literal, $i1:literal; $($i2:literal),*) => {
-        $(impl_swizzle4_for_i0_i1_i2!($i0, $i1, $i2; 0, 1, 2, 3);)*
-    };
-}
-macro_rules! impl_swizzle4_for_i0 {
-    ($i0:literal; $($i1:literal),*) => {
-        $(impl_swizzle4_for_i0_i1!($i0, $i1; 0, 1, 2, 3);)*
-    };
-}
-
-impl_swizzle2_for_i0!(0; 0, 1, 2, 3);
-impl_swizzle2_for_i0!(1; 0, 1, 2, 3);
-impl_swizzle2_for_i0!(2; 0, 1, 2, 3);
-impl_swizzle2_for_i0!(3; 0, 1, 2, 3);
-impl_swizzle3_for_i0!(0; 0, 1, 2, 3);
-impl_swizzle3_for_i0!(1; 0, 1, 2, 3);
-impl_swizzle3_for_i0!(2; 0, 1, 2, 3);
-impl_swizzle3_for_i0!(3; 0, 1, 2, 3);
-impl_swizzle4_for_i0!(0; 0, 1, 2, 3);
-impl_swizzle4_for_i0!(1; 0, 1, 2, 3);
-impl_swizzle4_for_i0!(2; 0, 1, 2, 3);
-impl_swizzle4_for_i0!(3; 0, 1, 2, 3);

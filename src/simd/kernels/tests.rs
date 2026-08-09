@@ -1,12 +1,22 @@
 use super::mask::*;
 use crate::{
-    simd::utils::{f32x2, i32x2, u32x2},
+    simd::utils::{compute_i32x2, f32x2, i32x2, u32x2},
     utils::{ArithPrimitive, MaskPrimitive, MaskStorage},
 };
 use wide::{f32x4, i32x4, u32x4};
 
 const T: i32 = -1;
 const F: i32 = 0;
+
+/// Builds the two-lane storage that `compute_i32x2` resolves to on the current target: a
+/// genuinely two-lane register on aarch64/NEON, or an `i32x4` with the upper two lanes unused
+/// everywhere else (matching how `mask::from_array_2`/`to_array_2` treat those lanes).
+fn compact2(values: [i32; 2]) -> compute_i32x2 {
+    cfg_select! {
+        all(target_feature = "neon", target_arch = "aarch64") => i32x2::new(values),
+        _ => i32x4::new([values[0], values[1], 0, 0]),
+    }
+}
 
 fn canonical<T: MaskPrimitive>(value: T) -> MaskStorage<T> {
     assert!(value.is_valid());
@@ -47,13 +57,7 @@ fn all_and_any_cover_all_16_storage_shapes() {
     assert!(any_1x1(canonical(T)));
     assert!(!all_1x1(canonical(F)));
     assert!(!any_1x1(canonical(F)));
-    assert_mask_query!(
-        all_2x1,
-        any_2x1,
-        i32x4::new([T, T, F, F]),
-        i32x4::new([F, F, T, T]),
-        i32x4::new([T, F, F, F])
-    );
+    assert_mask_query!(all_2x1, any_2x1, compact2([T, T]), compact2([F, F]), compact2([T, F]));
     assert_mask_query!(
         all_3x1,
         any_3x1,
@@ -69,13 +73,7 @@ fn all_and_any_cover_all_16_storage_shapes() {
         i32x4::new([F, F, T, F])
     );
 
-    assert_mask_query!(
-        all_1x2,
-        any_1x2,
-        i32x4::new([T, T, F, F]),
-        i32x4::new([F, F, T, T]),
-        i32x4::new([F, T, F, F])
-    );
+    assert_mask_query!(all_1x2, any_1x2, compact2([T, T]), compact2([F, F]), compact2([F, T]));
     assert_mask_query!(
         all_2x2,
         any_2x2,

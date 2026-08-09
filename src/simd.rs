@@ -5,10 +5,10 @@ use crate::{
     Vector,
     marker::{Float, Int, Lane},
     private,
-    private::{Indices2, Indices3, Indices4, SwizzleDispatch},
+    private::{Indices2, Indices3, Indices4, SwizzleDispatch, SwizzleDispatchAny},
     utils::{ArithPrimitive, Load, MaskPrimitive, MaskStorage, Store, if_},
 };
-use utils::{f32x2, i32x2, u32x2};
+use utils::{Simd2Ext, f32x2, i32x2, u32x2};
 use wide::{f32x4, i32x4, u32x4};
 
 impl ArithPrimitive for f32x4 {
@@ -677,27 +677,27 @@ macro_rules! impl_layout {
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
                 ) -> <Self as private::SealedElement<2, 1>>::Storage
                 where
-                    Indices2<I0, I1>: SwizzleDispatch,
+                    Indices2<I0, I1>: SwizzleDispatchAny<2>,
                 {
-                    Indices2::<I0, I1>::dispatch(a.load()).store()
+                    <Indices2<I0, I1> as SwizzleDispatch<Self, $m, 2>>::dispatch(a)
                 }
                 #[inline(always)]
                 fn swizzle3<const I0: usize, const I1: usize, const I2: usize>(
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
                 ) -> <Self as private::SealedElement<3, 1>>::Storage
                 where
-                    Indices3<I0, I1, I2>: SwizzleDispatch,
+                    Indices3<I0, I1, I2>: SwizzleDispatchAny<3>,
                 {
-                    Indices3::<I0, I1, I2>::dispatch(a.load())
+                    <Indices3<I0, I1, I2> as SwizzleDispatch<Self, $m, 3>>::dispatch(a)
                 }
                 #[inline(always)]
                 fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
                     a: <Self as private::SealedElement<$m, $n>>::Storage,
                 ) -> <Self as private::SealedElement<4, 1>>::Storage
                 where
-                    Indices4<I0, I1, I2, I3>: SwizzleDispatch,
+                    Indices4<I0, I1, I2, I3>: SwizzleDispatchAny<4>,
                 {
-                    Indices4::<I0, I1, I2, I3>::dispatch(a.load())
+                    <Indices4<I0, I1, I2, I3> as SwizzleDispatch<Self, $m, 4>>::dispatch(a)
                 }
             }}
 
@@ -710,11 +710,17 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<2, 1>>::Storage {
                 let [[a]] = <Self as private::SealedElement<1, 1>>::to_array(a);
                 let [[b]] = <Self as private::SealedElement<1, 1>>::to_array(b);
+                // NEON can swizzle straight from a 64-bit (2-lane) width without first widening
+                // to 128-bit, but this path stays shared with SSE (which has no such shortcut)
+                // for implementation simplicity, leaving that codegen-level optimization to LLVM
+                // rather than hand-writing a NEON-specific 64-bit-first version: for these fixed
+                // concat patterns, LLVM already collapses the zero-padded 128-bit form down to
+                // the same instruction count as a hand-written 64-bit-first version would need.
                 let zero = <Self as crate::utils::ArithPrimitive>::ZERO_;
                 crate::simd::utils::swizzle!(
                     <Self as private::SealedElement<4, 1>>::Storage::new([a, zero, zero, zero]),
                     <Self as private::SealedElement<4, 1>>::Storage::new([b, zero, zero, zero]),
-                    [0, 4, _, _]
+                    [0, 4]
                 ).store()
             }
 
@@ -725,10 +731,14 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<3, 1>>::Storage {
                 let [[a]] = <Self as private::SealedElement<1, 1>>::to_array(a);
                 let zero = <Self as crate::utils::ArithPrimitive>::ZERO_;
+                // See the comment in `vector_concat_1_1`: NEON could combine `a`/`b` at their
+                // natural (64-bit) width without widening to 128-bit first, but this path stays
+                // shared with SSE for implementation simplicity and leaves that optimization to
+                // LLVM, which generates equivalent code either way for these fixed patterns.
                 crate::simd::utils::swizzle!(
                     <Self as private::SealedElement<4, 1>>::Storage::new([a, zero, zero, zero]),
-                    b.load(),
-                    [0, 4, 5, _]
+                    b.load().widen(),
+                    [0, 4, 5]
                 )
             }
 
@@ -739,10 +749,14 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<3, 1>>::Storage {
                 let [[b]] = <Self as private::SealedElement<1, 1>>::to_array(b);
                 let zero = <Self as crate::utils::ArithPrimitive>::ZERO_;
+                // See the comment in `vector_concat_1_1`: NEON could combine `a`/`b` at their
+                // natural (64-bit) width without widening to 128-bit first, but this path stays
+                // shared with SSE for implementation simplicity and leaves that optimization to
+                // LLVM, which generates equivalent code either way for these fixed patterns.
                 crate::simd::utils::swizzle!(
-                    a.load(),
+                    a.load().widen(),
                     <Self as private::SealedElement<4, 1>>::Storage::new([b, zero, zero, zero]),
-                    [0, 1, 4, _]
+                    [0, 1, 4]
                 )
             }
 
@@ -820,17 +834,7 @@ impl_layouts_f32! {
     (1, 1; f32 x 1) => {
         const IDENTITY: Self::Storage = 1.;
         #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            if mask & 1 != 0 { true_values } else { false_values }
-        }
-
-        #[inline(always)]
         fn sum(a: Self::Storage) -> Self { a }
-
         #[inline(always)]
         fn diagonal(
             a: <Self as private::SealedElement<1, 1>>::Storage,
@@ -847,16 +851,6 @@ impl_layouts_f32! {
         const POS_Y: Self::Storage = f32x2::new([0., 1.]);
         const NEG_X: Self::Storage = f32x2::new([-1., 0.]);
         const NEG_Y: Self::Storage = f32x2::new([0., -1.]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_f32x4(mask, true_values.load(), false_values.load()).store()
-        }
-
         #[inline(always)]
         fn dot(a: Self::Storage, b: Self::Storage) -> Self {
             kernels::matmul::f32::matmul1x2x1(a.load(), b.load()).store()
@@ -874,16 +868,6 @@ impl_layouts_f32! {
         const NEG_X: Self::Storage = f32x4::new([-1., 0., 0., 0.]);
         const NEG_Y: Self::Storage = f32x4::new([0., -1., 0., 0.]);
         const NEG_Z: Self::Storage = f32x4::new([0., 0., -1., 0.]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_f32x4(mask, true_values, false_values)
-        }
-
         #[inline(always)]
         fn dot(a: Self::Storage, b: Self::Storage) -> Self { kernels::matmul::f32::matmul1x3x1(a, b) }
         #[inline(always)]
@@ -905,16 +889,6 @@ impl_layouts_f32! {
         const NEG_Y: Self::Storage = f32x4::new([0., -1., 0., 0.]);
         const NEG_Z: Self::Storage = f32x4::new([0., 0., -1., 0.]);
         const NEG_W: Self::Storage = f32x4::new([0., 0., 0., -1.]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_f32x4(mask, true_values, false_values)
-        }
-
         #[inline(always)]
         fn dot(a: Self::Storage, b: Self::Storage) -> Self { kernels::matmul::f32::matmul1x4x1(a, b) }
         #[inline(always)]
@@ -986,19 +960,9 @@ impl_layouts_i32! {
     (1, 1; i32 x 1) => {
         const IDENTITY: Self::Storage = 1;
         #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            if mask & 1 != 0 { true_values } else { false_values }
-        }
-
-        #[inline(always)]
         fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
             u64::from(mask.into_inner() < 0)
         }
-
         #[inline(always)]
         fn diagonal(
             a: <Self as private::SealedElement<1, 1>>::Storage,
@@ -1011,15 +975,6 @@ impl_layouts_i32! {
         const POS_Y: Self::Storage = i32x2::new([0, 1]);
         const NEG_X: Self::Storage = i32x2::new([-1, 0]);
         const NEG_Y: Self::Storage = i32x2::new([0, -1]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_i32x4(mask, true_values.load(), false_values.load()).store()
-        }
         #[inline(always)]
         fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
             u64::from(mask.into_inner().load().to_bitmask() & 0b11)
@@ -1032,15 +987,6 @@ impl_layouts_i32! {
         const NEG_X: Self::Storage = i32x4::new([-1, 0, 0, 0]);
         const NEG_Y: Self::Storage = i32x4::new([0, -1, 0, 0]);
         const NEG_Z: Self::Storage = i32x4::new([0, 0, -1, 0]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_i32x4(mask, true_values, false_values)
-        }
         #[inline(always)]
         fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
             u64::from(mask.into_inner().to_bitmask() & 0b111)
@@ -1055,15 +1001,6 @@ impl_layouts_i32! {
         const NEG_Y: Self::Storage = i32x4::new([0, -1, 0, 0]);
         const NEG_Z: Self::Storage = i32x4::new([0, 0, -1, 0]);
         const NEG_W: Self::Storage = i32x4::new([0, 0, 0, -1]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_i32x4(mask, true_values, false_values)
-        }
         #[inline(always)]
         fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
             u64::from(mask.into_inner().to_bitmask())
@@ -1120,15 +1057,6 @@ impl_layouts_u32! {
     (1, 1; u32 x 1) => {
         const IDENTITY: Self::Storage = 1;
         #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            if mask & 1 != 0 { true_values } else { false_values }
-        }
-
-        #[inline(always)]
         fn diagonal(
             a: <Self as private::SealedElement<1, 1>>::Storage,
         ) -> <Self as private::SealedElement<1, 1>>::Storage {
@@ -1138,44 +1066,17 @@ impl_layouts_u32! {
     (2, 1; u32x2 x 1) => {
         const POS_X: Self::Storage = u32x2::new([1, 0]);
         const POS_Y: Self::Storage = u32x2::new([0, 1]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_u32x4(mask, true_values.load(), false_values.load()).store()
-        }
     },
     (3, 1; u32x4 x 1) => {
         const POS_X: Self::Storage = u32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = u32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = u32x4::new([0, 0, 1, 0]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_u32x4(mask, true_values, false_values)
-        }
     },
     (4, 1; u32x4 x 1) => {
         const POS_X: Self::Storage = u32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = u32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = u32x4::new([0, 0, 1, 0]);
         const POS_W: Self::Storage = u32x4::new([0, 0, 0, 1]);
-
-        #[inline(always)]
-        fn select_u64(
-            mask: u64,
-            true_values: Self::Storage,
-            false_values: Self::Storage,
-        ) -> Self::Storage {
-            kernels::select::u64_u32x4(mask, true_values, false_values)
-        }
     },
     (1, 2; u32x2 x 1) => {},
     (2, 2; u32x4 x 1) => {
