@@ -553,7 +553,6 @@ pub(crate) mod swizzle_impl {
         ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
             $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, $i2])
         };
-        // TODO: validate_lane4
         ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
             $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle4::<
                 { $crate::simd::utils::validate_lane4!($i0) },
@@ -598,6 +597,52 @@ pub(crate) mod swizzle_impl {
     }
 
     pub(crate) use swizzle;
+
+    #[cfg(test)]
+    mod tests {
+        use super::{SwizzleBase, u32x2, u32x4};
+
+        #[test]
+        fn swizzle4_selects_lanes_from_one_input() {
+            let a = u32x4::new([10, 11, 12, 13]);
+
+            let actual = SwizzleBase::swizzle4::<3, 1, 0, 2>(a);
+
+            assert_eq!(actual.to_array(), [13, 11, 10, 12]);
+        }
+
+        #[test]
+        fn swizzle_concat4_selects_lanes_from_both_inputs() {
+            let a = u32x4::new([10, 11, 12, 13]);
+            let b = u32x4::new([20, 21, 22, 23]);
+
+            let actual = SwizzleBase::swizzle_concat4::<7, 0, 5, 2>(a, b);
+
+            assert_eq!(actual.to_array(), [23, 10, 21, 12]);
+        }
+
+        #[test]
+        fn swizzle2_selects_lanes_from_one_input() {
+            let a = u32x2::new([10, 11]);
+
+            let actual = SwizzleBase::swizzle2::<1, 0>(a);
+
+            assert_eq!(actual.to_array(), [11, 10]);
+        }
+
+        #[test]
+        fn swizzle_concat2_selects_lanes_from_both_inputs() {
+            // Indices 0/1 select `a`'s two lanes and 4/5 select `b`'s, matching the same
+            // "`a` widened into the low half, `b` into the high half" convention as
+            // `Simd2Ext::widen`; 2/3/6/7 would read each operand's zero-padding.
+            let a = u32x2::new([10, 11]);
+            let b = u32x2::new([20, 21]);
+
+            let actual = SwizzleBase::swizzle_concat2::<5, 0>(a, b);
+
+            assert_eq!(actual.to_array(), [21, 10]);
+        }
+    }
 }
 
 #[cfg(target_feature = "simd128")]

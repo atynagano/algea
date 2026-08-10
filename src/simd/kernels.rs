@@ -121,7 +121,7 @@ pub(crate) mod mask {
                 assert_ne!(N, 2);
                 let v: [i32; 4] = [array[0] as i32, array[1] as i32, array[2] as i32, array[3] as i32];
                 let v = vld1q_s32(v.as_ptr());
-                core::mem::transmute(vreinterpretq_s32_u32(vtstq_s32(v, v)))
+                core::mem::transmute::<int32x4_t, i32x4>(vreinterpretq_s32_u32(vtstq_s32(v, v)))
             },
             _ => {{
                 use wide::u8x16;
