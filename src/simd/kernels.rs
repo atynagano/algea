@@ -4,18 +4,21 @@ use wide::f32x4;
 mod tests;
 
 pub(crate) mod mask {
-    use crate::utils::MaskStorage;
+    use crate::{
+        simd::utils::{Simd2Ext, Simd4Ext, compute_i32x2},
+        utils::MaskStorage,
+    };
     use wide::i32x4;
 
     #[inline(always)]
     pub(crate) fn any_1x1(a: MaskStorage<i32>) -> bool { a.into_inner() < 0 }
     pub(crate) use any_1x1 as all_1x1;
     #[inline(always)]
-    pub(crate) fn any_2x1(a: MaskStorage<i32x4>) -> bool {
+    pub(crate) fn any_2x1(a: MaskStorage<compute_i32x2>) -> bool {
         a.into_inner().to_bitmask() & 0b0011 != 0
     }
     #[inline(always)]
-    pub(crate) fn all_2x1(a: MaskStorage<i32x4>) -> bool {
+    pub(crate) fn all_2x1(a: MaskStorage<compute_i32x2>) -> bool {
         a.into_inner().to_bitmask() & 0b0011 == 0b0011
     }
     #[inline(always)]
@@ -90,12 +93,12 @@ pub(crate) mod mask {
     #[inline(always)]
     pub(crate) fn any_2x3(a: MaskStorage<[i32x4; 2]>) -> bool {
         let a = a.unpack();
-        any_4x1(a[0]) || any_2x1(a[1])
+        any_4x1(a[0]) || any_2x1(a[1].xy())
     }
     #[inline(always)]
     pub(crate) fn all_2x3(a: MaskStorage<[i32x4; 2]>) -> bool {
         let a = a.unpack();
-        all_4x1(a[0]) && all_2x1(a[1])
+        all_4x1(a[0]) && all_2x1(a[1].xy())
     }
 
     #[allow(unused_imports)]
@@ -113,6 +116,13 @@ pub(crate) mod mask {
                     avx512_bw_vl::_mm_movm_epi8(avx512_bw_vl::_mm_test_epi8_mask(bytes, bytes));
                 i32x4::from(sse41::_mm_cvtepi8_epi32(byte_mask))
             },
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                assert_ne!(N, 2);
+                let v: [i32; 4] = [array[0] as i32, array[1] as i32, array[2] as i32, array[3] as i32];
+                let v = vld1q_s32(v.as_ptr());
+                core::mem::transmute::<int32x4_t, i32x4>(vreinterpretq_s32_u32(vtstq_s32(v, v)))
+            },
             _ => {{
                 use wide::u8x16;
                 let packed = i32::from_le_bytes(array.map(u8::from));
@@ -125,8 +135,10 @@ pub(crate) mod mask {
         unsafe {
             // SAFETY: Every branch converts each physical lane to a canonical mask value.
             // The AVX-512 path expands each nonzero bool byte to `0xff` and then sign-extends
-            // it to `-1`; the SSE2 path duplicates each `0` or `1` byte across an i32 lane
-            // and maps it to `0` or all-one bits; and the scalar path negates `0` or `1`.
+            // it to `-1`; the NEON path tests each `0`/`1` lane against itself (`TST`), which is
+            // all-zero or all-one depending on whether the lane is nonzero, and reinterprets
+            // those bits directly; the SSE2 path duplicates each `0` or `1` byte across an i32
+            // lane and maps it to `0` or all-one bits; and the scalar path negates `0` or `1`.
             // Consequently every lane, including lanes supplied as padding, is `0` or `-1`.
             MaskStorage::new_unchecked(inner)
         }
@@ -134,8 +146,19 @@ pub(crate) mod mask {
     #[inline(always)]
     fn from_array_1(array: [bool; 1]) -> MaskStorage<i32> { MaskStorage::new(array[0]) }
     #[inline(always)]
-    fn from_array_2(array: [bool; 2]) -> MaskStorage<i32x4> {
-        from_array::<2>([array[0], array[1], false, false])
+    fn from_array_2(array: [bool; 2]) -> MaskStorage<compute_i32x2> {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                let v: [i32; 2] = [array[0] as i32, array[1] as i32];
+                let v = vld1_s32(v.as_ptr());
+                let result = vreinterpret_s32_u32(vtst_s32(v, v));
+                // SAFETY: `vtst_s32(v, v)` is all-zero or all-one per lane depending on whether
+                // that `0`/`1` lane is nonzero, and `vreinterpret_s32_u32` preserves those bits.
+                MaskStorage::new_unchecked(result.into())
+            },
+            _ => from_array::<2>([array[0], array[1], false, false]),
+        }
     }
     #[inline(always)]
     fn from_array_3(array: [bool; 3]) -> MaskStorage<i32x4> {
@@ -157,6 +180,15 @@ pub(crate) mod mask {
                 let bytes = super::cast::u8_from_i32(mask.into_inner());
                 wide::bytemuck::cast::<_, u32x4>(bytes).to_array()[0]
             }},
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {{
+                use core::arch::aarch64::*;
+                assert_ne!(N, 2);
+                let bits = vmovn_s32(mask.into_inner().into());
+                let bits_u8 = vreinterpret_u8_s16(bits);
+                let packed = vuzp1_u8(bits_u8, bits_u8);
+                let packed_u32 = vreinterpret_u32_u8(packed);
+                vget_lane_u32::<0>(packed_u32)
+            }},
             _ => {{
                 // `to_bitmask` extracts the most-significant bit of each lane.
                 let bits = mask.into_inner().to_bitmask();
@@ -174,7 +206,22 @@ pub(crate) mod mask {
     #[inline(always)]
     fn to_array_1(mask: MaskStorage<i32>) -> [bool; 1] { [mask.into_inner() < 0] }
     #[inline(always)]
-    fn to_array_2(mask: MaskStorage<i32x4>) -> [bool; 2] { to_array(mask) }
+    fn to_array_2(mask: MaskStorage<compute_i32x2>) -> [bool; 2] {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                let ones = vdup_n_s32(1);
+                let bits = vand_s32(mask.into_inner().into(), ones);
+                let bits_u16 = vreinterpret_u16_s32(bits);
+                let step1 = vuzp1_u16(bits_u16, bits_u16);
+                let step1_u8 = vreinterpret_u8_u16(step1);
+                let packed = vuzp1_u8(step1_u8, step1_u8);
+                let packed_u16 = vreinterpret_u16_u8(packed);
+                core::mem::transmute::<u16, [bool; 2]>(vget_lane_u16::<0>(packed_u16))
+            },
+            _ => to_array(mask),
+        }
+    }
     #[inline(always)]
     fn to_array_3(mask: MaskStorage<i32x4>) -> [bool; 3] { to_array(mask) }
     #[inline(always)]
@@ -185,9 +232,13 @@ pub(crate) mod mask {
     #[inline(always)]
     pub(crate) fn to_array_1x1(mask: MaskStorage<i32>) -> [[bool; 1]; 1] { [to_array_1(mask)] }
     #[inline(always)]
-    pub(crate) fn from_array_2x1([a]: [[bool; 2]; 1]) -> MaskStorage<i32x4> { from_array_2(a) }
+    pub(crate) fn from_array_2x1([a]: [[bool; 2]; 1]) -> MaskStorage<compute_i32x2> {
+        from_array_2(a)
+    }
     #[inline(always)]
-    pub(crate) fn to_array_2x1(mask: MaskStorage<i32x4>) -> [[bool; 2]; 1] { [to_array_2(mask)] }
+    pub(crate) fn to_array_2x1(mask: MaskStorage<compute_i32x2>) -> [[bool; 2]; 1] {
+        [to_array_2(mask)]
+    }
     #[inline(always)]
     pub(crate) fn from_array_3x1([a]: [[bool; 3]; 1]) -> MaskStorage<i32x4> { from_array_3(a) }
     #[inline(always)]
@@ -198,11 +249,11 @@ pub(crate) mod mask {
     pub(crate) fn to_array_4x1(mask: MaskStorage<i32x4>) -> [[bool; 4]; 1] { [to_array_4(mask)] }
 
     #[inline(always)]
-    pub(crate) fn from_array_1x2([[a], [b]]: [[bool; 1]; 2]) -> MaskStorage<i32x4> {
+    pub(crate) fn from_array_1x2([[a], [b]]: [[bool; 1]; 2]) -> MaskStorage<compute_i32x2> {
         from_array_2([a, b])
     }
     #[inline(always)]
-    pub(crate) fn to_array_1x2(mask: MaskStorage<i32x4>) -> [[bool; 1]; 2] {
+    pub(crate) fn to_array_1x2(mask: MaskStorage<compute_i32x2>) -> [[bool; 1]; 2] {
         let [a, b] = to_array_2(mask);
         [[a], [b]]
     }
@@ -246,13 +297,13 @@ pub(crate) mod mask {
     #[inline(always)]
     pub(crate) fn from_array_2x3(array: [[bool; 2]; 3]) -> MaskStorage<[i32x4; 2]> {
         let [[a, b], [c, d], [e, f]] = array;
-        [from_array_4([a, b, c, d]), from_array_2([e, f])].into()
+        [from_array_4([a, b, c, d]), from_array_2([e, f]).widen()].into()
     }
     #[inline(always)]
     pub(crate) fn to_array_2x3(mask: MaskStorage<[i32x4; 2]>) -> [[bool; 2]; 3] {
         let [first, last] = mask.unpack();
         let [a, b, c, d] = to_array_4(first);
-        let [e, f] = to_array_2(last);
+        let [e, f] = to_array_2(last.xy());
         [[a, b], [c, d], [e, f]]
     }
     #[inline(always)]
@@ -316,10 +367,10 @@ pub(crate) mod mask {
 }
 
 pub(crate) mod diagonal {
-    use crate::{simd::utils::swizzle, utils::Swizzle};
+    use crate::simd::utils::{Swizzle, swizzle};
 
     #[inline(always)]
-    pub(crate) fn diagonal2x2<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4 { swizzle!(a, [0, 3, _, _]) }
+    pub(crate) fn diagonal2x2<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4::Vector2 { swizzle!(a, [0, 3]) }
     #[inline(always)]
     pub(crate) fn diagonal3x3<Tx4: Swizzle + Copy>(a: [Tx4; 3]) -> Tx4 {
         let temp = swizzle!(a[0], a[1], [0, 4, 1, 5]);
@@ -334,7 +385,7 @@ pub(crate) mod diagonal {
 }
 
 pub(crate) mod transpose {
-    use crate::{simd::utils::swizzle, utils::Swizzle};
+    use crate::simd::utils::{swizzle, swizzle_impl::Swizzle};
 
     #[inline(always)]
     pub(crate) fn transpose1x1<T>(a: T) -> T { a }
@@ -992,7 +1043,7 @@ pub(crate) mod from_vecs {
             }
             #[inline(always)]
             pub(crate) fn _2x3([a, b, c]: [Vector<$f32, 2>; 3]) -> [$x4; 2] {
-                [_2x2([a, b]), c.storage.load()]
+                [_2x2([a, b]), c.storage.load().widen()]
             }
             #[inline(always)]
             pub(crate) fn _3x3([a, b, c]: [Vector<$f32, 3>; 3]) -> [$x4; 3] {
@@ -1024,7 +1075,7 @@ pub(crate) mod from_vecs {
     pub(crate) mod f32 {
         use crate::{
             Vector,
-            simd::utils::{f32x2, swizzle},
+            simd::utils::{Simd2Ext, f32x2, swizzle},
             utils::Load,
         };
         use wide::f32x4;
@@ -1033,7 +1084,7 @@ pub(crate) mod from_vecs {
     pub(crate) mod i32 {
         use crate::{
             Vector,
-            simd::utils::{i32x2, swizzle},
+            simd::utils::{Simd2Ext, i32x2, swizzle},
             utils::Load,
         };
         use wide::i32x4;
@@ -1042,7 +1093,7 @@ pub(crate) mod from_vecs {
     pub(crate) mod u32 {
         use crate::{
             Vector,
-            simd::utils::{swizzle, u32x2},
+            simd::utils::{Simd2Ext, swizzle, u32x2},
             utils::Load,
         };
         use wide::u32x4;
@@ -1142,6 +1193,9 @@ pub(crate) mod round {
     }
 }
 
+// Kept but disabled: porting this to aarch64's `i32x2` is nontrivial, and `u64::select` is
+// currently private and unreferenced.
+#[cfg(false)]
 pub(crate) mod select {
     use wide::{f32x4, i32x4, u32x4};
 
@@ -1194,9 +1248,12 @@ pub(crate) mod matmul {
     #![allow(unused_parens)]
 
     pub(crate) mod f32 {
-        use super::super::*;
-        use crate::{simd::utils::swizzle, utils::arith};
-
+        use super::super::{super::utils::compute_f32x2, transpose};
+        use crate::{
+            simd::utils::{Simd2Ext, Simd4Ext, swizzle},
+            utils::arith,
+        };
+        use wide::f32x4;
         // Kernels in this module use the column-major storage contract.
 
         // TODO(codegen-optimization): Benchmark horizontal reductions on representative targets
@@ -1210,7 +1267,9 @@ pub(crate) mod matmul {
         pub(crate) fn matmul1x1x1(a: f32, b: f32) -> f32 { a * b }
 
         #[inline(always)]
-        pub(crate) fn matmul2x1x1(a: f32x4, b: f32) -> f32x4 { a * b }
+        pub(crate) fn matmul2x1x1(a: compute_f32x2, b: f32) -> compute_f32x2 {
+            a * compute_f32x2::splat(b)
+        }
 
         #[inline(always)]
         pub(crate) fn matmul3x1x1(a: f32x4, b: f32) -> f32x4 { a * b }
@@ -1219,25 +1278,25 @@ pub(crate) mod matmul {
         pub(crate) fn matmul4x1x1(a: f32x4, b: f32) -> f32x4 { a * b }
 
         #[inline(always)]
-        pub(crate) fn matmul1x2x1(a: f32x4, b: f32x4) -> f32 {
+        pub(crate) fn matmul1x2x1(a: compute_f32x2, b: compute_f32x2) -> f32 {
             let [x, y, ..] = (a * b).to_array();
             x + y
         }
 
         #[inline(always)]
-        pub(crate) fn matmul2x2x1(a: f32x4, b: f32x4) -> f32x4 {
+        pub(crate) fn matmul2x2x1(a: f32x4, b: compute_f32x2) -> compute_f32x2 {
             // b = [b0, b1, *, *], a (2x2 column-major packed) = [a00, a10, a01, a11]
             let xxyy = swizzle!(b, [0, 0, 1, 1]);
             let products = a * xxyy;
-            let upper_products = swizzle!(products, [2, 3, _, _]);
-            products + upper_products
+            let upper_products = swizzle!(products, [2, 3]);
+            products.xy() + upper_products
         }
 
         #[inline(always)]
-        pub(crate) fn matmul3x2x1(a: [f32x4; 2], b: f32x4) -> f32x4 { matmul4x2x1(a, b) }
+        pub(crate) fn matmul3x2x1(a: [f32x4; 2], b: compute_f32x2) -> f32x4 { matmul4x2x1(a, b) }
 
         #[inline(always)]
-        pub(crate) fn matmul4x2x1(a: [f32x4; 2], b: f32x4) -> f32x4 {
+        pub(crate) fn matmul4x2x1(a: [f32x4; 2], b: compute_f32x2) -> f32x4 {
             let xxxx = swizzle!(b, [0, 0, 0, 0]);
             let yyyy = swizzle!(b, [1, 1, 1, 1]);
             arith!((a[0]) * xxxx + (a[1]) * yyyy)
@@ -1253,12 +1312,12 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul2x3x1(a: [f32x4; 2], b: f32x4) -> f32x4 {
+        pub(crate) fn matmul2x3x1(a: [f32x4; 2], b: f32x4) -> compute_f32x2 {
             let xxyy = swizzle!(b, [0, 0, 1, 1]);
-            let zz__ = swizzle!(b, [2, 2, _, _]);
+            let zz = swizzle!(b, [2, 2]);
             let products01 = a[0] * xxyy;
-            let upper_products01 = swizzle!(products01, [2, 3, _, _]);
-            arith!((products01 + upper_products01) + (a[1]) * zz__)
+            let upper_products01 = swizzle!(products01, [2, 3]);
+            arith!((products01.xy() + upper_products01) + (a[1].xy()) * zz)
         }
 
         #[inline(always)]
@@ -1282,12 +1341,12 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul2x4x1(a: [f32x4; 2], b: f32x4) -> f32x4 {
+        pub(crate) fn matmul2x4x1(a: [f32x4; 2], b: f32x4) -> compute_f32x2 {
             let xxyy = swizzle!(b, [0, 0, 1, 1]);
             let zzww = swizzle!(b, [2, 2, 3, 3]);
             let pair_sums = arith!((a[0]) * xxyy + (a[1]) * zzww);
-            let upper_pair_sums = swizzle!(pair_sums, [2, 3, _, _]);
-            pair_sums + upper_pair_sums
+            let upper_pair_sums = swizzle!(pair_sums, [2, 3]);
+            pair_sums.xy() + upper_pair_sums
         }
 
         #[inline(always)]
@@ -1307,29 +1366,31 @@ pub(crate) mod matmul {
         // ============================================================
 
         #[inline(always)]
-        pub(crate) fn matmul1x1x2(a: f32, b: f32x4) -> f32x4 { f32x4::splat(a) * b }
+        pub(crate) fn matmul1x1x2(a: f32, b: compute_f32x2) -> compute_f32x2 {
+            compute_f32x2::splat(a) * b
+        }
 
         #[inline(always)]
-        pub(crate) fn matmul2x1x2(a: f32x4, b: f32x4) -> f32x4 {
+        pub(crate) fn matmul2x1x2(a: compute_f32x2, b: compute_f32x2) -> f32x4 {
             // Outer product in 2x2 packed column-major order:
             // `[a0*b0, a1*b0, a0*b1, a1*b1]`.
             swizzle!(a, [0, 1, 0, 1]) * swizzle!(b, [0, 0, 1, 1])
         }
 
         #[inline(always)]
-        pub(crate) fn matmul3x1x2(a: f32x4, b: f32x4) -> [f32x4; 2] { matmul4x1x2(a, b) }
+        pub(crate) fn matmul3x1x2(a: f32x4, b: compute_f32x2) -> [f32x4; 2] { matmul4x1x2(a, b) }
 
         #[inline(always)]
-        pub(crate) fn matmul4x1x2(a: f32x4, b: f32x4) -> [f32x4; 2] {
+        pub(crate) fn matmul4x1x2(a: f32x4, b: compute_f32x2) -> [f32x4; 2] {
             let col0 = a * swizzle!(b, [0, 0, 0, 0]);
             let col1 = a * swizzle!(b, [1, 1, 1, 1]);
             [col0, col1]
         }
 
         #[inline(always)]
-        pub(crate) fn matmul1x2x2(a: f32x4, b: f32x4) -> f32x4 {
+        pub(crate) fn matmul1x2x2(a: compute_f32x2, b: f32x4) -> compute_f32x2 {
             let products = swizzle!(a, [0, 1, 0, 1]) * b;
-            swizzle!(products, [0, 2, _, _]) + swizzle!(products, [1, 3, _, _])
+            swizzle!(products, [0, 2]) + swizzle!(products, [1, 3])
         }
 
         #[inline(always)]
@@ -1355,14 +1416,14 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul1x3x2(a: f32x4, b: [f32x4; 2]) -> f32x4 {
+        pub(crate) fn matmul1x3x2(a: f32x4, b: [f32x4; 2]) -> compute_f32x2 {
             // TODO(codegen-optimization): Compare this path with a transpose-and-FMA chain on
             // representative FMA and non-FMA targets before changing the kernel.
             let cols01_lo = swizzle!(b[0], b[1], [0, 4, 1, 5]);
-            let cols01_hi = swizzle!(b[0], b[1], [2, 6, _, _]);
+            let cols01_hi = swizzle!(b[0], b[1], [2, 6]);
             let products01 = cols01_lo * swizzle!(a, [0, 0, 1, 1]);
-            let sums01 = products01 + swizzle!(products01, [2, 3, _, _]);
-            arith!(sums01 + (swizzle!(a, [2, 2, _, _])) * cols01_hi)
+            let sums01 = products01.xy() + swizzle!(products01, [2, 3]);
+            arith!(sums01 + (swizzle!(a, [2, 2])) * cols01_hi)
         }
 
         #[inline(always)]
@@ -1388,12 +1449,12 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul1x4x2(a: f32x4, b: [f32x4; 2]) -> f32x4 {
+        pub(crate) fn matmul1x4x2(a: f32x4, b: [f32x4; 2]) -> compute_f32x2 {
             let scaled_col0 = a * b[0];
             let scaled_col1 = a * b[1];
             let pair_sums = swizzle!(scaled_col0, scaled_col1, [0, 4, 1, 5])
                 + swizzle!(scaled_col0, scaled_col1, [2, 6, 3, 7]);
-            pair_sums + swizzle!(pair_sums, [2, 3, _, _])
+            pair_sums.xy() + swizzle!(pair_sums, [2, 3])
         }
 
         #[inline(always)]
@@ -1421,7 +1482,7 @@ pub(crate) mod matmul {
         pub(crate) fn matmul1x1x3(a: f32, b: f32x4) -> f32x4 { f32x4::splat(a) * b }
 
         #[inline(always)]
-        pub(crate) fn matmul2x1x3(a: f32x4, b: f32x4) -> [f32x4; 2] {
+        pub(crate) fn matmul2x1x3(a: compute_f32x2, b: f32x4) -> [f32x4; 2] {
             // a = [a0, a1, *, *], b = [b0, b1, b2, *]
             // Packed output: `cols01 = [a0*b0, a1*b0, a0*b1, a1*b1]` and
             // `col2 = [a0*b2, a1*b2, *, *]`.
@@ -1444,7 +1505,7 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul1x2x3(a: f32x4, b: [f32x4; 2]) -> f32x4 {
+        pub(crate) fn matmul1x2x3(a: compute_f32x2, b: [f32x4; 2]) -> f32x4 {
             // TODO(codegen-optimization): Compare this path with a single-horizontal-add packed
             // formulation, and adopt it only when complete-kernel benchmarks improve.
 
@@ -1527,7 +1588,7 @@ pub(crate) mod matmul {
             let col0 = matmul2x3x1(a, b[0]);
             let col1 = matmul2x3x1(a, b[1]);
             let col2 = matmul2x3x1(a, b[2]);
-            [swizzle!(col0, col1, [0, 1, 4, 5]), col2]
+            [swizzle!(col0, col1, [0, 1, 4, 5]), col2.widen()]
         }
 
         #[inline(always)]
@@ -1559,7 +1620,7 @@ pub(crate) mod matmul {
             let col0 = matmul2x4x1(a, b[0]);
             let col1 = matmul2x4x1(a, b[1]);
             let col2 = matmul2x4x1(a, b[2]);
-            [swizzle!(col0, col1, [0, 1, 4, 5]), col2]
+            [swizzle!(col0, col1, [0, 1, 4, 5]), col2.widen()]
         }
 
         #[inline(always)]
@@ -1581,7 +1642,7 @@ pub(crate) mod matmul {
         pub(crate) fn matmul1x1x4(a: f32, b: f32x4) -> f32x4 { f32x4::splat(a) * b }
 
         #[inline(always)]
-        pub(crate) fn matmul2x1x4(a: f32x4, b: f32x4) -> [f32x4; 2] {
+        pub(crate) fn matmul2x1x4(a: compute_f32x2, b: f32x4) -> [f32x4; 2] {
             // a = [a0, a1, *, *], b = [b0, b1, b2, b3]
             let xyxy = swizzle!(a, [0, 1, 0, 1]);
             let xxyy = swizzle!(b, [0, 0, 1, 1]);
@@ -1602,7 +1663,7 @@ pub(crate) mod matmul {
         }
 
         #[inline(always)]
-        pub(crate) fn matmul1x2x4(a: f32x4, b: [f32x4; 2]) -> f32x4 {
+        pub(crate) fn matmul1x2x4(a: compute_f32x2, b: [f32x4; 2]) -> f32x4 {
             let xyxy = swizzle!(a, [0, 1, 0, 1]);
             let scaled_cols01 = b[0] * xyxy;
             let scaled_cols23 = b[1] * xyxy;

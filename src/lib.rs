@@ -467,7 +467,7 @@ pub mod support {
 pub(crate) mod private {
     use crate::{
         marker::{Float, Lane, StoredVerbatim},
-        utils::{MaskStorage, Swizzle},
+        utils::MaskStorage,
     };
 
     pub(crate) trait Fmt {
@@ -478,13 +478,42 @@ pub(crate) mod private {
 
     pub(crate) enum VectorFmt {}
 
-    pub(crate) trait SwizzleDispatch {
-        #[allow(dead_code)]
-        fn dispatch<T: Copy + Swizzle>(v: T) -> T;
-    }
     pub(crate) enum Indices2<const I0: usize, const I1: usize> {}
     pub(crate) enum Indices3<const I0: usize, const I1: usize, const I2: usize> {}
     pub(crate) enum Indices4<const I0: usize, const I1: usize, const I2: usize, const I3: usize> {}
+
+    pub(crate) trait SwizzleDispatch<T, const M: usize, const N: usize> {
+        // The non-SIMD backend never calls this (see `src/non_simd/utils.rs`), so it is unused
+        // under that backend.
+        #[allow(dead_code)]
+        fn dispatch(v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+        where
+            T: SealedElement<M, 1> + SealedElement<N, 1>;
+    }
+    pub(crate) trait SwizzleDispatchAny<const N: usize>:
+        SwizzleDispatch<f32, 2, N>
+        + SwizzleDispatch<f32, 3, N>
+        + SwizzleDispatch<f32, 4, N>
+        + SwizzleDispatch<i32, 2, N>
+        + SwizzleDispatch<i32, 3, N>
+        + SwizzleDispatch<i32, 4, N>
+        + SwizzleDispatch<u32, 2, N>
+        + SwizzleDispatch<u32, 3, N>
+        + SwizzleDispatch<u32, 4, N>
+    {
+    }
+    impl<T, const N: usize> SwizzleDispatchAny<N> for T where
+        T: SwizzleDispatch<f32, 2, N>
+            + SwizzleDispatch<f32, 3, N>
+            + SwizzleDispatch<f32, 4, N>
+            + SwizzleDispatch<i32, 2, N>
+            + SwizzleDispatch<i32, 3, N>
+            + SwizzleDispatch<i32, 4, N>
+            + SwizzleDispatch<u32, 2, N>
+            + SwizzleDispatch<u32, 3, N>
+            + SwizzleDispatch<u32, 4, N>
+    {
+    }
 
     impl Fmt for VectorFmt {
         #[inline(never)]
@@ -633,7 +662,7 @@ pub(crate) mod private {
         ) -> <Self as SealedElement<2, 1>>::Storage
         where
             Self: SealedElement<2, 1>,
-            Indices2<I0, I1>: SwizzleDispatch,
+            Indices2<I0, I1>: SwizzleDispatchAny<2>,
         {
             unimplemented!()
         }
@@ -642,7 +671,7 @@ pub(crate) mod private {
         ) -> <Self as SealedElement<3, 1>>::Storage
         where
             Self: SealedElement<3, 1>,
-            Indices3<I0, I1, I2>: SwizzleDispatch,
+            Indices3<I0, I1, I2>: SwizzleDispatchAny<3>,
         {
             unimplemented!()
         }
@@ -651,7 +680,7 @@ pub(crate) mod private {
         ) -> <Self as SealedElement<4, 1>>::Storage
         where
             Self: SealedElement<4, 1>,
-            Indices4<I0, I1, I2, I3>: SwizzleDispatch,
+            Indices4<I0, I1, I2, I3>: SwizzleDispatchAny<4>,
         {
             unimplemented!()
         }

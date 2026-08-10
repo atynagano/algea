@@ -496,19 +496,3 @@ mod mask_utils {
 }
 
 pub(crate) use mask_utils::*;
-
-// TODO(codegen-optimization): Verify that every single-lane insertion pattern lowers to an insert
-// instruction, and use `_mm_insert_ps` explicitly only for patterns where two shuffles remain.
-pub(crate) trait Swizzle: Sized {
-    #[allow(dead_code)]
-    fn swizzle_generic<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-        first: Self,
-        second: Self,
-    ) -> Self;
-    #[allow(dead_code)]
-    fn shuffle<const M: i32>(a: Self, b: Self) -> Self;
-    #[allow(dead_code)]
-    fn unpack_lo(a: Self, b: Self) -> Self;
-    #[allow(dead_code)]
-    fn unpack_hi(a: Self, b: Self) -> Self;
-}
