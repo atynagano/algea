@@ -932,16 +932,13 @@ mod _64bit_types {
         fn is_valid(self) -> bool {
             self.to_array().into_iter().all(crate::utils::MaskPrimitive::is_valid)
         }
-        #[inline(always)]
         fn not(self) -> Self { unimplemented!() }
-        #[inline(always)]
         fn bitand(self, _rhs: Self) -> Self { unimplemented!() }
-        #[inline(always)]
         fn bitor(self, _rhs: Self) -> Self { unimplemented!() }
-        #[inline(always)]
         fn bitxor(self, _rhs: Self) -> Self { unimplemented!() }
-        #[inline(always)]
         fn select(self, _true_values: Self, _false_values: Self) -> Self { unimplemented!() }
+        fn any<const N: usize>(self) -> bool { unimplemented!() }
+        fn all<const N: usize>(self) -> bool { unimplemented!() }
     }
     impl crate::utils::ArithPrimitive for f32x2 {
         type Scalar = f32;
@@ -1225,6 +1222,16 @@ mod _64bit_types {
         #[inline(always)]
         fn select(self, true_values: Self, false_values: Self) -> Self {
             unsafe { Self(vbsl_s32(vreinterpret_u32_s32(self.0), true_values.0, false_values.0)) }
+        }
+        #[inline(always)]
+        fn any<const N: usize>(self) -> bool {
+            assert_eq!(N, 2);
+            unsafe { vminv_s32(self.into()) < 0 }
+        }
+        #[inline(always)]
+        fn all<const N: usize>(self) -> bool {
+            assert_eq!(N, 2);
+            unsafe { vmaxv_s32(self.into()) < 0 }
         }
     }
 
@@ -1647,7 +1654,7 @@ mod _64bit_types {
             // SAFETY: `wide::f32x4` is a `#[repr(transparent)]`-equivalent wrapper around a
             // single `float32x4_t` NEON register on this target, so reinterpreting one as the
             // other is valid.
-            unsafe { core::mem::transmute(vcombine_f32(self.0, vdup_n_f32(0.))) }
+            unsafe { vcombine_f32(self.0, vdup_n_f32(0.)).into() }
         }
     }
     impl super::Simd2Ext for i32x2 {
@@ -1655,7 +1662,7 @@ mod _64bit_types {
 
         fn widen(self) -> Self::Vector4 {
             // SAFETY: see `f32x2::widen`; `wide::i32x4` wraps a single `int32x4_t`.
-            unsafe { core::mem::transmute(vcombine_s32(self.0, vdup_n_s32(0))) }
+            unsafe { vcombine_s32(self.0, vdup_n_s32(0)).into() }
         }
     }
     impl super::Simd2Ext for u32x2 {
@@ -1663,7 +1670,7 @@ mod _64bit_types {
 
         fn widen(self) -> Self::Vector4 {
             // SAFETY: see `f32x2::widen`; `wide::u32x4` wraps a single `uint32x4_t`.
-            unsafe { core::mem::transmute(vcombine_u32(self.0, vdup_n_u32(0))) }
+            unsafe { vcombine_u32(self.0, vdup_n_u32(0)).into() }
         }
     }
     impl super::Simd2Ext for MaskStorage<i32x2> {
@@ -1681,10 +1688,7 @@ mod _64bit_types {
 
         fn xy(self) -> Self::Vector2 {
             // SAFETY: see `f32x2::widen`; `wide::f32x4` wraps a single `float32x4_t`.
-            unsafe {
-                let v: float32x4_t = core::mem::transmute(self);
-                f32x2(vget_low_f32(v))
-            }
+            unsafe { f32x2(vget_low_f32(self.into())) }
         }
     }
     impl super::Simd4Ext for MaskStorage<wide::i32x4> {
@@ -1694,11 +1698,12 @@ mod _64bit_types {
             // SAFETY: `wide::i32x4` wraps a single `int32x4_t` (see `f32x2::widen`), and the
             // low two lanes of an already-canonical mask are themselves canonical (`0` or
             // `-1`), so the narrowed value is a valid canonical mask.
-            unsafe {
-                let v: int32x4_t = core::mem::transmute(self.into_inner());
-                MaskStorage::new_unchecked(i32x2(vget_low_s32(v)))
-            }
+            unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
         }
+    }
+    impl super::Simd4Ext for wide::i32x4 {
+        type Vector2 = i32x2;
+        fn xy(self) -> Self::Vector2 { unsafe { i32x2(vget_low_s32(self.into())) } }
     }
 
     pub(crate) use f32x2 as compute_f32x2;

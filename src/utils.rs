@@ -340,7 +340,6 @@ macro_rules! impl_default_load {
 pub(crate) use impl_default_load;
 
 mod mask_utils {
-
     /// Storage whose physical lanes are all-zero or all-one bit patterns.
     #[derive(Copy, Clone)]
     #[repr(transparent)]
@@ -367,6 +366,12 @@ mod mask_utils {
         fn bitxor(self, rhs: Self) -> Self;
         // same as `Primitive::select_`
         fn select(self, true_values: Self, false_values: Self) -> Self;
+        // Only the SIMD backend's `SealedElement::any`/`all` (see `simd.rs`) calls these; the
+        // non-SIMD backend implements `any`/`all` directly over its flat array storage instead.
+        #[allow(dead_code)]
+        fn any<const N: usize>(self) -> bool;
+        #[allow(dead_code)]
+        fn all<const N: usize>(self) -> bool;
     }
 
     // SAFETY: `is_valid` accepts exactly 0 and -1, `!` swaps those values, and
@@ -384,6 +389,16 @@ mod mask_utils {
         #[inline(always)]
         fn select(self, true_values: Self, false_values: Self) -> Self {
             if self < 0 { true_values } else { false_values }
+        }
+        #[inline(always)]
+        fn any<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
+        }
+        #[inline(always)]
+        fn all<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
         }
     }
     // SAFETY: every array element is validated, transformed, and selected
@@ -421,6 +436,8 @@ mod mask_utils {
                 |i| MaskPrimitive::select(self[i], true_values[i], false_values[i])
             })
         }
+        fn any<const M: usize>(self) -> bool { unimplemented!() }
+        fn all<const M: usize>(self) -> bool { unimplemented!() }
     }
 
     impl<T: MaskPrimitive> core::ops::Not for MaskStorage<T> {
@@ -468,6 +485,12 @@ mod mask_utils {
             // of the canonical inputs and therefore preserves the invariant.
             unsafe { Self::new_unchecked(T::select(self.0, true_values.0, false_values.0)) }
         }
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn any<const N: usize>(self) -> bool { self.0.any::<N>() }
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn all<const N: usize>(self) -> bool { self.0.all::<N>() }
     }
     impl<T> MaskStorage<T> {
         #[inline(always)]

@@ -1,7 +1,8 @@
 use super::mask::*;
 use crate::{
+    private,
     simd::utils::{compute_i32x2, f32x2, i32x2, u32x2},
-    utils::{ArithPrimitive, MaskPrimitive, MaskStorage},
+    utils::{ArithPrimitive, MaskPrimitive, MaskStorage, Store},
 };
 use wide::{f32x4, i32x4, u32x4};
 
@@ -41,104 +42,92 @@ fn compact_two_lane_storage_has_expected_layout() {
 }
 
 macro_rules! assert_mask_query {
-    ($all:ident, $any:ident, $all_true:expr, $all_false:expr, $mixed:expr) => {{
-        assert!($all(canonical($all_true)));
-        assert!($any(canonical($all_true)));
-        assert!(!$all(canonical($all_false)));
-        assert!(!$any(canonical($all_false)));
-        assert!(!$all(canonical($mixed)));
-        assert!($any(canonical($mixed)));
+    ($m:tt, $n:tt, $all_true:expr, $all_false:expr, $mixed:expr) => {{
+        assert!(<i32 as private::SealedElement<$m, $n>>::all(canonical($all_true)));
+        assert!(<i32 as private::SealedElement<$m, $n>>::any(canonical($all_true)));
+        assert!(!<i32 as private::SealedElement<$m, $n>>::all(canonical($all_false)));
+        assert!(!<i32 as private::SealedElement<$m, $n>>::any(canonical($all_false)));
+        assert!(!<i32 as private::SealedElement<$m, $n>>::all(canonical($mixed)));
+        assert!(<i32 as private::SealedElement<$m, $n>>::any(canonical($mixed)));
     }};
 }
 
 #[test]
 fn all_and_any_cover_all_16_storage_shapes() {
-    assert!(all_1x1(canonical(T)));
-    assert!(any_1x1(canonical(T)));
-    assert!(!all_1x1(canonical(F)));
-    assert!(!any_1x1(canonical(F)));
-    assert_mask_query!(all_2x1, any_2x1, compact2([T, T]), compact2([F, F]), compact2([T, F]));
+    assert!(<i32 as private::SealedElement<1, 1>>::all(canonical(T)));
+    assert!(<i32 as private::SealedElement<1, 1>>::any(canonical(T)));
+    assert!(!<i32 as private::SealedElement<1, 1>>::all(canonical(F)));
+    assert!(!<i32 as private::SealedElement<1, 1>>::any(canonical(F)));
     assert_mask_query!(
-        all_3x1,
-        any_3x1,
+        2,
+        1,
+        compact2([T, T]).store(),
+        compact2([F, F]).store(),
+        compact2([T, F]).store()
+    );
+    assert_mask_query!(
+        3,
+        1,
         i32x4::new([T, T, T, F]),
         i32x4::new([F, F, F, T]),
         i32x4::new([F, T, F, F])
     );
-    assert_mask_query!(
-        all_4x1,
-        any_4x1,
-        i32x4::splat(T),
-        i32x4::splat(F),
-        i32x4::new([F, F, T, F])
-    );
+    assert_mask_query!(4, 1, i32x4::splat(T), i32x4::splat(F), i32x4::new([F, F, T, F]));
 
-    assert_mask_query!(all_1x2, any_1x2, compact2([T, T]), compact2([F, F]), compact2([F, T]));
     assert_mask_query!(
-        all_2x2,
-        any_2x2,
-        i32x4::splat(T),
-        i32x4::splat(F),
-        i32x4::new([T, F, F, F])
+        1,
+        2,
+        compact2([T, T]).store(),
+        compact2([F, F]).store(),
+        compact2([F, T]).store()
     );
-    assert_mask_query!(
-        all_3x2,
-        any_3x2,
-        [i32x4::new([T, T, T, F]); 2],
-        [i32x4::new([F, F, F, T]); 2],
-        [i32x4::new([F, T, F, F]), i32x4::splat(F)]
-    );
-    assert_mask_query!(all_4x2, any_4x2, [i32x4::splat(T); 2], [i32x4::splat(F); 2], [
+    assert_mask_query!(2, 2, i32x4::splat(T), i32x4::splat(F), i32x4::new([T, F, F, F]));
+    assert_mask_query!(3, 2, [i32x4::new([T, T, T, F]); 2], [i32x4::new([F, F, F, T]); 2], [
+        i32x4::new([F, T, F, F]),
+        i32x4::splat(F)
+    ]);
+    assert_mask_query!(4, 2, [i32x4::splat(T); 2], [i32x4::splat(F); 2], [
         i32x4::splat(F),
         i32x4::new([F, F, F, T])
     ]);
 
     assert_mask_query!(
-        all_1x3,
-        any_1x3,
+        1,
+        3,
         i32x4::new([T, T, T, F]),
         i32x4::new([F, F, F, T]),
         i32x4::new([T, F, F, F])
     );
     assert_mask_query!(
-        all_2x3,
-        any_2x3,
+        2,
+        3,
         [i32x4::splat(T), i32x4::new([T, T, F, F])],
         [i32x4::splat(F), i32x4::new([F, F, T, T])],
         [i32x4::splat(F), i32x4::new([F, T, F, F])]
     );
-    assert_mask_query!(
-        all_3x3,
-        any_3x3,
-        [i32x4::new([T, T, T, F]); 3],
-        [i32x4::new([F, F, F, T]); 3],
-        [i32x4::new([F, F, T, F]), i32x4::splat(F), i32x4::splat(F)]
-    );
-    assert_mask_query!(all_4x3, any_4x3, [i32x4::splat(T); 3], [i32x4::splat(F); 3], [
+    assert_mask_query!(3, 3, [i32x4::new([T, T, T, F]); 3], [i32x4::new([F, F, F, T]); 3], [
+        i32x4::new([F, F, T, F]),
+        i32x4::splat(F),
+        i32x4::splat(F)
+    ]);
+    assert_mask_query!(4, 3, [i32x4::splat(T); 3], [i32x4::splat(F); 3], [
         i32x4::splat(F),
         i32x4::new([T, F, F, F]),
         i32x4::splat(F)
     ]);
 
-    assert_mask_query!(
-        all_1x4,
-        any_1x4,
-        i32x4::splat(T),
-        i32x4::splat(F),
-        i32x4::new([F, T, F, F])
-    );
-    assert_mask_query!(all_2x4, any_2x4, [i32x4::splat(T); 2], [i32x4::splat(F); 2], [
+    assert_mask_query!(1, 4, i32x4::splat(T), i32x4::splat(F), i32x4::new([F, T, F, F]));
+    assert_mask_query!(2, 4, [i32x4::splat(T); 2], [i32x4::splat(F); 2], [
         i32x4::new([F, F, T, F]),
         i32x4::splat(F)
     ]);
-    assert_mask_query!(
-        all_3x4,
-        any_3x4,
-        [i32x4::new([T, T, T, F]); 4],
-        [i32x4::new([F, F, F, T]); 4],
-        [i32x4::splat(F), i32x4::splat(F), i32x4::new([F, T, F, F]), i32x4::splat(F),]
-    );
-    assert_mask_query!(all_4x4, any_4x4, [i32x4::splat(T); 4], [i32x4::splat(F); 4], [
+    assert_mask_query!(3, 4, [i32x4::new([T, T, T, F]); 4], [i32x4::new([F, F, F, T]); 4], [
+        i32x4::splat(F),
+        i32x4::splat(F),
+        i32x4::new([F, T, F, F]),
+        i32x4::splat(F),
+    ]);
+    assert_mask_query!(4, 4, [i32x4::splat(T); 4], [i32x4::splat(F); 4], [
         i32x4::splat(F),
         i32x4::splat(F),
         i32x4::splat(F),
