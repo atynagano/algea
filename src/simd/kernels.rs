@@ -10,123 +10,6 @@ pub(crate) mod mask {
     };
     use wide::i32x4;
 
-    #[inline(always)]
-    pub(crate) fn any_1x1(a: MaskStorage<i32>) -> bool { a.into_inner() < 0 }
-    pub(crate) use any_1x1 as all_1x1;
-    #[inline(always)]
-    pub(crate) fn any_2x1(a: MaskStorage<compute_i32x2>) -> bool {
-        cfg_select! {
-            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
-                core::arch::aarch64::vminv_s32(a.into_inner().into()) < 0
-            },
-            _ => a.into_inner().to_bitmask() & 0b0011 != 0,
-        }
-    }
-    #[inline(always)]
-    pub(crate) fn all_2x1(a: MaskStorage<compute_i32x2>) -> bool {
-        cfg_select! {
-            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
-                core::arch::aarch64::vmaxv_s32(a.into_inner().into()) < 0
-            },
-            _ => a.into_inner().to_bitmask() & 0b0011 == 0b0011,
-        }
-    }
-    #[inline(always)]
-    pub(crate) fn any_3x1(a: MaskStorage<i32x4>) -> bool {
-        cfg_select! {
-            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
-                use core::arch::aarch64::*;
-                let clear_padding_lane: int32x4_t = core::mem::transmute([-1, -1, -1, 0i32]);
-                let masked = vandq_s32(a.into_inner().into(), clear_padding_lane);
-                vminvq_s32(masked) < 0
-            },
-            _ => a.into_inner().to_bitmask() & 0b0111 != 0,
-        }
-    }
-    #[inline(always)]
-    pub(crate) fn all_3x1(a: MaskStorage<i32x4>) -> bool {
-        cfg_select! {
-            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
-                use core::arch::aarch64::*;
-                let set_padding_lane: int32x4_t = core::mem::transmute([0, 0, 0, -1i32]);
-                let masked = vorrq_s32(a.into_inner().into(), set_padding_lane);
-                vmaxvq_s32(masked) < 0
-            },
-            _ => a.into_inner().to_bitmask() & 0b0111 == 0b0111,
-        }
-    }
-    #[inline(always)]
-    pub(crate) fn any_4x1(a: MaskStorage<i32x4>) -> bool { a.into_inner().any() }
-    #[inline(always)]
-    pub(crate) fn all_4x1(a: MaskStorage<i32x4>) -> bool { a.into_inner().all() }
-
-    pub(crate) use all_2x1 as all_1x2;
-    pub(crate) use all_3x1 as all_1x3;
-    pub(crate) use all_4x1 as all_1x4;
-    pub(crate) use all_4x1 as all_2x2;
-    pub(crate) use any_2x1 as any_1x2;
-    pub(crate) use any_3x1 as any_1x3;
-    pub(crate) use any_4x1 as any_1x4;
-    pub(crate) use any_4x1 as any_2x2;
-
-    macro_rules! reduce_chunks {
-        ($any:ident, $all:ident, $lane_any:ident, $lane_all:ident, 2) => {
-            #[inline(always)]
-            pub(crate) fn $any(a: MaskStorage<[i32x4; 2]>) -> bool {
-                let a = a.unpack();
-                $lane_any(a[0]) || $lane_any(a[1])
-            }
-            #[inline(always)]
-            pub(crate) fn $all(a: MaskStorage<[i32x4; 2]>) -> bool {
-                let a = a.unpack();
-                $lane_all(a[0]) && $lane_all(a[1])
-            }
-        };
-        ($any:ident, $all:ident, $lane_any:ident, $lane_all:ident, 3) => {
-            #[inline(always)]
-            pub(crate) fn $any(a: MaskStorage<[i32x4; 3]>) -> bool {
-                let a = a.unpack();
-                $lane_any(a[0]) || $lane_any(a[1]) || $lane_any(a[2])
-            }
-            #[inline(always)]
-            pub(crate) fn $all(a: MaskStorage<[i32x4; 3]>) -> bool {
-                let a = a.unpack();
-                $lane_all(a[0]) && $lane_all(a[1]) && $lane_all(a[2])
-            }
-        };
-        ($any:ident, $all:ident, $lane_any:ident, $lane_all:ident, 4) => {
-            #[inline(always)]
-            pub(crate) fn $any(a: MaskStorage<[i32x4; 4]>) -> bool {
-                let a = a.unpack();
-                $lane_any(a[0]) || $lane_any(a[1]) || $lane_any(a[2]) || $lane_any(a[3])
-            }
-            #[inline(always)]
-            pub(crate) fn $all(a: MaskStorage<[i32x4; 4]>) -> bool {
-                let a = a.unpack();
-                $lane_all(a[0]) && $lane_all(a[1]) && $lane_all(a[2]) && $lane_all(a[3])
-            }
-        };
-    }
-
-    reduce_chunks!(any_3x2, all_3x2, any_3x1, all_3x1, 2);
-    reduce_chunks!(any_4x2, all_4x2, any_4x1, all_4x1, 2);
-    reduce_chunks!(any_3x3, all_3x3, any_3x1, all_3x1, 3);
-    reduce_chunks!(any_4x3, all_4x3, any_4x1, all_4x1, 3);
-    reduce_chunks!(any_2x4, all_2x4, any_4x1, all_4x1, 2);
-    reduce_chunks!(any_3x4, all_3x4, any_3x1, all_3x1, 4);
-    reduce_chunks!(any_4x4, all_4x4, any_4x1, all_4x1, 4);
-
-    #[inline(always)]
-    pub(crate) fn any_2x3(a: MaskStorage<[i32x4; 2]>) -> bool {
-        let a = a.unpack();
-        any_4x1(a[0]) || any_2x1(a[1].xy())
-    }
-    #[inline(always)]
-    pub(crate) fn all_2x3(a: MaskStorage<[i32x4; 2]>) -> bool {
-        let a = a.unpack();
-        all_4x1(a[0]) && all_2x1(a[1].xy())
-    }
-
     #[allow(unused_imports)]
     #[cfg(target_arch = "x86_64")]
     use crate::arch::{x86_64::__m128i, *};
@@ -147,7 +30,7 @@ pub(crate) mod mask {
                 assert_ne!(N, 2);
                 let v: [i32; 4] = [array[0] as i32, array[1] as i32, array[2] as i32, array[3] as i32];
                 let v = vld1q_s32(v.as_ptr());
-                core::mem::transmute::<int32x4_t, i32x4>(vreinterpretq_s32_u32(vtstq_s32(v, v)))
+                vreinterpretq_s32_u32(vtstq_s32(v, v)).into()
             },
             _ => {{
                 use wide::u8x16;
@@ -169,6 +52,7 @@ pub(crate) mod mask {
             MaskStorage::new_unchecked(inner)
         }
     }
+
     #[inline(always)]
     fn from_array_1(array: [bool; 1]) -> MaskStorage<i32> { MaskStorage::new(array[0]) }
     #[inline(always)]
@@ -819,64 +703,6 @@ pub(crate) mod index {
 pub(crate) mod index_mut {
     use crate::utils::ArithPrimitive;
     super::index::impl_index!(get_mut, as_mut_array_, mut);
-}
-
-pub(crate) mod as_array_first {
-    use crate::utils::ArithPrimitive;
-
-    #[inline(always)]
-    pub(crate) fn _2x1<T, Tx4: ArithPrimitive<Scalar = T>, const D: usize>(a: &Tx4) -> &[T; D] {
-        assert!(D <= 4);
-        a.as_array_()[..D].try_into().unwrap()
-    }
-    #[inline(always)]
-    pub(crate) fn _2x1_mut<T, Tx4: ArithPrimitive<Scalar = T>, const D: usize>(
-        a: &mut Tx4,
-    ) -> &mut [T; D] {
-        assert!(D <= 4);
-        (&mut a.as_mut_array_()[..D]).try_into().unwrap()
-    }
-    #[inline(always)]
-    pub(crate) fn _2x3<T, Tx4: ArithPrimitive<Scalar = T>, const N: usize, const D: usize>(
-        a: &[Tx4; N],
-    ) -> &[T; D] {
-        assert!(D <= 4);
-        a[0].as_array_()[..D].try_into().unwrap()
-    }
-    #[inline(always)]
-    pub(crate) fn _2x3_mut<T, Tx4: ArithPrimitive<Scalar = T>, const N: usize, const D: usize>(
-        a: &mut [Tx4; N],
-    ) -> &mut [T; D] {
-        assert!(D <= 4);
-        (&mut a[0].as_mut_array_()[..D]).try_into().unwrap()
-    }
-    pub(crate) use _2x1 as _3x1;
-    pub(crate) use _2x1 as _4x1;
-    pub(crate) use _2x1 as _1x2;
-    pub(crate) use _2x1 as _2x2;
-    pub(crate) use _2x1 as _1x3;
-    pub(crate) use _2x1 as _1x4;
-    pub(crate) use _2x1_mut as _3x1_mut;
-    pub(crate) use _2x1_mut as _4x1_mut;
-    pub(crate) use _2x1_mut as _1x2_mut;
-    pub(crate) use _2x1_mut as _2x2_mut;
-    pub(crate) use _2x1_mut as _1x3_mut;
-    pub(crate) use _2x1_mut as _1x4_mut;
-    pub(crate) use _2x3 as _3x2;
-    pub(crate) use _2x3 as _4x2;
-    pub(crate) use _2x3 as _3x3;
-    pub(crate) use _2x3 as _4x3;
-    pub(crate) use _2x3 as _2x4;
-    pub(crate) use _2x3 as _3x4;
-    pub(crate) use _2x3 as _4x4;
-    pub(crate) use _2x3_mut as _3x2_mut;
-    pub(crate) use _2x3_mut as _4x2_mut;
-    pub(crate) use _2x3_mut as _3x3_mut;
-    pub(crate) use _2x3_mut as _4x3_mut;
-    pub(crate) use _2x3_mut as _2x4_mut;
-    pub(crate) use _2x3_mut as _3x4_mut;
-    pub(crate) use _2x3_mut as _4x4_mut;
-    pub(crate) use core::array::{from_mut as _1x1_mut, from_ref as _1x1};
 }
 
 pub(crate) mod to_array {

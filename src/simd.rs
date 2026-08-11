@@ -1,4 +1,4 @@
-pub(crate) mod kernels;
+﻿pub(crate) mod kernels;
 pub(crate) mod utils;
 
 use crate::{
@@ -287,6 +287,60 @@ unsafe impl MaskPrimitive for i32x4 {
     fn select(self, true_values: Self, false_values: Self) -> Self {
         i32x4::select(self, true_values, false_values)
     }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 2..=4);
+        if N == 4 {
+            self.any()
+        } else if N == 3 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                    use core::arch::aarch64::*;
+                    let clear_padding_lane: int32x4_t = core::mem::transmute([-1, -1, -1, 0i32]);
+                    let masked = vandq_s32(self.into(), clear_padding_lane);
+                    vminvq_s32(masked) < 0
+                },
+                _ => self.to_bitmask() & 0b0111 != 0,
+            }
+        } else if N == 2 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => {
+                    use utils::Simd4Ext;
+                    self.xy().any::<2>()
+                }
+                _ => self.to_bitmask() & 0b0011 != 0,
+            }
+        } else {
+            unreachable!()
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 2..=4);
+        if N == 4 {
+            self.all()
+        } else if N == 3 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                    use core::arch::aarch64::*;
+                    let set_padding_lane: int32x4_t = core::mem::transmute([0, 0, 0, -1i32]);
+                    let masked = vorrq_s32(self.into(), set_padding_lane);
+                    vmaxvq_s32(masked) < 0
+                },
+                _ => self.to_bitmask() & 0b0111 == 0b0111,
+            }
+        } else if N == 2 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => {
+                    use utils::Simd4Ext;
+                    self.xy().all::<2>()
+                }
+                _ => self.to_bitmask() & 0b0011 == 0b0011,
+            }
+        } else {
+            unreachable!()
+        }
+    }
 }
 impl MaskStorage<i32x4> {
     #[inline(always)]
@@ -343,6 +397,16 @@ macro_rules! unpack_array {
 
     ([$value:tt; 1]) => { $value };
     ([$value:tt; $len:literal]) => { [$value; $len] };
+
+    (ref: $value:expr; 1) => { core::array::from_ref($value) };
+    (ref: $value:expr; $_len:literal) => { $value };
+    (mut: $value:expr; 1) => { core::array::from_mut($value) };
+    (mut: $value:expr; $_len:literal) => { $value };
+}
+
+macro_rules! reduce_array {
+    (&&: [$($value:expr),+]) => { $($value)&&+ };
+    (||: [$($value:expr),+]) => { $($value)||+ };
 }
 
 macro_rules! impl_layout {
@@ -350,10 +414,45 @@ macro_rules! impl_layout {
         size: [$m:tt, $n:tt],
         self: $self_ty:ty,
         storage: $primitive:tt x $len:tt,
+        // How many of each physical `$primitive` unit's lanes hold real elements versus
+        // padding. Not yet consumed here; `map2`/`any`/`all`/etc. still rely on `$len` alone
+        // via `unpack_array!`'s arity dispatch.
+        valid: [$($valid:tt),+ $(,)?],
         feature: [$float:tt, $int:tt, $signed:tt, $bits:tt],
     ) => {
         $($item:item)*
     }) => {
+        if_! { $signed $int == signed int {
+            paste::paste! {
+                #[inline(always)]
+                fn [<mask $bits x $m x $n _all>](
+                    mask: MaskStorage<<<$self_ty as private::SealedElement<$m, $n>>::Storage as Load>::Output>
+                ) -> bool {
+                    let mask = mask.unpack();
+                    let mask = unpack_array!(ref: &mask; $len);
+                    let mut _index = 0;
+                    reduce_array!(&&: [$({
+                        let all = mask[_index].all::<$valid>();
+                        _index += 1;
+                        all
+                    }),+])
+                }
+                #[inline(always)]
+                fn [<mask $bits x $m x $n _any>](
+                    mask: MaskStorage<<<$self_ty as private::SealedElement<$m, $n>>::Storage as Load>::Output>
+                ) -> bool {
+                    let mask = mask.unpack();
+                    let mask = unpack_array!(ref: &mask; $len);
+                    let mut _index = 0;
+                    reduce_array!(||: [$({
+                        let any = mask[_index].any::<$valid>();
+                        _index += 1;
+                        any
+                    }),+])
+                }
+            }
+        }}
+
         impl private::SealedElement<$m, $n> for $self_ty {
             type Storage = unpack_array!([$primitive; $len]);
 
@@ -361,25 +460,27 @@ macro_rules! impl_layout {
             const ONE: Self::Storage = unpack_array!([($primitive::ONE_); $len]);
 
             #[inline(always)]
-            fn map2(a: Self::Storage, b: Self::Storage, mut f: impl FnMut(Self, Self) -> Self) -> Self::Storage {
-                // TODO(codegen-optimization): Avoid zeroing padding through `to_array` and
-                // `from_array` only if these scalar fallback operations become performance-relevant.
-                let a = <Self as private::SealedElement<$m, $n>>::to_array(a);
-                let b = <Self as private::SealedElement<$m, $n>>::to_array(b);
-                let result = core::array::from_fn(
-                    #[inline(always)]
-                    |j| core::array::from_fn(#[inline(always)] |i| f(a[j][i], b[j][i]))
-                );
-                <Self as private::SealedElement<$m, $n>>::from_array(result)
+            fn map2(mut a: Self::Storage, b: Self::Storage, mut f: impl FnMut(Self, Self) -> Self) -> Self::Storage {
+                let array_a = unpack_array!(mut: &mut a; $len);
+                let array_b = unpack_array!(ref: &b; $len);
+                let valid = [$($valid),+];
+                for i in 0..$len {
+                    let col_a = array_a[i].as_mut_array_();
+                    let col_b = array_b[i].as_array_();
+                    for j in 0..valid[i] {
+                        col_a[j] = f(col_a[j], col_b[j]);
+                    }
+                }
+                a
             }
             #[inline(always)]
             fn index(a: &Self::Storage, index: (usize, usize)) -> Option<&Self> { paste::paste!(kernels::index:: [<_ $m x $n>])(a, index) }
             #[inline(always)]
             fn index_mut(a: &mut Self::Storage, index: (usize, usize)) -> Option<&mut Self> { paste::paste!(kernels::index_mut:: [<_ $m x $n>])(a, index) }
             #[inline(always)]
-            fn as_array_first(a: &Self::Storage) -> &[Self; $m] { paste::paste!(kernels::as_array_first:: [<_ $m x $n>])(a) }
+            fn as_array_first(a: &Self::Storage) -> &[Self; $m] { unpack_array!(ref: a; $len)[0].as_array_().first_chunk().unwrap() }
             #[inline(always)]
-            fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { paste::paste!(kernels::as_array_first:: [<_ $m x $n _mut>])(a) }
+            fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { unpack_array!(mut: a; $len)[0].as_mut_array_().first_chunk_mut().unwrap() }
             #[inline(always)]
             fn to_array(a: Self::Storage) -> [[Self; $m]; $n] { paste::paste!(kernels::to_array:: [<_ $m x $n>])(a) }
             #[inline(always)]
@@ -475,7 +576,7 @@ macro_rules! impl_layout {
                 let min = min.load();
                 let max = max.load();
                 let valid = unpack_array!([(min, max) ArithPrimitive::le_; $len]);
-                let valid_all = paste::paste!(kernels::mask::[<all_ $m x $n>])(valid.into());
+                let valid_all = paste::paste!([<mask $bits x $m x $n _all>])(valid.into());
                 assert!(
                     valid_all,
                     "each element in `min` must be less than or equal to the corresponding element in `max`. \
@@ -488,12 +589,12 @@ macro_rules! impl_layout {
             #[inline(always)]
             fn eq(a: Self::Storage, b: Self::Storage) -> bool {
                 let mask = unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::eq_; $len]);
-                paste::paste!(kernels::mask::[<all_ $m x $n>])(mask.into())
+                paste::paste!([<mask $bits x $m x $n _all>])(mask.into())
             }
             #[inline(always)]
             fn ne(a: Self::Storage, b: Self::Storage) -> bool {
                 let mask = unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ne_; $len]);
-                paste::paste!(kernels::mask::[<any_ $m x $n>])(mask.into())
+                paste::paste!([<mask $bits x $m x $n _any>])(mask.into())
             }
             #[inline(always)]
             fn transpose(
@@ -517,11 +618,11 @@ macro_rules! impl_layout {
             if_! { $signed $int == signed int {
                 #[inline(always)]
                 fn all(mask: MaskStorage<Self::Storage>) -> bool {
-                    paste::paste!(kernels::mask::[<all_ $m x $n>])(mask.load())
+                    paste::paste!([<mask $bits x $m x $n _all>])(mask.load())
                 }
                 #[inline(always)]
                 fn any(mask: MaskStorage<Self::Storage>) -> bool {
-                    paste::paste!(kernels::mask::[<any_ $m x $n>])(mask.load())
+                    paste::paste!([<mask $bits x $m x $n _any>])(mask.load())
                 }
                 #[inline(always)]
                 fn canonical_not(a: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> {
@@ -766,11 +867,12 @@ macro_rules! impl_layout {
 }
 
 macro_rules! impl_layouts_f32 {
-    ($(($m:tt, $n:tt; $primitive:tt x $len:tt) => {$($item:item)*}),* $(,)?) => {
+    ($(($m:tt, $n:tt; $primitive:tt x $len:tt valid [$($valid:tt),+ $(,)?]) => {$($item:item)*}),* $(,)?) => {
         $(impl_layout!((
             size: [$m, $n],
             self: f32,
             storage: $primitive x $len,
+            valid: [$($valid),+],
             feature: [float, not_int, signed, 32],
         ) => {
             #[inline(always)]
@@ -781,11 +883,12 @@ macro_rules! impl_layouts_f32 {
 }
 
 macro_rules! impl_layouts_i32 {
-    ($(($m:tt, $n:tt; $primitive:tt x $len:tt) => {$($item:item)*}),* $(,)?) => {
+    ($(($m:tt, $n:tt; $primitive:tt x $len:tt valid [$($valid:tt),+ $(,)?]) => {$($item:item)*}),* $(,)?) => {
         $(impl_layout!((
             size: [$m, $n],
             self: i32,
             storage: $primitive x $len,
+            valid: [$($valid),+],
             feature: [not_float, int, signed, 32],
         ) => {
             #[inline(always)]
@@ -816,11 +919,12 @@ macro_rules! impl_layouts_i32 {
 }
 
 macro_rules! impl_layouts_u32 {
-    ($(($m:tt, $n:tt; $primitive:tt x $len:tt) => {$($item:item)*}),* $(,)?) => {
+    ($(($m:tt, $n:tt; $primitive:tt x $len:tt valid [$($valid:tt),+ $(,)?]) => {$($item:item)*}),* $(,)?) => {
         $(impl_layout!((
             size: [$m, $n],
             self: u32,
             storage: $primitive x $len,
+            valid: [$($valid),+],
             feature: [not_float, int, unsigned, 32],
         ) => {
             #[inline(always)]
@@ -831,7 +935,7 @@ macro_rules! impl_layouts_u32 {
 }
 
 impl_layouts_f32! {
-    (1, 1; f32 x 1) => {
+    (1, 1; f32 x 1 valid [1]) => {
         const IDENTITY: Self::Storage = 1.;
         #[inline(always)]
         fn sum(a: Self::Storage) -> Self { a }
@@ -846,7 +950,7 @@ impl_layouts_f32! {
         #[inline(always)]
         fn determinant(a: Self::Storage) -> Self { a }
     },
-    (2, 1; f32x2 x 1) => {
+    (2, 1; f32x2 x 1 valid [2]) => {
         const POS_X: Self::Storage = f32x2::new([1., 0.]);
         const POS_Y: Self::Storage = f32x2::new([0., 1.]);
         const NEG_X: Self::Storage = f32x2::new([-1., 0.]);
@@ -861,7 +965,7 @@ impl_layouts_f32! {
             x + y
         }
     },
-    (3, 1; f32x4 x 1) => {
+    (3, 1; f32x4 x 1 valid [3]) => {
         const POS_X: Self::Storage = f32x4::new([1., 0., 0., 0.]);
         const POS_Y: Self::Storage = f32x4::new([0., 1., 0., 0.]);
         const POS_Z: Self::Storage = f32x4::new([0., 0., 1., 0.]);
@@ -880,7 +984,7 @@ impl_layouts_f32! {
             kernels::cross::f32x4_3d(a, b)
         }
     },
-    (4, 1; f32x4 x 1) => {
+    (4, 1; f32x4 x 1 valid [4]) => {
         const POS_X: Self::Storage = f32x4::new([1., 0., 0., 0.]);
         const POS_Y: Self::Storage = f32x4::new([0., 1., 0., 0.]);
         const POS_Z: Self::Storage = f32x4::new([0., 0., 1., 0.]);
@@ -897,8 +1001,8 @@ impl_layouts_f32! {
             (x + z) + (y + w)
         }
     },
-    (1, 2; f32x2 x 1) => {},
-    (2, 2; f32x4 x 1) => {
+    (1, 2; f32x2 x 1 valid [2]) => {},
+    (2, 2; f32x4 x 1 valid [4]) => {
         const IDENTITY: Self::Storage = f32x4::new([1., 0., 0., 1.]);
         #[inline(always)]
         fn diagonal(
@@ -911,11 +1015,11 @@ impl_layouts_f32! {
         #[inline(always)]
         fn determinant(a: Self::Storage) -> Self { kernels::determinant::f32_2x2(a) }
     },
-    (3, 2; f32x4 x 2) => {},
-    (4, 2; f32x4 x 2) => {},
-    (1, 3; f32x4 x 1) => {},
-    (2, 3; f32x4 x 2) => {},
-    (3, 3; f32x4 x 3) => {
+    (3, 2; f32x4 x 2 valid [3, 3]) => {},
+    (4, 2; f32x4 x 2 valid [4, 4]) => {},
+    (1, 3; f32x4 x 1 valid [3]) => {},
+    (2, 3; f32x4 x 2 valid [4, 2]) => {},
+    (3, 3; f32x4 x 3 valid [3, 3, 3]) => {
         const IDENTITY: Self::Storage = [
             f32x4::new([1., 0., 0., 0.]),
             f32x4::new([0., 1., 0., 0.]),
@@ -932,11 +1036,11 @@ impl_layouts_f32! {
         #[inline(always)]
         fn determinant(a: Self::Storage) -> Self { kernels::determinant::f32_3x3(a) }
     },
-    (4, 3; f32x4 x 3) => {},
-    (1, 4; f32x4 x 1) => {},
-    (2, 4; f32x4 x 2) => {},
-    (3, 4; f32x4 x 4) => {},
-    (4, 4; f32x4 x 4) => {
+    (4, 3; f32x4 x 3 valid [4, 4, 4]) => {},
+    (1, 4; f32x4 x 1 valid [4]) => {},
+    (2, 4; f32x4 x 2 valid [4, 4]) => {},
+    (3, 4; f32x4 x 4 valid [3, 3, 3, 3]) => {},
+    (4, 4; f32x4 x 4 valid [4, 4, 4, 4]) => {
         const IDENTITY: Self::Storage = [
             f32x4::new([1., 0., 0., 0.]),
             f32x4::new([0., 1., 0., 0.]),
@@ -957,7 +1061,7 @@ impl_layouts_f32! {
 }
 
 impl_layouts_i32! {
-    (1, 1; i32 x 1) => {
+    (1, 1; i32 x 1 valid [1]) => {
         const IDENTITY: Self::Storage = 1;
         #[inline(always)]
         fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
@@ -970,7 +1074,7 @@ impl_layouts_i32! {
             a
         }
     },
-    (2, 1; i32x2 x 1) => {
+    (2, 1; i32x2 x 1 valid [2]) => {
         const POS_X: Self::Storage = i32x2::new([1, 0]);
         const POS_Y: Self::Storage = i32x2::new([0, 1]);
         const NEG_X: Self::Storage = i32x2::new([-1, 0]);
@@ -980,7 +1084,7 @@ impl_layouts_i32! {
             u64::from(mask.into_inner().load().to_bitmask() & 0b11)
         }
     },
-    (3, 1; i32x4 x 1) => {
+    (3, 1; i32x4 x 1 valid [3]) => {
         const POS_X: Self::Storage = i32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = i32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = i32x4::new([0, 0, 1, 0]);
@@ -992,7 +1096,7 @@ impl_layouts_i32! {
             u64::from(mask.into_inner().to_bitmask() & 0b111)
         }
     },
-    (4, 1; i32x4 x 1) => {
+    (4, 1; i32x4 x 1 valid [4]) => {
         const POS_X: Self::Storage = i32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = i32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = i32x4::new([0, 0, 1, 0]);
@@ -1006,8 +1110,8 @@ impl_layouts_i32! {
             u64::from(mask.into_inner().to_bitmask())
         }
     },
-    (1, 2; i32x2 x 1) => {},
-    (2, 2; i32x4 x 1) => {
+    (1, 2; i32x2 x 1 valid [2]) => {},
+    (2, 2; i32x4 x 1 valid [4]) => {
         const IDENTITY: Self::Storage = i32x4::new([1, 0, 0, 1]);
         #[inline(always)]
         fn diagonal(
@@ -1016,11 +1120,11 @@ impl_layouts_i32! {
             kernels::diagonal::diagonal2x2(a).store()
         }
     },
-    (3, 2; i32x4 x 2) => {},
-    (4, 2; i32x4 x 2) => {},
-    (1, 3; i32x4 x 1) => {},
-    (2, 3; i32x4 x 2) => {},
-    (3, 3; i32x4 x 3) => {
+    (3, 2; i32x4 x 2 valid [3, 3]) => {},
+    (4, 2; i32x4 x 2 valid [4, 4]) => {},
+    (1, 3; i32x4 x 1 valid [3]) => {},
+    (2, 3; i32x4 x 2 valid [4, 2]) => {},
+    (3, 3; i32x4 x 3 valid [3, 3, 3]) => {
         const IDENTITY: Self::Storage = [
             i32x4::new([1, 0, 0, 0]),
             i32x4::new([0, 1, 0, 0]),
@@ -1033,11 +1137,11 @@ impl_layouts_i32! {
             kernels::diagonal::diagonal3x3(a)
         }
     },
-    (4, 3; i32x4 x 3) => {},
-    (1, 4; i32x4 x 1) => {},
-    (2, 4; i32x4 x 2) => {},
-    (3, 4; i32x4 x 4) => {},
-    (4, 4; i32x4 x 4) => {
+    (4, 3; i32x4 x 3 valid [4, 4, 4]) => {},
+    (1, 4; i32x4 x 1 valid [4]) => {},
+    (2, 4; i32x4 x 2 valid [4, 4]) => {},
+    (3, 4; i32x4 x 4 valid [3, 3, 3, 3]) => {},
+    (4, 4; i32x4 x 4 valid [4, 4, 4, 4]) => {
         const IDENTITY: Self::Storage = [
             i32x4::new([1, 0, 0, 0]),
             i32x4::new([0, 1, 0, 0]),
@@ -1054,7 +1158,7 @@ impl_layouts_i32! {
 }
 
 impl_layouts_u32! {
-    (1, 1; u32 x 1) => {
+    (1, 1; u32 x 1 valid [1]) => {
         const IDENTITY: Self::Storage = 1;
         #[inline(always)]
         fn diagonal(
@@ -1063,23 +1167,23 @@ impl_layouts_u32! {
             a
         }
     },
-    (2, 1; u32x2 x 1) => {
+    (2, 1; u32x2 x 1 valid [2]) => {
         const POS_X: Self::Storage = u32x2::new([1, 0]);
         const POS_Y: Self::Storage = u32x2::new([0, 1]);
     },
-    (3, 1; u32x4 x 1) => {
+    (3, 1; u32x4 x 1 valid [3]) => {
         const POS_X: Self::Storage = u32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = u32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = u32x4::new([0, 0, 1, 0]);
     },
-    (4, 1; u32x4 x 1) => {
+    (4, 1; u32x4 x 1 valid [4]) => {
         const POS_X: Self::Storage = u32x4::new([1, 0, 0, 0]);
         const POS_Y: Self::Storage = u32x4::new([0, 1, 0, 0]);
         const POS_Z: Self::Storage = u32x4::new([0, 0, 1, 0]);
         const POS_W: Self::Storage = u32x4::new([0, 0, 0, 1]);
     },
-    (1, 2; u32x2 x 1) => {},
-    (2, 2; u32x4 x 1) => {
+    (1, 2; u32x2 x 1 valid [2]) => {},
+    (2, 2; u32x4 x 1 valid [4]) => {
         const IDENTITY: Self::Storage = u32x4::new([1, 0, 0, 1]);
         #[inline(always)]
         fn diagonal(
@@ -1088,11 +1192,11 @@ impl_layouts_u32! {
             kernels::diagonal::diagonal2x2(a).store()
         }
     },
-    (3, 2; u32x4 x 2) => {},
-    (4, 2; u32x4 x 2) => {},
-    (1, 3; u32x4 x 1) => {},
-    (2, 3; u32x4 x 2) => {},
-    (3, 3; u32x4 x 3) => {
+    (3, 2; u32x4 x 2 valid [3, 3]) => {},
+    (4, 2; u32x4 x 2 valid [4, 4]) => {},
+    (1, 3; u32x4 x 1 valid [3]) => {},
+    (2, 3; u32x4 x 2 valid [4, 2]) => {},
+    (3, 3; u32x4 x 3 valid [3, 3, 3]) => {
         const IDENTITY: Self::Storage = [
             u32x4::new([1, 0, 0, 0]),
             u32x4::new([0, 1, 0, 0]),
@@ -1105,11 +1209,11 @@ impl_layouts_u32! {
             kernels::diagonal::diagonal3x3(a)
         }
     },
-    (4, 3; u32x4 x 3) => {},
-    (1, 4; u32x4 x 1) => {},
-    (2, 4; u32x4 x 2) => {},
-    (3, 4; u32x4 x 4) => {},
-    (4, 4; u32x4 x 4) => {
+    (4, 3; u32x4 x 3 valid [4, 4, 4]) => {},
+    (1, 4; u32x4 x 1 valid [4]) => {},
+    (2, 4; u32x4 x 2 valid [4, 4]) => {},
+    (3, 4; u32x4 x 4 valid [3, 3, 3, 3]) => {},
+    (4, 4; u32x4 x 4 valid [4, 4, 4, 4]) => {
         const IDENTITY: Self::Storage = [
             u32x4::new([1, 0, 0, 0]),
             u32x4::new([0, 1, 0, 0]),
