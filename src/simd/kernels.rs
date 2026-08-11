@@ -15,19 +15,45 @@ pub(crate) mod mask {
     pub(crate) use any_1x1 as all_1x1;
     #[inline(always)]
     pub(crate) fn any_2x1(a: MaskStorage<compute_i32x2>) -> bool {
-        a.into_inner().to_bitmask() & 0b0011 != 0
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                core::arch::aarch64::vminv_s32(a.into_inner().into()) < 0
+            },
+            _ => a.into_inner().to_bitmask() & 0b0011 != 0,
+        }
     }
     #[inline(always)]
     pub(crate) fn all_2x1(a: MaskStorage<compute_i32x2>) -> bool {
-        a.into_inner().to_bitmask() & 0b0011 == 0b0011
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                core::arch::aarch64::vmaxv_s32(a.into_inner().into()) < 0
+            },
+            _ => a.into_inner().to_bitmask() & 0b0011 == 0b0011,
+        }
     }
     #[inline(always)]
     pub(crate) fn any_3x1(a: MaskStorage<i32x4>) -> bool {
-        a.into_inner().to_bitmask() & 0b0111 != 0
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                let clear_padding_lane: int32x4_t = core::mem::transmute([-1, -1, -1, 0i32]);
+                let masked = vandq_s32(a.into_inner().into(), clear_padding_lane);
+                vminvq_s32(masked) < 0
+            },
+            _ => a.into_inner().to_bitmask() & 0b0111 != 0,
+        }
     }
     #[inline(always)]
     pub(crate) fn all_3x1(a: MaskStorage<i32x4>) -> bool {
-        a.into_inner().to_bitmask() & 0b0111 == 0b0111
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                let set_padding_lane: int32x4_t = core::mem::transmute([0, 0, 0, -1i32]);
+                let masked = vorrq_s32(a.into_inner().into(), set_padding_lane);
+                vmaxvq_s32(masked) < 0
+            },
+            _ => a.into_inner().to_bitmask() & 0b0111 == 0b0111,
+        }
     }
     #[inline(always)]
     pub(crate) fn any_4x1(a: MaskStorage<i32x4>) -> bool { a.into_inner().any() }
