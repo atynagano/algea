@@ -277,17 +277,17 @@ pub(crate) mod mask {
 }
 
 pub(crate) mod diagonal {
-    use crate::simd::utils::{Swizzle, swizzle};
+    use crate::simd::utils::{ComputeVector4, swizzle};
 
     #[inline(always)]
-    pub(crate) fn diagonal2x2<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4::Vector2 { swizzle!(a, [0, 3]) }
+    pub(crate) fn diagonal2x2<Tx4: ComputeVector4>(a: Tx4) -> Tx4::Vector2 { swizzle!(a, [0, 3]) }
     #[inline(always)]
-    pub(crate) fn diagonal3x3<Tx4: Swizzle + Copy>(a: [Tx4; 3]) -> Tx4 {
+    pub(crate) fn diagonal3x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> Tx4 {
         let temp = swizzle!(a[0], a[1], [0, 4, 1, 5]);
         swizzle!(temp, a[2], [0, 3, 6, _])
     }
     #[inline(always)]
-    pub(crate) fn diagonal4x4<Tx4: Swizzle + Copy>(a: [Tx4; 4]) -> Tx4 {
+    pub(crate) fn diagonal4x4<Tx4: ComputeVector4>(a: [Tx4; 4]) -> Tx4 {
         let xy = swizzle!(a[0], a[1], [0, 4, 1, 5]);
         let zw = swizzle!(a[2], a[3], [2, 6, 3, 7]);
         swizzle!(xy, zw, [0, 3, 4, 7])
@@ -295,7 +295,7 @@ pub(crate) mod diagonal {
 }
 
 pub(crate) mod transpose {
-    use crate::simd::utils::{swizzle, swizzle_impl::Swizzle};
+    use crate::simd::utils::{ComputeVector4, swizzle};
 
     #[inline(always)]
     pub(crate) fn transpose1x1<T>(a: T) -> T { a }
@@ -308,20 +308,20 @@ pub(crate) mod transpose {
     #[inline(always)]
     pub(crate) fn transpose1x2<Tx2>(a: Tx2) -> Tx2 { a }
     #[inline(always)]
-    pub(crate) fn transpose2x2<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4 { swizzle!(a, [0, 2, 1, 3]) }
+    pub(crate) fn transpose2x2<Tx4: ComputeVector4>(a: Tx4) -> Tx4 { swizzle!(a, [0, 2, 1, 3]) }
     #[inline(always)]
-    pub(crate) fn transpose3x2<Tx4: Swizzle + Copy>(a: [Tx4; 2]) -> [Tx4; 2] { transpose4x2(a) }
+    pub(crate) fn transpose3x2<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] { transpose4x2(a) }
     #[inline(always)]
-    pub(crate) fn transpose4x2<Tx4: Swizzle + Copy>(a: [Tx4; 2]) -> [Tx4; 2] {
+    pub(crate) fn transpose4x2<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] {
         [swizzle!(a[0], a[1], [0, 4, 1, 5]), swizzle!(a[0], a[1], [2, 6, 3, 7])]
     }
     #[inline(always)]
-    pub(crate) fn transpose1x3<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4 { a }
+    pub(crate) fn transpose1x3<Tx4>(a: Tx4) -> Tx4 { a }
     #[inline(always)]
-    pub(crate) fn transpose2x3<Tx4: Swizzle + Copy>(a: [Tx4; 2]) -> [Tx4; 2] { transpose2x4(a) }
+    pub(crate) fn transpose2x3<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] { transpose2x4(a) }
 
     #[inline(always)]
-    pub(crate) fn transpose3x3<Tx4: Swizzle + Copy>(a: [Tx4; 3]) -> [Tx4; 3] {
+    pub(crate) fn transpose3x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> [Tx4; 3] {
         let ab_lo = swizzle!(a[0], a[1], [0, 4, 1, 5]);
         let ab_hi = swizzle!(a[0], a[1], [2, 6, 3, 7]);
         [
@@ -331,7 +331,7 @@ pub(crate) mod transpose {
         ]
     }
     #[inline(always)]
-    pub(crate) fn transpose4x3<Tx4: Swizzle + Copy>(a: [Tx4; 3]) -> [Tx4; 4] {
+    pub(crate) fn transpose4x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> [Tx4; 4] {
         let ab_lo = swizzle!(a[0], a[1], [0, 4, 1, 5]);
         let ab_hi = swizzle!(a[0], a[1], [2, 6, 3, 7]);
         [
@@ -342,13 +342,13 @@ pub(crate) mod transpose {
         ]
     }
     #[inline(always)]
-    pub(crate) fn transpose1x4<Tx4: Swizzle + Copy>(a: Tx4) -> Tx4 { a }
+    pub(crate) fn transpose1x4<Tx4>(a: Tx4) -> Tx4 { a }
     #[inline(always)]
-    pub(crate) fn transpose2x4<Tx4: Swizzle + Copy>(a: [Tx4; 2]) -> [Tx4; 2] {
+    pub(crate) fn transpose2x4<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] {
         [swizzle!(a[0], a[1], [0, 2, 4, 6]), swizzle!(a[0], a[1], [1, 3, 5, 7])]
     }
     #[inline(always)]
-    pub(crate) fn transpose3x4<Tx4: Swizzle + Copy>(a: [Tx4; 4]) -> [Tx4; 3] {
+    pub(crate) fn transpose3x4<Tx4: ComputeVector4>(a: [Tx4; 4]) -> [Tx4; 3] {
         let ab_lo = swizzle!(a[0], a[1], [0, 4, 1, 5]);
         let ab_hi = swizzle!(a[0], a[1], [2, 6, 3, 7]);
         let cd_lo = swizzle!(a[2], a[3], [0, 4, 1, 5]);
@@ -360,7 +360,7 @@ pub(crate) mod transpose {
         ]
     }
     #[inline(always)]
-    pub(crate) fn transpose4x4<Tx4: Swizzle + Copy>(a: [Tx4; 4]) -> [Tx4; 4] {
+    pub(crate) fn transpose4x4<Tx4: ComputeVector4>(a: [Tx4; 4]) -> [Tx4; 4] {
         let [col0, col1, col2, col3] = a;
 
         let cols01_lo = swizzle!(col0, col1, [0, 4, 1, 5]);

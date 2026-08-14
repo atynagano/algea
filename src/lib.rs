@@ -30,7 +30,7 @@ cfg_select! {
         use non_simd::kernels;
     }
     any(
-        target_feature = "sse",
+        target_feature = "sse2",
         all(target_feature = "neon", target_arch = "aarch64"),
         target_feature = "simd128",
     ) => {

@@ -1,4 +1,5 @@
-﻿pub(crate) mod kernels;
+pub(crate) mod kernels;
+mod swizzle_x86;
 pub(crate) mod utils;
 
 use crate::{
