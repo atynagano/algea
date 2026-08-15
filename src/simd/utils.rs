@@ -28,169 +28,9 @@ macro_rules! impl_compute_vector {
 impl_compute_vector!([f32x2, f32x4]: [compute_f32x2, f32x4]);
 impl_compute_vector!([i32x2, i32x4]: [compute_i32x2, i32x4]);
 impl_compute_vector!([u32x2, u32x4]: [compute_u32x2, u32x4]);
-#[cfg(not(target_feature = "simd128"))]
 impl_compute_vector!([f64x2, f64x4]: [f64x2, f64x4]);
-#[cfg(not(target_feature = "simd128"))]
 impl_compute_vector!([i64x2, i64x4]: [i64x2, i64x4]);
-#[cfg(not(target_feature = "simd128"))]
 impl_compute_vector!([u64x2, u64x4]: [u64x2, u64x4]);
-
-#[cfg(target_feature = "simd128")]
-pub(crate) mod swizzle_impl {
-    use super::ComputeVector;
-    use wide::{f32x4, i32x4, u32x4};
-
-    pub(crate) trait SwizzleBase: ComputeVector {
-        fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> Self::Vector2;
-        fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-        ) -> Self::Vector4;
-        fn swizzle_concat2<const I0: usize, const I1: usize>(a: Self, b: Self) -> Self::Vector2;
-        fn swizzle_concat4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self::Vector4;
-    }
-
-    pub(crate) trait ComputeVector4:
-        SwizzleBase<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
-    {
-    }
-    pub(crate) trait ComputeVector2:
-        SwizzleBase<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
-    {
-    }
-    impl<T> ComputeVector4 for T where
-        T: SwizzleBase<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
-    {
-    }
-    impl<T> ComputeVector2 for T where
-        T: SwizzleBase<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
-    {
-    }
-
-    /// The single general two-input shuffle WebAssembly provides, so no per-pattern instruction
-    /// selection is needed. Every lane is four bytes wide whether the caller reads it as `f32`,
-    /// `i32`, or `u32`, so one `u32x4_shuffle` serves all three element types.
-    #[inline(always)]
-    fn shuffle<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-        a: f32x4,
-        b: f32x4,
-    ) -> f32x4 {
-        use core::arch::wasm32::{u32x4_shuffle, v128_load, v128_store};
-
-        let a = a.to_array();
-        let b = b.to_array();
-        // SAFETY: Both arrays contain exactly 16 initialized bytes.
-        // WebAssembly's v128 loads and stores permit unaligned addresses.
-        unsafe {
-            let a = v128_load(a.as_ptr().cast());
-            let b = v128_load(b.as_ptr().cast());
-            let shuffled = u32x4_shuffle::<I0, I1, I2, I3>(a, b);
-            let mut result = [0.; 4];
-            v128_store(result.as_mut_ptr().cast(), shuffled);
-            f32x4::new(result)
-        }
-    }
-
-    // The two-lane compute type is the four-lane type itself here, so a two-lane result is the
-    // four-lane shuffle with the requested pair repeated into the padding lanes.
-    macro_rules! impl_swizzle_base {
-        ($type:ty; |$value:ident| $to_f32x4:expr; |$bits:ident| $from_f32x4:expr) => {
-            impl SwizzleBase for $type {
-                #[inline(always)]
-                fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> Self::Vector2 {
-                    Self::swizzle4::<I0, I1, I0, I1>(a)
-                }
-                #[inline(always)]
-                fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-                    a: Self,
-                ) -> Self::Vector4 {
-                    Self::swizzle_concat4::<I0, I1, I2, I3>(a, a)
-                }
-                #[inline(always)]
-                fn swizzle_concat2<const I0: usize, const I1: usize>(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector2 {
-                    Self::swizzle_concat4::<I0, I1, I0, I1>(a, b)
-                }
-                #[inline(always)]
-                fn swizzle_concat4<
-                    const I0: usize,
-                    const I1: usize,
-                    const I2: usize,
-                    const I3: usize,
-                >(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector4 {
-                    let into = |$value: Self| $to_f32x4;
-                    let from = |$bits: f32x4| $from_f32x4;
-                    from(shuffle::<I0, I1, I2, I3>(into(a), into(b)))
-                }
-            }
-        };
-    }
-    impl_swizzle_base!(f32x4; |value| value; |bits| bits);
-    impl_swizzle_base!(i32x4;
-        |value| f32x4::from_bits(value.cast_unsigned());
-        |bits| bits.to_bits().cast_signed()
-    );
-    impl_swizzle_base!(u32x4; |value| f32x4::from_bits(value); |bits| bits.to_bits());
-
-    macro_rules! swizzle {
-        ($a:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle4::<
-                { $crate::simd::utils::validate_lane4!($i0) },
-                { $crate::simd::utils::validate_lane4!($i1) },
-                { $crate::simd::utils::validate_lane4!($i2) },
-                { $crate::simd::utils::validate_lane4!($i3) },
-            >($a)
-        };
-        ($a:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle2::<
-                { $crate::simd::utils::validate_lane4!($i0) },
-                { $crate::simd::utils::validate_lane4!($i1) },
-            >($a)
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, _])
-        };
-
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle_concat4::<
-                { $crate::simd::utils::validate_lane8!($i0) },
-                { $crate::simd::utils::validate_lane8!($i1) },
-                { $crate::simd::utils::validate_lane8!($i2) },
-                { $crate::simd::utils::validate_lane8!($i3) },
-            >($a, $b)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle_concat2::<
-                { $crate::simd::utils::validate_lane8!($i0) },
-                { $crate::simd::utils::validate_lane8!($i1) },
-            >($a, $b)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, _])
-        };
-    }
-
-    pub(crate) use swizzle;
-}
 
 // On x86 these come from the blanket impls in `simd/swizzle_x86.rs`; only the targets without a
 // dedicated swizzle module of their own need the identity impls spelled out here.
@@ -310,10 +150,10 @@ macro_rules! sign {
 
 #[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
 pub(crate) use super::swizzle_arm::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
+#[cfg(target_feature = "simd128")]
+pub(crate) use super::swizzle_wasm::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
 #[cfg(target_feature = "sse2")]
 pub(crate) use super::swizzle_x86::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
-#[cfg(target_feature = "simd128")]
-pub(crate) use swizzle_impl::{ComputeVector2, ComputeVector4, swizzle};
 #[allow(unused_imports)]
 pub(crate) use {sign, validate_lane4, validate_lane8};
 
