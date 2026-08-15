@@ -401,6 +401,31 @@ mod mask_utils {
             self < 0
         }
     }
+    unsafe impl MaskPrimitive for i64 {
+        fn is_valid(self) -> bool { self == 0 || self == -1 }
+        #[inline(always)]
+        fn not(self) -> Self { !self }
+        #[inline(always)]
+        fn bitand(self, rhs: Self) -> Self { self & rhs }
+        #[inline(always)]
+        fn bitor(self, rhs: Self) -> Self { self | rhs }
+        #[inline(always)]
+        fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+        #[inline(always)]
+        fn select(self, true_values: Self, false_values: Self) -> Self {
+            if self < 0 { true_values } else { false_values }
+        }
+        #[inline(always)]
+        fn any<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
+        }
+        #[inline(always)]
+        fn all<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
+        }
+    }
     // SAFETY: every array element is validated, transformed, and selected
     // through its `MaskPrimitive` implementation, including elements used as
     // padding.

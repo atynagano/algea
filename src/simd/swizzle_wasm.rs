@@ -44,7 +44,7 @@
 #![cfg(target_feature = "simd128")]
 
 use crate::simd::utils::ComputeVector;
-use core::arch::wasm32::{u32x4_shuffle, u64x2_shuffle, v128};
+use core::arch::wasm32::{u32x4_shuffle, u64x2_shuffle, u64x2_splat, v128};
 use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 
 // ---------------------------------------------------------------------------
@@ -124,6 +124,11 @@ macro_rules! assert_lower_half {
 
 #[rustfmt::skip]
 pub(crate) trait Swizzle: ComputeVector {
+    /// The low two lanes, which is what `Simd4Ext::xy` needs from a four-lane value.
+    fn __xy(a: Self) -> Self::Vector2;
+    /// The four-lane value whose low two lanes are `a`, which is what `Simd2Ext::widen` needs.
+    fn __widen(a: Self) -> Self::Vector4;
+
     fn swizzle2<const I0: usize, const I1: usize, const S0: usize, const S1: usize>(a: Self) -> Self::Vector2;
     fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize, const S0: usize, const S1: usize, const S2: usize, const S3: usize>(a: Self) -> Self::Vector4;
 }
@@ -137,18 +142,6 @@ pub(crate) trait SwizzleConcat: Swizzle {
     fn swizzle_concat4<const I0: usize, const I1: usize, const I2: usize, const I3: usize, const S0: usize, const S1: usize, const S2: usize, const S3: usize>(a: Self, b: Self) -> Self::Vector4;
 }
 
-pub(crate) trait ComputeVector4:
-    SwizzleConcat<Vector4 = Self, Vector2: Swizzle<Vector4 = Self>>
-{
-}
-pub(crate) trait ComputeVector2:
-    Swizzle<Vector2 = Self, Vector4: Swizzle<Vector2 = Self>>
-{
-}
-impl<T> ComputeVector4 for T where T: SwizzleConcat<Vector4 = Self, Vector2: Swizzle<Vector4 = Self>>
-{}
-impl<T> ComputeVector2 for T where T: Swizzle<Vector2 = Self, Vector4: Swizzle<Vector2 = Self>> {}
-
 // ---------------------------------------------------------------------------
 // 64-bit lanes
 // ---------------------------------------------------------------------------
@@ -159,6 +152,10 @@ macro_rules! impl_swizzle_concat_64bit {
     ($self:ty, $split:ident, $join:ident, $val:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { $val($split(a)[0]) }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { a }
 
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const S0: usize, const S1: usize>(a: Self) -> Self::Vector2 {
@@ -207,6 +204,10 @@ macro_rules! impl_swizzle_64bit {
     ($self:ty, $reg:ident, $val:ident, $join:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { a }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { $join($reg(a), u64x2_splat(0)) }
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const S0: usize, const S1: usize>(a: Self) -> Self::Vector2 {
                 assert_lower_half!(I0, I1);
@@ -259,6 +260,10 @@ macro_rules! impl_swizzle_32bit {
     ($self:ty, $reg:ident, $val:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { a }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { a }
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const S0: usize, const S1: usize>(a: Self) -> Self::Vector2 {
                 $val(u32x4_shuffle::<I0, I1, I0, I1>($reg(a), $reg(a)))

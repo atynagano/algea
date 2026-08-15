@@ -32,53 +32,73 @@ impl_compute_vector!([f64x2, f64x4]: [f64x2, f64x4]);
 impl_compute_vector!([i64x2, i64x4]: [i64x2, i64x4]);
 impl_compute_vector!([u64x2, u64x4]: [u64x2, u64x4]);
 
-// On x86 these come from the blanket impls in `simd/swizzle_x86.rs`; only the targets without a
-// dedicated swizzle module of their own need the identity impls spelled out here.
-#[cfg(not(any(all(target_feature = "neon", target_arch = "aarch64"), target_feature = "sse2")))]
-mod aliased_2lane {
-    use super::{Simd2Ext, Simd4Ext};
-    use crate::utils::MaskStorage;
-    use wide::{f32x4, i32x4, u32x4};
+#[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
+pub(crate) use super::swizzle_arm::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
+#[cfg(target_feature = "simd128")]
+pub(crate) use super::swizzle_wasm::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
+#[cfg(target_feature = "sse2")]
+pub(crate) use super::swizzle_x86::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
 
-    impl Simd4Ext for f32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
+pub(crate) trait ComputeVector4:
+    SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
+{
+}
+pub(crate) trait ComputeVector2:
+    Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
+{
+}
+impl<T> ComputeVector4 for T where
+    T: SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
+{
+}
+impl<T> ComputeVector2 for T where T: Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
+{}
+
+impl<T: ComputeVector4> Simd4Ext for T {
+    type Vector2 = <T as ComputeVector>::Vector2;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 { <T as Swizzle>::__xy(self) }
+}
+impl<T: ComputeVector2> Simd2Ext for T {
+    type Vector4 = <T as ComputeVector>::Vector4;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 { <T as Swizzle>::__widen(self) }
+}
+// Mask storage is never swizzled, so it is given `Simd2Ext`/`Simd4Ext` directly rather than a
+// `Swizzle` implementation it would never call just to reach the blanket impls above. Each one
+// forwards to the storage vector it wraps, which those blanket impls do cover.
+impl Simd4Ext for MaskStorage<i32x4> {
+    type Vector2 = MaskStorage<compute_i32x2>;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 {
+        // SAFETY: narrowing keeps the low lanes of an already-canonical mask, each of which is
+        // `0` or `-1` and so canonical on its own.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
     }
-    impl Simd4Ext for i32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
+}
+impl Simd2Ext for MaskStorage<compute_i32x2> {
+    type Vector4 = MaskStorage<i32x4>;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 {
+        // SAFETY: widening zero-fills the padding lanes, and `0` is itself the canonical "false"
+        // value, so the result still satisfies the invariant.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
     }
-    impl Simd4Ext for u32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
+}
+impl Simd4Ext for MaskStorage<i64x4> {
+    type Vector2 = MaskStorage<i64x2>;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 {
+        // SAFETY: see `MaskStorage<i32x4>::xy`.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
     }
-    impl Simd4Ext for MaskStorage<i32x4> {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
-    }
-    impl Simd2Ext for f32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for i32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for u32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for MaskStorage<i32x4> {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
+}
+impl Simd2Ext for MaskStorage<i64x2> {
+    type Vector4 = MaskStorage<i64x4>;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 {
+        // SAFETY: see `MaskStorage<compute_i32x2>::widen`.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
     }
 }
 
@@ -148,12 +168,6 @@ macro_rules! sign {
     };
 }
 
-#[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
-pub(crate) use super::swizzle_arm::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
-#[cfg(target_feature = "simd128")]
-pub(crate) use super::swizzle_wasm::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
-#[cfg(target_feature = "sse2")]
-pub(crate) use super::swizzle_x86::{ComputeVector2, ComputeVector4, swizzle4 as swizzle};
 #[allow(unused_imports)]
 pub(crate) use {sign, validate_lane4, validate_lane8};
 
@@ -934,65 +948,6 @@ mod _64bit_types {
     impl MaskStorage<i32x2> {
         #[inline(always)]
         pub(crate) fn unpack(self) -> Self { self }
-    }
-
-    impl super::Simd2Ext for f32x2 {
-        type Vector4 = wide::f32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: `wide::f32x4` is a `#[repr(transparent)]`-equivalent wrapper around a
-            // single `float32x4_t` NEON register on this target, so reinterpreting one as the
-            // other is valid.
-            unsafe { vcombine_f32(self.0, vdup_n_f32(0.)).into() }
-        }
-    }
-    impl super::Simd2Ext for i32x2 {
-        type Vector4 = wide::i32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: see `f32x2::widen`; `wide::i32x4` wraps a single `int32x4_t`.
-            unsafe { vcombine_s32(self.0, vdup_n_s32(0)).into() }
-        }
-    }
-    impl super::Simd2Ext for u32x2 {
-        type Vector4 = wide::u32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: see `f32x2::widen`; `wide::u32x4` wraps a single `uint32x4_t`.
-            unsafe { vcombine_u32(self.0, vdup_n_u32(0)).into() }
-        }
-    }
-    impl super::Simd2Ext for MaskStorage<i32x2> {
-        type Vector4 = MaskStorage<wide::i32x4>;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: `i32x2::widen` zero-extends the two canonical mask lanes (each `0` or
-            // `-1`) into a 4-lane vector; the padding lanes are `0`, itself a valid canonical
-            // "false" mask value, so the result is a valid canonical mask.
-            unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
-        }
-    }
-    impl super::Simd4Ext for wide::f32x4 {
-        type Vector2 = f32x2;
-
-        fn xy(self) -> Self::Vector2 {
-            // SAFETY: see `f32x2::widen`; `wide::f32x4` wraps a single `float32x4_t`.
-            unsafe { f32x2(vget_low_f32(self.into())) }
-        }
-    }
-    impl super::Simd4Ext for MaskStorage<wide::i32x4> {
-        type Vector2 = MaskStorage<i32x2>;
-
-        fn xy(self) -> Self::Vector2 {
-            // SAFETY: `wide::i32x4` wraps a single `int32x4_t` (see `f32x2::widen`), and the
-            // low two lanes of an already-canonical mask are themselves canonical (`0` or
-            // `-1`), so the narrowed value is a valid canonical mask.
-            unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
-        }
-    }
-    impl super::Simd4Ext for wide::i32x4 {
-        type Vector2 = i32x2;
-        fn xy(self) -> Self::Vector2 { unsafe { i32x2(vget_low_s32(self.into())) } }
     }
 
     pub(crate) use f32x2 as compute_f32x2;

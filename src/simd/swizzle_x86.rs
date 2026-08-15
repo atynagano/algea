@@ -51,7 +51,7 @@
 // some of them, and the helpers behind the unreached ones are used solely by this file's tests.
 #![allow(dead_code, unused_macros)]
 
-use crate::simd::utils::{ComputeVector, Simd2Ext, Simd4Ext, compute_i32x2};
+use crate::simd::utils::ComputeVector;
 use core::arch::x86_64::*;
 use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 // ---------------------------------------------------------------------------
@@ -196,54 +196,6 @@ pub(crate) const fn verify_pd2(
 // ---------------------------------------------------------------------------
 // The trait
 // ---------------------------------------------------------------------------
-
-// Mask storage is never swizzled, so it is given `Simd2Ext`/`Simd4Ext` directly rather than a
-// `Swizzle` implementation it would never call just to reach the blanket impls below.
-impl Simd4Ext for MaskStorage<i32x4> {
-    type Vector2 = MaskStorage<compute_i32x2>;
-    #[inline(always)]
-    fn xy(self) -> Self::Vector2 { self }
-}
-impl Simd2Ext for MaskStorage<compute_i32x2> {
-    type Vector4 = MaskStorage<i32x4>;
-    #[inline(always)]
-    fn widen(self) -> Self::Vector4 { self }
-}
-impl Simd4Ext for MaskStorage<i64x4> {
-    type Vector2 = MaskStorage<i64x2>;
-    #[inline(always)]
-    fn xy(self) -> Self::Vector2 { todo!() }
-}
-impl Simd2Ext for MaskStorage<i64x2> {
-    type Vector4 = MaskStorage<i64x4>;
-    #[inline(always)]
-    fn widen(self) -> Self::Vector4 { todo!() }
-}
-
-impl<T: ComputeVector4> Simd4Ext for T {
-    type Vector2 = <T as ComputeVector>::Vector2;
-    #[inline(always)]
-    fn xy(self) -> Self::Vector2 { <T as Swizzle>::__xy(self) }
-}
-impl<T: ComputeVector2> Simd2Ext for T {
-    type Vector4 = <T as ComputeVector>::Vector4;
-    #[inline(always)]
-    fn widen(self) -> Self::Vector4 { <T as Swizzle>::__widen(self) }
-}
-pub(crate) trait ComputeVector4:
-    SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
-{
-}
-pub(crate) trait ComputeVector2:
-    Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
-{
-}
-impl<T> ComputeVector4 for T where
-    T: SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
-{
-}
-impl<T> ComputeVector2 for T where T: Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
-{}
 
 #[rustfmt::skip]
 pub(crate) trait Swizzle: ComputeVector {
@@ -1144,7 +1096,6 @@ macro_rules! swizzle4 {
     };
 }
 
-use crate::utils::MaskStorage;
 pub(crate) use swizzle2_decode;
 pub(crate) use swizzle2_emit;
 pub(crate) use swizzle4;

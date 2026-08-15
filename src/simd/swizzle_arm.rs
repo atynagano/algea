@@ -224,6 +224,55 @@ define_32bit_conversions!(
     vreinterpret_u32_u8
 );
 
+// Narrowing to, and widening from, the compact two-lane register. These are the only places a
+// 64-bit NEON register is formed directly; everything else works at 128 bits.
+macro_rules! define_32bit_halves {
+    ($x4:ty, $x2:ty, $narrow:ident, $widen:ident, $low:ident, $combine:ident, $dup:ident, $zero:expr) => {
+        /// The low two lanes.
+        #[inline(always)]
+        fn $narrow(v: $x4) -> $x2 {
+            // SAFETY: NEON is part of the aarch64 baseline, which this module is gated on.
+            unsafe { $low(v.into()) }.into()
+        }
+        /// The four-lane value whose low two lanes are `v`, with the upper two zero-filled.
+        #[inline(always)]
+        fn $widen(v: $x2) -> $x4 {
+            // SAFETY: see the narrowing above.
+            unsafe { $combine(v.0, $dup($zero)) }.into()
+        }
+    };
+}
+define_32bit_halves!(
+    f32x4,
+    f32x2,
+    f32_narrow,
+    f32_widen,
+    vget_low_f32,
+    vcombine_f32,
+    vdup_n_f32,
+    0.
+);
+define_32bit_halves!(
+    i32x4,
+    i32x2,
+    i32_narrow,
+    i32_widen,
+    vget_low_s32,
+    vcombine_s32,
+    vdup_n_s32,
+    0
+);
+define_32bit_halves!(
+    u32x4,
+    u32x2,
+    u32_narrow,
+    u32_widen,
+    vget_low_u32,
+    vcombine_u32,
+    vdup_n_u32,
+    0
+);
+
 // ---------------------------------------------------------------------------
 // The byte-table primitives the 32-bit path uses
 // ---------------------------------------------------------------------------
@@ -290,6 +339,11 @@ macro_rules! assert_lower_half {
 
 #[rustfmt::skip]
 pub(crate) trait Swizzle: ComputeVector {
+    /// The low two lanes, which is what `Simd4Ext::xy` needs from a four-lane value.
+    fn __xy(a: Self) -> Self::Vector2;
+    /// The four-lane value whose low two lanes are `a`, which is what `Simd2Ext::widen` needs.
+    fn __widen(a: Self) -> Self::Vector4;
+
     fn swizzle2<const I0: usize, const I1: usize, const PD: i32>(a: Self) -> Self::Vector2
     where float64x2_t: Shuffle<PD>;
 
@@ -309,18 +363,6 @@ pub(crate) trait SwizzleConcat: Swizzle {
     where float64x2_t: Shuffle<PD_LO> + Shuffle<PD_HI>;
 }
 
-pub(crate) trait ComputeVector4:
-    SwizzleConcat<Vector4 = Self, Vector2: Swizzle<Vector4 = Self>>
-{
-}
-pub(crate) trait ComputeVector2:
-    Swizzle<Vector2 = Self, Vector4: Swizzle<Vector2 = Self>>
-{
-}
-impl<T> ComputeVector4 for T where T: SwizzleConcat<Vector4 = Self, Vector2: Swizzle<Vector4 = Self>>
-{}
-impl<T> ComputeVector2 for T where T: Swizzle<Vector2 = Self, Vector4: Swizzle<Vector2 = Self>> {}
-
 // ---------------------------------------------------------------------------
 // 64-bit lanes
 // ---------------------------------------------------------------------------
@@ -331,6 +373,11 @@ macro_rules! impl_swizzle_concat_64bit {
     ($self:ty, $split:ident, $join:ident, $val:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { $val($split(a)[0]) }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { a }
+
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const PD: i32>(a: Self) -> Self::Vector2
             where float64x2_t: Shuffle<PD>
@@ -386,6 +433,15 @@ macro_rules! impl_swizzle_64bit {
     ($self:ty, $reg:ident, $val:ident, $join:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { a }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 {
+                // SAFETY: NEON is part of the aarch64 baseline, which this module is gated on.
+                let zero = unsafe { vdupq_n_f64(0.) };
+                $join($reg(a), zero)
+            }
+
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const PD: i32>(a: Self) -> Self::Vector2
             where float64x2_t: Shuffle<PD>
@@ -445,9 +501,14 @@ impl_swizzle_64bit!(u64x2, u64_reg, u64_val, u64_join);
 // expresses the whole pattern.
 
 macro_rules! impl_swizzle_concat_32bit {
-    ($self:ty, $bytes:ident, $value4:ident, $value2:ident) => {
+    ($self:ty, $bytes:ident, $value4:ident, $value2:ident, $narrow:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { $narrow(a) }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { a }
+
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const PD: i32>(a: Self) -> Self::Vector2
             where float64x2_t: Shuffle<PD>
@@ -481,14 +542,18 @@ macro_rules! impl_swizzle_concat_32bit {
         }
     };
 }
-impl_swizzle_concat_32bit!(f32x4, f32_bytes4, f32_value4, f32_value2);
-impl_swizzle_concat_32bit!(i32x4, i32_bytes4, i32_value4, i32_value2);
-impl_swizzle_concat_32bit!(u32x4, u32_bytes4, u32_value4, u32_value2);
+impl_swizzle_concat_32bit!(f32x4, f32_bytes4, f32_value4, f32_value2, f32_narrow);
+impl_swizzle_concat_32bit!(i32x4, i32_bytes4, i32_value4, i32_value2, i32_narrow);
+impl_swizzle_concat_32bit!(u32x4, u32_bytes4, u32_value4, u32_value2, u32_narrow);
 
 macro_rules! impl_swizzle_32bit {
-    ($self:ty, $bytes:ident, $value4:ident, $value2:ident) => {
+    ($self:ty, $bytes:ident, $value4:ident, $value2:ident, $widen:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
+            #[inline(always)]
+            fn __xy(a: Self) -> Self::Vector2 { a }
+            #[inline(always)]
+            fn __widen(a: Self) -> Self::Vector4 { $widen(a) }
 
             #[inline(always)]
             fn swizzle2<const I0: usize, const I1: usize, const PD: i32>(a: Self) -> Self::Vector2
@@ -523,9 +588,9 @@ macro_rules! impl_swizzle_32bit {
         }
     };
 }
-impl_swizzle_32bit!(f32x2, f32_bytes2, f32_value4, f32_value2);
-impl_swizzle_32bit!(i32x2, i32_bytes2, i32_value4, i32_value2);
-impl_swizzle_32bit!(u32x2, u32_bytes2, u32_value4, u32_value2);
+impl_swizzle_32bit!(f32x2, f32_bytes2, f32_value4, f32_value2, f32_widen);
+impl_swizzle_32bit!(i32x2, i32_bytes2, i32_value4, i32_value2, i32_widen);
+impl_swizzle_32bit!(u32x2, u32_bytes2, u32_value4, u32_value2, u32_widen);
 
 // ---------------------------------------------------------------------------
 // The macro

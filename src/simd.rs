@@ -15,7 +15,7 @@ use crate::{
     utils::{ArithPrimitive, Load, MaskPrimitive, MaskStorage, Store, if_},
 };
 use utils::{Simd2Ext, f32x2, i32x2, u32x2};
-use wide::{f32x4, i32x4, u32x4};
+use wide::{f32x4, i32x4, i64x2, i64x4, u32x4};
 
 impl ArithPrimitive for f32x4 {
     type Scalar = f32;
@@ -345,6 +345,125 @@ unsafe impl MaskPrimitive for i32x4 {
             }
         } else {
             unreachable!()
+        }
+    }
+}
+// SAFETY: see `MaskPrimitive for i64x4`; a two-lane register has no padding to mask out.
+unsafe impl MaskPrimitive for i64x2 {
+    fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+    #[inline(always)]
+    fn not(self) -> Self { !self }
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    #[inline(always)]
+    fn select(self, true_values: Self, false_values: Self) -> Self {
+        i64x2::select(self, true_values, false_values)
+    }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        assert_eq!(N, 2);
+        cfg_select! {
+            // NEON has no bitmask instruction. A canonical 64-bit lane is all-zero or all-one, so
+            // it stays canonical read as two 32-bit lanes -- a width NEON does reduce
+            // horizontally, after which the same "least lane is negative" test as the 32-bit
+            // types applies. `core::simd` lowers `Mask<i64, 2>::any` the same way; `wide`'s own
+            // reduction folds the two lanes together instead and costs one instruction more.
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                vminvq_s32(vreinterpretq_s32_s64(self.into())) < 0
+            },
+            _ => self.any(),
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        assert_eq!(N, 2);
+        cfg_select! {
+            // See `any`.
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                vmaxvq_s32(vreinterpretq_s32_s64(self.into())) < 0
+            },
+            _ => self.all(),
+        }
+    }
+}
+// SAFETY: validation and `not` operate lane-wise. With a canonical selector,
+// `select` copies each complete physical lane from one of the canonical inputs.
+unsafe impl MaskPrimitive for i64x4 {
+    fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+    #[inline(always)]
+    fn not(self) -> Self { !self }
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    #[inline(always)]
+    fn select(self, true_values: Self, false_values: Self) -> Self {
+        i64x4::select(self, true_values, false_values)
+    }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        // Only three- and four-lane masks reach this type. The 32-bit types double as their own
+        // two-lane compute vector everywhere but NEON, so `i32x4` also serves `N == 2`; `i64x2`
+        // and `i64x4` are separate types on every target, so a two-lane 64-bit mask is stored in
+        // the former and never here.
+        std::assert_matches!(N, 3..=4);
+        // AVX2 has a bitmask instruction spanning all four lanes, so the lanes in use are picked
+        // out of its result. No other target has one: there a four-lane 64-bit value is a pair of
+        // two-lane registers, so the pair is folded into a single register and handed to the
+        // two-lane reduction.
+        if N == 4 {
+            cfg_select! {
+                target_feature = "avx2" => self.any(),
+                _ => {
+                    // SAFETY: without a 256-bit register `wide::i64x4` is `#[repr(C)] { a: i64x2,
+                    // b: i64x2 }`, which has the same layout as `[i64x2; 2]`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low | high)
+                }
+            }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0111 != 0,
+                // Lane 3 is padding; clearing it stops it from making the answer true.
+                _ => {
+                    // SAFETY: see the four-lane branch.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low | (high & i64x2::new([-1, 0])))
+                }
+            }
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 3..=4);
+        // See `any` for how the two target families differ.
+        if N == 4 {
+            cfg_select! {
+                target_feature = "avx2" => self.all(),
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low & high)
+                }
+            }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0111 == 0b0111,
+                // Lane 3 is padding; filling it stops it from making the answer false.
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low & (high | i64x2::new([0, -1])))
+                }
+            }
         }
     }
 }
