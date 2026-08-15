@@ -1,4 +1,7 @@
 pub(crate) mod kernels;
+#[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
+mod swizzle_arm;
+#[cfg(target_feature = "sse2")]
 mod swizzle_x86;
 pub(crate) mod utils;
 
