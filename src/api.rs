@@ -73,8 +73,11 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
         let storage = unsafe {
             match <T as private::Sealed>::TYPE {
                 private::Type::F32 => impl_from_array!(f32, D, &array, [1, 2, 3, 4]),
+                private::Type::F64 => impl_from_array!(f64, D, &array, [1, 2, 3, 4]),
                 private::Type::I32 => impl_from_array!(i32, D, &array, [1, 2, 3, 4]),
+                private::Type::I64 => impl_from_array!(i64, D, &array, [1, 2, 3, 4]),
                 private::Type::U32 => impl_from_array!(u32, D, &array, [1, 2, 3, 4]),
+                private::Type::U64 => impl_from_array!(u64, D, &array, [1, 2, 3, 4]),
             }
         };
 
@@ -313,11 +316,20 @@ impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C
                 private::Type::F32 => {
                     impl_matrix_from_array!(f32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::F64 => {
+                    impl_matrix_from_array!(f64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::I32 => {
                     impl_matrix_from_array!(i32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::I64 => {
+                    impl_matrix_from_array!(i64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::U32 => {
                     impl_matrix_from_array!(u32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
+                private::Type::U64 => {
+                    impl_matrix_from_array!(u64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
             }
         };
@@ -389,11 +401,20 @@ impl<T: Element<R, C>, const R: usize, const C: usize> column_major::Matrix<T, R
                 private::Type::F32 => {
                     impl_matrix_from_array!(f32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::F64 => {
+                    impl_matrix_from_array!(f64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::I32 => {
                     impl_matrix_from_array!(i32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::I64 => {
+                    impl_matrix_from_array!(i64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::U32 => {
                     impl_matrix_from_array!(u32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
+                private::Type::U64 => {
+                    impl_matrix_from_array!(u64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
             }
         };
@@ -847,6 +868,10 @@ impl<T: Element<R, C>, const R: usize, const C: usize> Default for column_major:
 impl<T: Element<D>, const D: usize> Default for Vector<T, D> {
     #[inline]
     fn default() -> Self { Self::ZERO }
+}
+impl<T: MaskElement<D>, const D: usize> Default for Mask<T, D> {
+    #[inline]
+    fn default() -> Self { Self::splat(false) }
 }
 
 struct CompactRow<'a, T>(&'a [T]);
