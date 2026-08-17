@@ -278,7 +278,7 @@ pub(crate) mod mask {
                     use wide::u32x4;
                     // `u8_from_i32` lowers through SSSE3 `_mm_shuffle_epi8` and extracts each lane's
                     // least-significant bit rather than testing whether the signed lane is negative.
-                    let bytes = super::cast::u8_from_i32(mask.into_inner());
+                    let bytes = super::super::cast::u8_from_i32(mask.into_inner());
                     wide::bytemuck::cast::<_, u32x4>(bytes).to_array()[0]
                 }},
                 all(target_feature = "neon", target_arch = "aarch64") => unsafe {{
@@ -1156,7 +1156,7 @@ pub(crate) mod cast {
         cfg_select! {
             target_feature = "avx512vl" => unsafe {
                 use core::arch::x86_64::{_CMP_GE_OQ, _CMP_GT_OQ};
-                let input: x86_64::__m128 = input.into();
+                let v: x86_64::__m128 = v.into();
                 let converted = avx512_vl::_mm_cvttps_epu32(v);
                 let overflow = avx512_vl::_mm_cmp_ps_mask::<_CMP_GT_OQ>(
                     v,
