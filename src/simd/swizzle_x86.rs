@@ -373,10 +373,10 @@ impl_swizzle_32bit!(u32x4, from_u32x4, into_u32x4);
 // ---------------------------------------------------------------------------
 
 // `From<f64x4> for __m256d` is gated on `target_arch` only, and `transmute` needs no target
-// feature, so splitting into halves needs no cfg. Rejoining does:
-// `dev/swizzle-64bit-split-join-codegen.md` measured that `_mm256_set_m128d` keeps the result one
-// 256-bit value while the transmute lets LLVM leave it as two 128-bit halves. The difference is
-// invisible once the value feeds 256-bit arithmetic, but the intrinsic is never worse.
+// feature, so splitting into halves needs no cfg. Rejoining does: `_mm256_set_m128d` keeps the
+// result one 256-bit value while a transmute lets LLVM leave it as two 128-bit halves. The
+// difference is invisible once the value feeds 256-bit arithmetic, but the intrinsic is never
+// worse.
 #[inline(always)]
 fn halves(v: __m256d) -> [__m128d; 2] {
     // SAFETY: a 256-bit vector is two 128-bit halves, low half first.
