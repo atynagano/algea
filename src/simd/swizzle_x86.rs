@@ -211,6 +211,8 @@ pub(crate) trait Swizzle: ComputeVector {
 /// encoding it can use.
 #[rustfmt::skip]
 pub(crate) trait SwizzleConcat: Swizzle {
+    /// `[a0, a1, b0, b1]`.
+    fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self;
     /// `[a0, b0]`.
     fn unpack_lo_2(a: Self, b: Self) -> Self::Vector2;
     /// `[a2, b2]`.
@@ -284,6 +286,12 @@ macro_rules! impl_swizzle_32bit {
         }
         #[rustfmt::skip]
         impl SwizzleConcat for $self {
+            #[inline(always)]
+            fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self {
+                // `shufps` numbers the lanes it takes from its second operand from zero, so the
+                // control byte reads `[a0, a1, b0, b1]` as `0, 1, 0, 1`.
+                Self::shuffle_aabb::<0, 0, 0, 0, 0, 0, { ps(0, 1, 0, 1) }>(a, b)
+            }
             #[inline(always)]
             fn unpack_lo_2(a: Self, b: Self) -> Self {
                 // SAFETY: `_mm_unpacklo_ps` is SSE, implied by this module's `sse2` gate.
@@ -479,22 +487,22 @@ macro_rules! impl_shuffle_64bit {
 /// `$into2`/`$into4` name the conversion back to the two-lane and four-lane result types. Both
 /// 64-bit macros take them in this order so the same name always means the same width.
 macro_rules! impl_swizzle_concat_64bit {
-    ($self:ty, $from:expr, $into2:expr, $into4:expr) => {
+    ($self:ty, $from2:expr, $from4:expr, $into2:expr, $into4:expr) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
             #[inline(always)]
-            fn __xy(a: Self) -> Self::Vector2 { $into2(halves($from(a))[0]) }
+            fn __xy(a: Self) -> Self::Vector2 { $into2(halves($from4(a))[0]) }
             #[inline(always)]
             fn __widen(a: Self) -> Self::Vector4 { a }
             #[inline(always)]
             fn shuffle_aa<const H0: usize, const H1: usize, const PD: i32, const PS: i32>(a: Self) -> Self::Vector2 {
-                let a = halves($from(a));
+                let a = halves($from4(a));
                 // SAFETY: `_mm_shuffle_pd` is SSE2, guaranteed by this module's gate.
                 unsafe { $into2(_mm_shuffle_pd::<PD>(a[H0], a[H1])) }
             }
             #[inline(always)]
             fn shuffle_aaaa<const H0: usize, const H1: usize, const H2: usize, const H3: usize, const PD_LO: i32, const PD_HI: i32, const PS: i32>(a: Self) -> Self {
-                let a = halves($from(a));
+                let a = halves($from4(a));
                 // SAFETY: `_mm_shuffle_pd` is SSE2, guaranteed by this module's gate.
                 unsafe {
                     $into4(join(
@@ -507,16 +515,20 @@ macro_rules! impl_swizzle_concat_64bit {
         #[rustfmt::skip]
         impl SwizzleConcat for $self {
             #[inline(always)]
+            fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self {
+                $into4(join($from2(a), $from2(b)))
+            }
+            #[inline(always)]
             fn unpack_lo_2(a: Self, b: Self) -> Self::Vector2 {
-                let a_lo = halves($from(a))[0];
-                let b_lo = halves($from(b))[0];
+                let a_lo = halves($from4(a))[0];
+                let b_lo = halves($from4(b))[0];
                 // SAFETY: `_mm_unpack*_pd` is SSE2, guaranteed by this module's gate.
                 unsafe { $into2(_mm_unpacklo_pd(a_lo, b_lo)) }
             }
             #[inline(always)]
             fn unpack_hi_2(a: Self, b: Self) -> Self::Vector2 {
-                let a_hi = halves($from(a))[1];
-                let b_hi = halves($from(b))[1];
+                let a_hi = halves($from4(a))[1];
+                let b_hi = halves($from4(b))[1];
                 // The wanted lanes are `a[2]` and `b[2]`, which are lane 0 of each *high* half, so
                 // this is `unpacklo` applied to the high halves — not `unpackhi`.
                 // SAFETY: see `unpack_lo_2`.
@@ -524,30 +536,30 @@ macro_rules! impl_swizzle_concat_64bit {
             }
             #[inline(always)]
             fn unpack_lo_4(a: Self, b: Self) -> Self {
-                let a_lo = halves($from(a))[0];
-                let b_lo = halves($from(b))[0];
+                let a_lo = halves($from4(a))[0];
+                let b_lo = halves($from4(b))[0];
                 // SAFETY: `_mm_unpack*_pd` is SSE2, guaranteed by this module's gate.
                 unsafe { $into4(join(_mm_unpacklo_pd(a_lo, b_lo), _mm_unpackhi_pd(a_lo, b_lo))) }
             }
             #[inline(always)]
             fn unpack_hi_4(a: Self, b: Self) -> Self {
-                let a_hi = halves($from(a))[1];
-                let b_hi = halves($from(b))[1];
+                let a_hi = halves($from4(a))[1];
+                let b_hi = halves($from4(b))[1];
                 // SAFETY: see `unpack_lo`.
                 unsafe { $into4(join(_mm_unpacklo_pd(a_hi, b_hi), _mm_unpackhi_pd(a_hi, b_hi))) }
             }
 
             #[inline(always)]
             fn shuffle_ab<const H0: usize, const H1: usize, const PD: i32, const PS1: i32, const PS2: i32>(a: Self, b: Self) -> Self::Vector2 {
-                let a = halves($from(a));
-                let b = halves($from(b));
+                let a = halves($from4(a));
+                let b = halves($from4(b));
                 // SAFETY: `_mm_shuffle_pd` is SSE2, guaranteed by this module's gate.
                 unsafe { $into2(_mm_shuffle_pd::<PD>(a[H0], b[H1])) }
             }
             #[inline(always)]
             fn shuffle_aabb<const H0: usize, const H1: usize, const H2: usize, const H3: usize, const PD_LO: i32, const PD_HI: i32, const PS: i32>(a: Self, b: Self) -> Self {
-                let a = halves($from(a));
-                let b = halves($from(b));
+                let a = halves($from4(a));
+                let b = halves($from4(b));
                 // SAFETY: see `shuffle_aaaa`.
                 unsafe {
                     $into4(join(
@@ -556,12 +568,12 @@ macro_rules! impl_swizzle_concat_64bit {
                     ))
                 }
             }
-            impl_shuffle_64bit!(shuffle_aaab: (a, b) => [a, a, a, b], $from, $into4);
-            impl_shuffle_64bit!(shuffle_aaba: (a, b) => [a, a, b, a], $from, $into4);
-            impl_shuffle_64bit!(shuffle_abaa: (a, b) => [a, b, a, a], $from, $into4);
-            impl_shuffle_64bit!(shuffle_abbb: (a, b) => [a, b, b, b], $from, $into4);
-            impl_shuffle_64bit!(shuffle_abab: (a, b) => [a, b, a, b], $from, $into4);
-            impl_shuffle_64bit!(shuffle_abba: (a, b) => [a, b, b, a], $from, $into4);
+            impl_shuffle_64bit!(shuffle_aaab: (a, b) => [a, a, a, b], $from4, $into4);
+            impl_shuffle_64bit!(shuffle_aaba: (a, b) => [a, a, b, a], $from4, $into4);
+            impl_shuffle_64bit!(shuffle_abaa: (a, b) => [a, b, a, a], $from4, $into4);
+            impl_shuffle_64bit!(shuffle_abbb: (a, b) => [a, b, b, b], $from4, $into4);
+            impl_shuffle_64bit!(shuffle_abab: (a, b) => [a, b, a, b], $from4, $into4);
+            impl_shuffle_64bit!(shuffle_abba: (a, b) => [a, b, b, a], $from4, $into4);
         }
     }
 }
@@ -583,9 +595,9 @@ fn into_i64x2(v: __m128d) -> i64x2 { unsafe { _mm_castpd_si128(v).into() } }
 #[inline(always)]
 fn into_u64x2(v: __m128d) -> u64x2 { unsafe { _mm_castpd_si128(v).into() } }
 
-impl_swizzle_concat_64bit!(f64x4, __m256d::from, __m128d::into, __m256d::into);
-impl_swizzle_concat_64bit!(i64x4, from_i64x4, into_i64x2, into_i64x4);
-impl_swizzle_concat_64bit!(u64x4, from_u64x4, into_u64x2, into_u64x4);
+impl_swizzle_concat_64bit!(f64x4, __m128d::from, __m256d::from, __m128d::into, __m256d::into);
+impl_swizzle_concat_64bit!(i64x4, from_i64x2, from_i64x4, into_i64x2, into_i64x4);
+impl_swizzle_concat_64bit!(u64x4, from_u64x2, from_u64x4, into_u64x2, into_u64x4);
 impl_swizzle_64bit!(f64x2, __m128d::from, __m128d::into, __m256d::into);
 impl_swizzle_64bit!(i64x2, from_i64x2, into_i64x2, into_i64x4);
 impl_swizzle_64bit!(u64x2, from_u64x2, into_u64x2, into_u64x4);
@@ -1072,6 +1084,9 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_x86::swizzle4_call!(@aaaa $a; [$i0, $i1, $i2, $i3]; [$i0, $i1, $i2, $i3])
     };
 
+    ($a:expr, $b:expr, @concat) => {
+        $crate::simd::swizzle_x86::SwizzleConcat::concat_4($a, $b)
+    };
     ($a:expr, $b:expr, [$i0:tt]) => {
         compile_error!("a swizzle produces at least two lanes; a single index selects a scalar, not a vector")
     };

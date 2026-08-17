@@ -227,7 +227,7 @@ define_32bit_conversions!(
 // Narrowing to, and widening from, the compact two-lane register. These are the only places a
 // 64-bit NEON register is formed directly; everything else works at 128 bits.
 macro_rules! define_32bit_halves {
-    ($x4:ty, $x2:ty, $narrow:ident, $widen:ident, $low:ident, $combine:ident, $dup:ident, $zero:expr) => {
+    ($x4:ty, $x2:ty, $narrow:ident, $widen:ident, $concat:ident, $low:ident, $combine:ident, $dup:ident, $zero:expr) => {
         /// The low two lanes.
         #[inline(always)]
         fn $narrow(v: $x4) -> $x2 {
@@ -240,6 +240,12 @@ macro_rules! define_32bit_halves {
             // SAFETY: see the narrowing above.
             unsafe { $combine(v.0, $dup($zero)) }.into()
         }
+        /// `[a0, a1, b0, b1]`.
+        #[inline(always)]
+        fn $concat(a: $x2, b: $x2) -> $x4 {
+            // SAFETY: see the narrowing above.
+            unsafe { $combine(a.0, b.0) }.into()
+        }
     };
 }
 define_32bit_halves!(
@@ -247,6 +253,7 @@ define_32bit_halves!(
     f32x2,
     f32_narrow,
     f32_widen,
+    f32_concat,
     vget_low_f32,
     vcombine_f32,
     vdup_n_f32,
@@ -257,6 +264,7 @@ define_32bit_halves!(
     i32x2,
     i32_narrow,
     i32_widen,
+    i32_concat,
     vget_low_s32,
     vcombine_s32,
     vdup_n_s32,
@@ -267,6 +275,7 @@ define_32bit_halves!(
     u32x2,
     u32_narrow,
     u32_widen,
+    u32_concat,
     vget_low_u32,
     vcombine_u32,
     vdup_n_u32,
@@ -356,6 +365,9 @@ pub(crate) trait Swizzle: ComputeVector {
 /// rejected rather than read.
 #[rustfmt::skip]
 pub(crate) trait SwizzleConcat: Swizzle {
+    /// `[a0, a1, b0, b1]`.
+    fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self;
+
     fn swizzle_concat2<const I0: usize, const I1: usize, const PD: i32>(a: Self, b: Self) -> Self::Vector2
     where float64x2_t: Shuffle<PD>;
 
@@ -370,7 +382,7 @@ pub(crate) trait SwizzleConcat: Swizzle {
 /// Four-lane operands: the halves of both operands form `[a.lo, a.hi, b.lo, b.hi]`, which `I >> 1`
 /// indexes directly.
 macro_rules! impl_swizzle_concat_64bit {
-    ($self:ty, $split:ident, $join:ident, $val:ident) => {
+    ($self:ty, $split:ident, $join:ident, $reg:ident, $val:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
             #[inline(always)]
@@ -401,6 +413,9 @@ macro_rules! impl_swizzle_concat_64bit {
         #[rustfmt::skip]
         impl SwizzleConcat for $self {
             #[inline(always)]
+            fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self { $join($reg(a), $reg(b)) }
+
+            #[inline(always)]
             fn swizzle_concat2<const I0: usize, const I1: usize, const PD: i32>(a: Self, b: Self) -> Self::Vector2
             where float64x2_t: Shuffle<PD>
             {
@@ -423,9 +438,9 @@ macro_rules! impl_swizzle_concat_64bit {
         }
     };
 }
-impl_swizzle_concat_64bit!(f64x4, f64_split, f64_join, f64_val);
-impl_swizzle_concat_64bit!(i64x4, i64_split, i64_join, i64_val);
-impl_swizzle_concat_64bit!(u64x4, u64_split, u64_join, u64_val);
+impl_swizzle_concat_64bit!(f64x4, f64_split, f64_join, f64_reg, f64_val);
+impl_swizzle_concat_64bit!(i64x4, i64_split, i64_join, i64_reg, i64_val);
+impl_swizzle_concat_64bit!(u64x4, u64_split, u64_join, u64_reg, u64_val);
 
 /// Two-lane operands: one 128-bit register each, so `[a, a, b, b]` keeps `I >> 1` indexing the same
 /// way without materializing a padding register.
@@ -463,30 +478,6 @@ macro_rules! impl_swizzle_64bit {
                 )
             }
         }
-
-        #[rustfmt::skip]
-        impl SwizzleConcat for $self {
-            #[inline(always)]
-            fn swizzle_concat2<const I0: usize, const I1: usize, const PD: i32>(a: Self, b: Self) -> Self::Vector2
-            where float64x2_t: Shuffle<PD>
-            {
-                assert_lower_half!(I0, I1);
-                let h = [$reg(a), $reg(a), $reg(b), $reg(b)];
-                $val(<float64x2_t as Shuffle<PD>>::shuffle(h[I0 >> 1], h[I1 >> 1]))
-            }
-
-            #[inline(always)]
-            fn swizzle_concat4<const I0: usize, const I1: usize, const I2: usize, const I3: usize, const PD_LO: i32, const PD_HI: i32>(a: Self, b: Self) -> Self::Vector4
-            where float64x2_t: Shuffle<PD_LO> + Shuffle<PD_HI>
-            {
-                assert_lower_half!(I0, I1, I2, I3);
-                let h = [$reg(a), $reg(a), $reg(b), $reg(b)];
-                $join(
-                    <float64x2_t as Shuffle<PD_LO>>::shuffle(h[I0 >> 1], h[I1 >> 1]),
-                    <float64x2_t as Shuffle<PD_HI>>::shuffle(h[I2 >> 1], h[I3 >> 1]),
-                )
-            }
-        }
     };
 }
 impl_swizzle_64bit!(f64x2, f64_reg, f64_val, f64_join);
@@ -501,7 +492,7 @@ impl_swizzle_64bit!(u64x2, u64_reg, u64_val, u64_join);
 // expresses the whole pattern.
 
 macro_rules! impl_swizzle_concat_32bit {
-    ($self:ty, $bytes:ident, $value4:ident, $value2:ident, $narrow:ident) => {
+    ($self:ty, $bytes:ident, $value4:ident, $value2:ident, $narrow:ident, $concat:ident) => {
         #[rustfmt::skip]
         impl Swizzle for $self {
             #[inline(always)]
@@ -527,6 +518,9 @@ macro_rules! impl_swizzle_concat_32bit {
         #[rustfmt::skip]
         impl SwizzleConcat for $self {
             #[inline(always)]
+            fn concat_4(a: Self::Vector2, b: Self::Vector2) -> Self { $concat(a, b) }
+
+            #[inline(always)]
             fn swizzle_concat2<const I0: usize, const I1: usize, const PD: i32>(a: Self, b: Self) -> Self::Vector2
             where float64x2_t: Shuffle<PD>
             {
@@ -542,9 +536,9 @@ macro_rules! impl_swizzle_concat_32bit {
         }
     };
 }
-impl_swizzle_concat_32bit!(f32x4, f32_bytes4, f32_value4, f32_value2, f32_narrow);
-impl_swizzle_concat_32bit!(i32x4, i32_bytes4, i32_value4, i32_value2, i32_narrow);
-impl_swizzle_concat_32bit!(u32x4, u32_bytes4, u32_value4, u32_value2, u32_narrow);
+impl_swizzle_concat_32bit!(f32x4, f32_bytes4, f32_value4, f32_value2, f32_narrow, f32_concat);
+impl_swizzle_concat_32bit!(i32x4, i32_bytes4, i32_value4, i32_value2, i32_narrow, i32_concat);
+impl_swizzle_concat_32bit!(u32x4, u32_bytes4, u32_value4, u32_value2, u32_narrow, u32_concat);
 
 macro_rules! impl_swizzle_32bit {
     ($self:ty, $bytes:ident, $value4:ident, $value2:ident, $widen:ident) => {
@@ -567,23 +561,6 @@ macro_rules! impl_swizzle_32bit {
             where float64x2_t: Shuffle<PD_LO> + Shuffle<PD_HI>
             {
                 $value4(tbl1_16::<I0, I1, I2, I3>($bytes(a)))
-            }
-        }
-
-        #[rustfmt::skip]
-        impl SwizzleConcat for $self {
-            #[inline(always)]
-            fn swizzle_concat2<const I0: usize, const I1: usize, const PD: i32>(a: Self, b: Self) -> Self::Vector2
-            where float64x2_t: Shuffle<PD>
-            {
-                $value2(tbl2_16::<I0, I1, 0, 0>($bytes(a), $bytes(b)))
-            }
-
-            #[inline(always)]
-            fn swizzle_concat4<const I0: usize, const I1: usize, const I2: usize, const I3: usize, const PD_LO: i32, const PD_HI: i32>(a: Self, b: Self) -> Self::Vector4
-            where float64x2_t: Shuffle<PD_LO> + Shuffle<PD_HI>
-            {
-                $value4(tbl2_16::<I0, I1, I2, I3>($bytes(a), $bytes(b)))
             }
         }
     };
@@ -637,6 +614,9 @@ macro_rules! swizzle4 {
         >($a)
     };
 
+    ($a:expr, $b:expr, @concat) => {
+        $crate::simd::swizzle_arm::SwizzleConcat::concat_4($a, $b)
+    };
     ($a:expr, $b:expr, [$i0:tt]) => {
         compile_error!(
             "a swizzle produces at least two lanes; a single index selects a scalar, not a vector"
@@ -729,6 +709,12 @@ mod tests {
                 // Broadcast.
                 assert_eq!(read4(swizzle4!(a, [1, 1, 1, 1])), [11 as $s, 11 as $s, 11 as $s, 11 as $s]);
 
+                // Concatenating the low halves of two two-lane values.
+                assert_eq!(
+                    read4(swizzle4!(swizzle4!(a, [0, 1]), swizzle4!(b, [0, 1]), @concat)),
+                    [10 as $s, 11 as $s, 20 as $s, 21 as $s],
+                );
+
                 // Two-lane results.
                 assert_eq!(read2(swizzle4!(a, [3, 1])), [13 as $s, 11 as $s]);
                 assert_eq!(read2(swizzle4!(a, b, [4, 1])), [20 as $s, 11 as $s]);
@@ -758,12 +744,7 @@ mod tests {
 
                 assert_eq!(read2(swizzle4!(a, [1, 0])), [11 as $s, 10 as $s]);
                 assert_eq!(read2(swizzle4!(a, [0, 0])), [10 as $s, 10 as $s]);
-                assert_eq!(read2(swizzle4!(a, b, [4, 1])), [20 as $s, 11 as $s]);
-                assert_eq!(read2(swizzle4!(a, b, [0, 4])), [10 as $s, 20 as $s]);
-
                 assert_eq!(read4(swizzle4!(a, [1, 0, 0, 1])), [11 as $s, 10 as $s, 10 as $s, 11 as $s]);
-                assert_eq!(read4(swizzle4!(a, b, [4, 1, 0, 5])), [20 as $s, 11 as $s, 10 as $s, 21 as $s]);
-                assert_eq!(read4(swizzle4!(a, b, [0, 4, 1, 5])), [10 as $s, 20 as $s, 11 as $s, 21 as $s]);
             }
         };
     }

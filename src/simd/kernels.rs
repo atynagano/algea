@@ -1020,9 +1020,7 @@ pub(crate) mod from_vecs {
             }
             #[inline(always)]
             pub(crate) fn _2x2([a, b]: [Vector<$f32, 2>; 2]) -> $x4 {
-                // TODO(swizzle-concat): check that the widen disappears at 64-bit width, and
-                // give the macro a `swizzle!(a, b, @concat)` form for this pattern.
-                swizzle!(a.storage.load().widen(), b.storage.load().widen(), [0, 1, 4, 5])
+                swizzle!(a.storage.load(), b.storage.load(), @concat)
             }
             #[inline(always)]
             pub(crate) fn _3x2([a, b]: [Vector<$f32, 3>; 2]) -> [$x4; 2] { [a.storage, b.storage] }
@@ -1499,8 +1497,7 @@ pub(crate) mod matmul {
                 // Packed 2x2 column-major output: `[r0c0, r1c0, r0c1, r1c1]`.
                 let col0 = matmul2x3x1(a, b[0]);
                 let col1 = matmul2x3x1(a, b[1]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
-                swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5])
+                swizzle!(col0, col1, @concat)
             }
 
             #[inline(always)]
@@ -1530,8 +1527,7 @@ pub(crate) mod matmul {
             pub(crate) fn matmul2x4x2(a: [$vec4; 2], b: [$vec4; 2]) -> $vec4 {
                 let col0 = matmul2x4x1(a, b[0]);
                 let col1 = matmul2x4x1(a, b[1]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
-                swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5])
+                swizzle!(col0, col1, @concat)
             }
 
             #[inline(always)]
@@ -1660,8 +1656,7 @@ pub(crate) mod matmul {
                 let col0 = matmul2x3x1(a, b[0]);
                 let col1 = matmul2x3x1(a, b[1]);
                 let col2 = matmul2x3x1(a, b[2]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
-                [swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5]), col2.widen()]
+                [swizzle!(col0, col1, @concat), col2.widen()]
             }
 
             #[inline(always)]
@@ -1693,8 +1688,7 @@ pub(crate) mod matmul {
                 let col0 = matmul2x4x1(a, b[0]);
                 let col1 = matmul2x4x1(a, b[1]);
                 let col2 = matmul2x4x1(a, b[2]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
-                [swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5]), col2.widen()]
+                [swizzle!(col0, col1, @concat), col2.widen()]
             }
 
             #[inline(always)]
@@ -1823,10 +1817,9 @@ pub(crate) mod matmul {
                 let col1 = matmul2x3x1(a, b[1]);
                 let col2 = matmul2x3x1(a, b[2]);
                 let col3 = matmul2x3x1(a, b[3]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
                 [
-                    swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5]),
-                    swizzle!(col2.widen(), col3.widen(), [0, 1, 4, 5]),
+                    swizzle!(col0, col1, @concat),
+                    swizzle!(col2, col3, @concat),
                 ]
             }
 
@@ -1858,10 +1851,9 @@ pub(crate) mod matmul {
                 let col1 = matmul2x4x1(a, b[1]);
                 let col2 = matmul2x4x1(a, b[2]);
                 let col3 = matmul2x4x1(a, b[3]);
-                // TODO(swizzle-concat): express as a two-plus-two concatenation.
                 [
-                    swizzle!(col0.widen(), col1.widen(), [0, 1, 4, 5]),
-                    swizzle!(col2.widen(), col3.widen(), [0, 1, 4, 5]),
+                    swizzle!(col0, col1, @concat),
+                    swizzle!(col2, col3, @concat),
                 ]
             }
 
