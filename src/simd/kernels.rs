@@ -37,6 +37,94 @@ pub(crate) mod reduce {
 }
 
 pub(crate) mod mask {
+    use crate::{
+        simd::utils::{Simd2Ext, Simd4Ext, compute_i32x2, i32x2, swizzle},
+        utils::{Load, MaskStorage, Store},
+    };
+    use wide::{bytemuck::cast, i32x4, i64x2, i64x4};
+
+    #[allow(unused_imports)]
+    #[cfg(target_arch = "x86_64")]
+    use crate::arch::{x86_64::__m128i, *};
+
+    // Widening a canonical mask never has to recreate the sign: `0` widens to `0` and `-1` to
+    // `-1`, so duplicating each 32-bit lane into both halves of the 64-bit lane is enough. That
+    // is one shuffle per output register, where a general sign extension would cost SSE2 an
+    // extra compare-against-zero per register.
+    //
+    // Narrowing is the mirror image: the low half of a canonical 64-bit lane already is the
+    // canonical 32-bit lane, so it is a single gather of the even 32-bit lanes.
+
+    impl MaskStorage<i32> {
+        #[inline(always)]
+        pub(crate) fn cast_i64(self) -> MaskStorage<i64> {
+            // SAFETY: sign extension maps `0` to `0` and `-1` to `-1`.
+            unsafe { MaskStorage::new_unchecked(i64::from(self.into_inner())) }
+        }
+    }
+    impl MaskStorage<i32x2> {
+        #[inline(always)]
+        pub(crate) fn cast_i64(self) -> MaskStorage<i64x2> {
+            let duplicated = swizzle!(self.load().into_inner(), [0, 0, 1, 1]);
+            // SAFETY: every 32-bit lane read by the shuffle is canonical, so each pair of them
+            // forms an all-zero or all-one 64-bit lane.
+            unsafe { MaskStorage::new_unchecked(cast::<i32x4, i64x2>(duplicated)) }
+        }
+    }
+    impl MaskStorage<i32x4> {
+        #[inline(always)]
+        pub(crate) fn cast_i64(self) -> MaskStorage<i64x4> {
+            let inner = self.into_inner();
+            #[rustfmt::skip]
+            let widened = cfg_select! {
+                // A single 256-bit register holds all four output lanes, and `vpmovsxdq` fills it
+                // in one instruction. Duplicating the lanes instead would take one shuffle plus
+                // the 32-byte shuffle-control constant it has to load.
+                target_feature = "avx2" => unsafe {
+                    // SAFETY: `avx2` is enabled, and sign extension maps `0` to `0` and `-1` to
+                    // `-1`, so a canonical lane stays canonical.
+                    avx2::_mm256_cvtepi32_epi64(inner.into()).into()
+                },
+                _ => {{
+                    let halves = [swizzle!(inner, [0, 0, 1, 1]), swizzle!(inner, [2, 2, 3, 3])];
+                    cast::<[i32x4; 2], i64x4>(halves)
+                }},
+            };
+            // SAFETY: see `MaskStorage::<i32x2>::cast_i64`.
+            unsafe { MaskStorage::new_unchecked(widened) }
+        }
+    }
+    impl MaskStorage<i64> {
+        #[inline(always)]
+        pub(crate) fn cast_i32(self) -> MaskStorage<i32> {
+            // SAFETY: truncation keeps the low bits, mapping `0` to `0` and `-1` to `-1`.
+            unsafe { MaskStorage::new_unchecked(self.into_inner() as i32) }
+        }
+    }
+    impl MaskStorage<i64x2> {
+        /// The narrowed lanes before they are packed into the two-lane storage type.
+        ///
+        /// Callers that go straight on to another compute-width operation should use this rather
+        /// than `cast_i32`, whose `store` would otherwise be undone by an immediate `load`.
+        #[inline(always)]
+        fn narrow_i32(self) -> MaskStorage<compute_i32x2> {
+            let halves = cast::<i64x2, i32x4>(self.into_inner());
+            // SAFETY: the low half of a canonical 64-bit lane is canonical on its own, and the
+            // padding lanes repeat those same halves.
+            unsafe { MaskStorage::new_unchecked(swizzle!(halves, [0, 2])) }
+        }
+        #[inline(always)]
+        pub(crate) fn cast_i32(self) -> MaskStorage<i32x2> { self.narrow_i32().store() }
+    }
+    impl MaskStorage<i64x4> {
+        #[inline(always)]
+        pub(crate) fn cast_i32(self) -> MaskStorage<i32x4> {
+            let [low, high] = cast::<i64x4, [i32x4; 2]>(self.into_inner());
+            // SAFETY: see `MaskStorage::<i64x2>::cast_i32`.
+            unsafe { MaskStorage::new_unchecked(swizzle!(low, high, [0, 2, 4, 6])) }
+        }
+    }
+
     macro_rules! impl_matrix_conversion {
         ($scalar:ty, $vec2:ty, $vec4:ty) => {
             #[inline(always)]
@@ -195,15 +283,6 @@ pub(crate) mod mask {
 
     pub(crate) mod i32 {
         use super::*;
-        use crate::{
-            simd::utils::{Simd2Ext, Simd4Ext, compute_i32x2},
-            utils::MaskStorage,
-        };
-        use wide::i32x4;
-
-        #[allow(unused_imports)]
-        #[cfg(target_arch = "x86_64")]
-        use crate::arch::{x86_64::__m128i, *};
 
         #[inline(always)]
         fn from_array<const N: usize>(array: [bool; 4]) -> MaskStorage<i32x4> {
@@ -226,10 +305,10 @@ pub(crate) mod mask {
                 _ => {{
                     use wide::u8x16;
                     let packed = i32::from_le_bytes(array.map(u8::from));
-                    let bytes: u8x16 = wide::bytemuck::cast(i32x4::new([packed, 0, 0, 0]));
+                    let bytes: u8x16 = cast(i32x4::new([packed, 0, 0, 0]));
                     let words = u8x16::unpack_low(bytes, bytes);
                     let dwords = u8x16::unpack_low(words, words);
-                    wide::bytemuck::cast(dwords.simd_eq(u8x16::splat(0)) ^ u8x16::splat(u8::MAX))
+                    cast(dwords.simd_eq(u8x16::splat(0)) ^ u8x16::splat(u8::MAX))
                 }}
             };
             unsafe {
@@ -247,7 +326,7 @@ pub(crate) mod mask {
         #[inline(always)]
         fn from_array_1([a]: [bool; 1]) -> MaskStorage<i32> { MaskStorage::<i32>::new(a) }
         #[inline(always)]
-        fn from_array_2(array: [bool; 2]) -> MaskStorage<compute_i32x2> {
+        pub(super) fn from_array_2(array: [bool; 2]) -> MaskStorage<compute_i32x2> {
             cfg_select! {
                 all(target_feature = "neon", target_arch = "aarch64") => unsafe {
                     use core::arch::aarch64::*;
@@ -266,7 +345,9 @@ pub(crate) mod mask {
             from_array::<3>([array[0], array[1], array[2], false])
         }
         #[inline(always)]
-        fn from_array_4(array: [bool; 4]) -> MaskStorage<i32x4> { from_array::<4>(array) }
+        pub(super) fn from_array_4(array: [bool; 4]) -> MaskStorage<i32x4> {
+            from_array::<4>(array)
+        }
 
         #[inline(always)]
         fn to_array<const N: usize>(mask: MaskStorage<i32x4>) -> [bool; N] {
@@ -308,7 +389,7 @@ pub(crate) mod mask {
         #[inline(always)]
         fn to_array_1(mask: MaskStorage<i32>) -> [bool; 1] { [mask.into_inner() < 0] }
         #[inline(always)]
-        fn to_array_2(mask: MaskStorage<compute_i32x2>) -> [bool; 2] {
+        pub(super) fn to_array_2(mask: MaskStorage<compute_i32x2>) -> [bool; 2] {
             cfg_select! {
                 all(target_feature = "neon", target_arch = "aarch64") => unsafe {
                     use core::arch::aarch64::*;
@@ -327,36 +408,73 @@ pub(crate) mod mask {
         #[inline(always)]
         fn to_array_3(mask: MaskStorage<i32x4>) -> [bool; 3] { to_array(mask) }
         #[inline(always)]
-        fn to_array_4(mask: MaskStorage<i32x4>) -> [bool; 4] { to_array(mask) }
+        pub(super) fn to_array_4(mask: MaskStorage<i32x4>) -> [bool; 4] { to_array(mask) }
 
         impl_matrix_conversion!(i32, compute_i32x2, i32x4);
     }
 
     pub(crate) mod i64 {
         use super::*;
-        use crate::{
-            simd::utils::{Simd2Ext, Simd4Ext},
-            utils::MaskStorage,
-        };
-        use wide::{i64x2, i64x4};
+
+        // `from_array` goes through the 32-bit form and the canonical-mask widening above.
+        // Converting the bools while the lanes are still 32 bits wide runs the compare that
+        // produces `0`/`-1` on half as many registers, so composing the two beats expanding the
+        // bytes all the way to 64-bit lanes first. It also keeps the per-target tuning in one
+        // place: on AVX-512 the 32-bit form already lowers to a mask register, and the widening
+        // is then a single `vpmovsxdq`.
+        //
+        // `to_array` cannot reuse it as profitably, because AVX-512 truncates 64-bit lanes
+        // straight to bytes.
 
         #[inline(always)]
-        fn from_array_1([a]: [bool; 1]) -> MaskStorage<i64> { MaskStorage::<i64>::new(a) }
+        fn from_array_1([x]: [bool; 1]) -> MaskStorage<i64> { MaskStorage::<i64>::new(x) }
         #[inline(always)]
-        fn from_array_2(array: [bool; 2]) -> MaskStorage<i64x2> { todo!() }
+        fn from_array_2(array: [bool; 2]) -> MaskStorage<i64x2> {
+            let narrow: MaskStorage<i32x2> = super::i32::from_array_2(array).store();
+            narrow.cast_i64()
+        }
         #[inline(always)]
-        fn from_array_3(array: [bool; 3]) -> MaskStorage<i64x4> { todo!() }
+        fn from_array_3([x, y, z]: [bool; 3]) -> MaskStorage<i64x4> {
+            from_array_4([x, y, z, false])
+        }
         #[inline(always)]
-        fn from_array_4(array: [bool; 4]) -> MaskStorage<i64x4> { todo!() }
+        fn from_array_4(array: [bool; 4]) -> MaskStorage<i64x4> {
+            super::i32::from_array_4(array).cast_i64()
+        }
 
         #[inline(always)]
         fn to_array_1(mask: MaskStorage<i64>) -> [bool; 1] { [mask.into_inner() < 0] }
         #[inline(always)]
-        fn to_array_2(mask: MaskStorage<i64x2>) -> [bool; 2] { todo!() }
+        fn to_array_2(mask: MaskStorage<i64x2>) -> [bool; 2] {
+            cfg_select! {
+                all(target_feature = "avx512f", target_feature = "avx512vl") => unsafe {
+                    // SAFETY: `avx512f` and `avx512vl` are enabled. `_mm_cvtepi64_epi8` keeps the
+                    // low byte of each lane, which is `0` or `0xff`, and masking it with `1`
+                    // leaves the `0`/`1` a `bool` requires.
+                    let bytes = avx512_vl::_mm_cvtepi64_epi8(mask.into_inner().into());
+                    let packed = sse2::_mm_cvtsi128_si32(bytes) as u32 & 0x0000_0101;
+                    core::mem::transmute::<u16, [bool; 2]>(packed as u16)
+                },
+                _ => super::i32::to_array_2(mask.narrow_i32()),
+            }
+        }
         #[inline(always)]
-        fn to_array_3(mask: MaskStorage<i64x4>) -> [bool; 3] { todo!() }
+        fn to_array_3(mask: MaskStorage<i64x4>) -> [bool; 3] {
+            let [x, y, z, _] = to_array_4(mask);
+            [x, y, z]
+        }
         #[inline(always)]
-        fn to_array_4(mask: MaskStorage<i64x4>) -> [bool; 4] { todo!() }
+        fn to_array_4(mask: MaskStorage<i64x4>) -> [bool; 4] {
+            cfg_select! {
+                all(target_feature = "avx512f", target_feature = "avx512vl") => unsafe {
+                    // SAFETY: see `to_array_2`.
+                    let bytes = avx512_vl::_mm256_cvtepi64_epi8(mask.into_inner().into());
+                    let packed = sse2::_mm_cvtsi128_si32(bytes) as u32 & 0x0101_0101;
+                    core::mem::transmute::<[u8; 4], [bool; 4]>(packed.to_le_bytes())
+                },
+                _ => super::i32::to_array_4(mask.cast_i32()),
+            }
+        }
 
         impl_matrix_conversion!(i64, i64x2, i64x4);
     }

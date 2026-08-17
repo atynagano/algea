@@ -93,6 +93,27 @@ fn map3_with_mask<U, T0: MaskPrimitive, T1: Copy, T2: Copy, const M: usize, cons
     )
 }
 
+impl<const M: usize, const N: usize> MaskStorage<[[i32; M]; N]> {
+    #[inline(always)]
+    pub(crate) fn cast_i64(self) -> MaskStorage<[[i64; M]; N]> {
+        // SAFETY: sign extension maps `0` to `0` and `-1` to `-1`.
+        unsafe { MaskStorage::new_unchecked(map1(self.into_inner(), i64::from)) }
+    }
+}
+impl<const M: usize, const N: usize> MaskStorage<[[i64; M]; N]> {
+    #[inline(always)]
+    pub(crate) fn cast_i32(self) -> MaskStorage<[[i32; M]; N]> {
+        // SAFETY: truncation keeps the low bits, mapping `0` to `0` and `-1` to `-1`.
+        unsafe {
+            MaskStorage::new_unchecked(map1(
+                self.into_inner(),
+                #[inline(always)]
+                |x| x as i32,
+            ))
+        }
+    }
+}
+
 macro_rules! impl_layout {
     ((
         size: [$m:tt, $n:tt],
@@ -192,23 +213,21 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<$m, $n>>::Storage {
                 map3_with_mask(mask, true_values, false_values, Self::select_)
             }
-            if_! { $bits == 32 {
-                #[inline(always)]
-                fn select_any_mask<Mask>(
-                    mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
-                    true_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                    false_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<$m, $n>>::Storage
-                where
-                    Mask: private::SealedElement<$m, $n>,
-                {
-                    <Self as private::SealedElement<$m, $n>>::select_mask(
-                        <Mask as private::SealedElement<$m, $n>>::cast_i32(mask),
-                        true_values,
-                        false_values,
-                    )
-                }
-            }}
+            #[inline(always)]
+            fn select_any_mask<Mask>(
+                mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                true_values: <Self as private::SealedElement<$m, $n>>::Storage,
+                false_values: <Self as private::SealedElement<$m, $n>>::Storage,
+            ) -> <Self as private::SealedElement<$m, $n>>::Storage
+            where
+                Mask: private::SealedElement<$m, $n>,
+            {
+                <Self as private::SealedElement<$m, $n>>::select_mask(
+                    paste::paste!(<Mask as private::SealedElement<$m, $n>>::[<cast_i $bits>](mask)),
+                    true_values,
+                    false_values,
+                )
+            }
             #[inline(always)]
             fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                 map2_mask(a, b, Self::eq_)
@@ -609,28 +628,29 @@ macro_rules! impl_layouts_i32 {
         ) => {
             #[inline(always)]
             fn substantiate_i32(a: Self::Storage) -> Self::Storage { a }
-            #[inline(always)]
-            fn cast_i32(a: MaskStorage<Self::Storage>) -> MaskStorage<<i32 as private::SealedElement<$m, $n>>::Storage> {
-                a
-            }
-            #[inline(always)]
-            fn canonical_select_any_mask<Mask>(
-                mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
-                true_values: MaskStorage<Self::Storage>,
-                false_values: MaskStorage<Self::Storage>,
-            ) -> MaskStorage<Self::Storage>
-            where
-                Mask: private::SealedElement<$m, $n>,
-            {
-                <Mask as private::SealedElement<$m, $n>>::cast_i32(mask)
-                    .select(true_values, false_values)
-            }
+
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn cast_i32(a: MaskStorage<Self::Storage>) -> MaskStorage<<i32 as private::SealedElement<$m, $n>>::Storage> { a }
+                #[inline(always)]
+                fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a.cast_i64() }
+                #[inline(always)]
+                fn canonical_select_any_mask<Mask>(
+                    mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                    true_values: MaskStorage<Self::Storage>,
+                    false_values: MaskStorage<Self::Storage>,
+                ) -> MaskStorage<Self::Storage>
+                where
+                    Mask: private::SealedElement<$m, $n>,
+                {
+                    <Mask as private::SealedElement<$m, $n>>::cast_i32(mask)
+                        .select(true_values, false_values)
+                }
+            }}
             $($item)*
         });)*
     };
 }
-// TODO(i64-mask-casts): supply `cast_i32`, `cast_i64`, `canonical_select_any_mask` and the
-// `bits == 64` form of `select_any_mask`.
 macro_rules! impl_layouts_i64 {
     ($(($m:tt, $n:tt) => {$($item:item)*}),* $(,)?) => {
         $(impl_layout!((
@@ -640,7 +660,25 @@ macro_rules! impl_layouts_i64 {
         ) => {
             #[inline(always)]
             fn substantiate_i64(a: Self::Storage) -> Self::Storage { a }
-            // TODO: cast_i32, cast_i64
+
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn cast_i32(a: MaskStorage<Self::Storage>) -> MaskStorage<<i32 as private::SealedElement<$m, $n>>::Storage> { a.cast_i32() }
+                #[inline(always)]
+                fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a }
+                #[inline(always)]
+                fn canonical_select_any_mask<Mask>(
+                    mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                    true_values: MaskStorage<Self::Storage>,
+                    false_values: MaskStorage<Self::Storage>,
+                ) -> MaskStorage<Self::Storage>
+                where
+                    Mask: private::SealedElement<$m, $n>,
+                {
+                    <Mask as private::SealedElement<$m, $n>>::cast_i64(mask)
+                        .select(true_values, false_values)
+                }
+            }}
             $($item)*
         });)*
     };

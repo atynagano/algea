@@ -799,6 +799,14 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
+        fn cast_i64(
+            _a: MaskStorage<Self::Storage>,
+        ) -> MaskStorage<<i64 as SealedElement<M, N>>::Storage>
+        where
+            i64: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
 
         #[allow(clippy::wrong_self_convention)]
         fn to_bool_array(_a: MaskStorage<Self::Storage>) -> [[bool; M]; N] { unimplemented!() }

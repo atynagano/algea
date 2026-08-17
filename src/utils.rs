@@ -302,6 +302,18 @@ macro_rules! impl_default_load {
 pub(crate) use impl_default_load;
 
 mod mask_utils {
+    // TODO(mask-bitmask-storage): AVX-512 has dedicated mask registers whose bits carry no lane
+    // width, so a bitmask representation would make the 32-bit/64-bit mask casts free and let
+    // `any`/`all`/`to_bitmask` read the register directly. Keeping one lane per element instead
+    // costs a shuffle on every cross-width `select` there. Not attempted: every other target
+    // wants the wide form, so this would need a second storage type behind a target feature.
+
+    // TODO(non-simd-bool-mask-storage): the non-SIMD backend could store `[[bool; M]; N]` for
+    // every element type instead of mirroring the element's width in `i32`/`i64` lanes. Nothing
+    // in the public API promises a storage layout, and without vector instructions there is no
+    // reason for the lane width to match the values being selected: the width casts and the
+    // canonical `0`/`-1` invariant would both disappear.
+
     /// Storage whose physical lanes are all-zero or all-one bit patterns.
     #[derive(Copy, Clone)]
     #[repr(transparent)]
