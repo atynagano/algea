@@ -485,16 +485,37 @@ pub(crate) mod diagonal {
 
     #[inline(always)]
     pub(crate) fn diagonal2x2<Tx4: ComputeVector4>(a: Tx4) -> Tx4::Vector2 { swizzle!(a, [0, 3]) }
+
+    // Two shapes compute the same diagonal. Interleaving pairs of rows and then picking one lane
+    // per half suits an instruction that can only take its low output lanes from one operand and
+    // its high output lanes from the other, which is what x86's `shufps` is. Reading the diagonal
+    // as a chain of single-lane inserts instead suits a target with a lane-insert instruction and
+    // no general two-input four-lane shuffle, which is what aarch64 is: `shufps`'s grouping
+    // constraint does not exist there, so the interleaves have to be rebuilt from `zip`/`uzp`
+    // plus lane moves. Which one wins is therefore a property of the target, not of the lane
+    // width: 64-bit lanes cost the same either way everywhere, because a two-lane shuffle picks
+    // each output lane from either operand to begin with.
+    //
+    // For four rows the insert chain ties the interleaving shape off aarch64, so it is used
+    // unconditionally. For three rows the interleaving shape is one instruction shorter on x86.
     #[inline(always)]
     pub(crate) fn diagonal3x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> Tx4 {
-        let temp = swizzle!(a[0], a[1], [0, 4, 1, 5]);
-        swizzle!(temp, a[2], [0, 3, 6, _])
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let temp = swizzle!(a[0], a[1], [0, 5, 2, 3]);
+                swizzle!(temp, a[2], [0, 1, 6, 3])
+            }
+            _ => {
+                let temp = swizzle!(a[0], a[1], [0, 4, 1, 5]);
+                swizzle!(temp, a[2], [0, 3, 6, _])
+            }
+        }
     }
     #[inline(always)]
     pub(crate) fn diagonal4x4<Tx4: ComputeVector4>(a: [Tx4; 4]) -> Tx4 {
-        let xy = swizzle!(a[0], a[1], [0, 4, 1, 5]);
-        let zw = swizzle!(a[2], a[3], [2, 6, 3, 7]);
-        swizzle!(xy, zw, [0, 3, 4, 7])
+        let xy = swizzle!(a[0], a[1], [0, 5, 2, 3]);
+        let xyz = swizzle!(xy, a[2], [0, 1, 6, 3]);
+        swizzle!(xyz, a[3], [0, 1, 2, 7])
     }
 }
 
