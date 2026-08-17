@@ -1262,20 +1262,49 @@ pub(crate) mod cast {
 pub(crate) mod round {
     use wide::{f32x4, f64x2, f64x4};
 
-    pub(crate) fn f64x4_round_ties_even(v: f64x4) -> f64x4 { todo!() }
-    pub(crate) fn f64x2_round_ties_even(v: f64x2) -> f64x2 { todo!() }
-
     // Rust semantics do not fix the NaN payload or quiet bit.
     #[inline(always)]
     pub(crate) fn f32x4_round_ties_even(x: f32x4) -> f32x4 {
         let rounded = x.round_ties_even();
         cfg_select! {
-            target_feature = "sse2" => {
-                // Restore the sign of negative zero lost by the SSE2 integer round trip.
+            // Without SSE4.1 the rounding goes through `cvtps2dq`/`cvtdq2ps`, which returns `+0.0`
+            // where the standard library returns `-0.0`: for `-0.0` itself and for every negative
+            // value that rounds to zero. Restoring the input's sign is enough, because rounding
+            // never changes it. Every other target, SSE4.1 included, already agrees bit for bit.
+            all(target_feature = "sse2", not(target_feature = "sse4.1")) => {
                 let sign = x & f32x4::splat(f32::from_bits(0x8000_0000));
                 rounded | sign
             }
             _ => rounded,
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f64x4_round_ties_even(x: f64x4) -> f64x4 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // A four-lane value is a pair of registers here, so round each half.
+                // SAFETY: without a 256-bit register `wide::f64x4` is
+                // `#[repr(C)] { a: f64x2, b: f64x2 }`, which has the same layout as `[f64x2; 2]`;
+                // `transmute` additionally checks that the two sizes agree.
+                let [low, high] = unsafe { core::mem::transmute::<f64x4, [f64x2; 2]>(x) };
+                let halves = [f64x2_round_ties_even(low), f64x2_round_ties_even(high)];
+                // SAFETY: see the split above.
+                unsafe { core::mem::transmute::<[f64x2; 2], f64x4>(halves) }
+            }
+            _ => x.round_ties_even(),
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f64x2_round_ties_even(x: f64x2) -> f64x2 {
+        cfg_select! {
+            // `wide` has no aarch64 branch for 64-bit lanes and falls back to an eleven-instruction
+            // magic-value sequence, though the architecture rounds a whole register in one
+            // instruction. Its 32-bit sibling already takes that instruction.
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // SAFETY: NEON is part of the aarch64 baseline, which this branch is gated on.
+                unsafe { core::arch::aarch64::vrndnq_f64(x.into()) }.into()
+            }
+            _ => x.round_ties_even(),
         }
     }
 }
