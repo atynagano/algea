@@ -66,12 +66,12 @@ pub(crate) trait ArithPrimitive: Copy {
     fn as_array_(&self) -> &[Self::Scalar];
     #[allow(dead_code)]
     fn as_mut_array_(&mut self) -> &mut [Self::Scalar];
-    fn cast_from_f32_(a: Self::F32) -> Self;
-    fn cast_from_f64_(a: Self::F64) -> Self;
-    fn cast_from_i32_(a: Self::I32) -> Self;
-    fn cast_from_i64_(a: Self::I64) -> Self;
-    fn cast_from_u32_(a: Self::U32) -> Self;
-    fn cast_from_u64_(a: Self::U64) -> Self;
+    fn cast_from_f32_<const N: usize>(_a: Self::F32) -> Self { unimplemented!() }
+    fn cast_from_f64_<const N: usize>(_a: Self::F64) -> Self { unimplemented!() }
+    fn cast_from_i32_<const N: usize>(_a: Self::I32) -> Self { unimplemented!() }
+    fn cast_from_i64_<const N: usize>(_a: Self::I64) -> Self { unimplemented!() }
+    fn cast_from_u32_<const N: usize>(_a: Self::U32) -> Self { unimplemented!() }
+    fn cast_from_u64_<const N: usize>(_a: Self::U64) -> Self { unimplemented!() }
 
     fn max_(self, _other: Self) -> Self { unimplemented!() }
     fn min_(self, _other: Self) -> Self { unimplemented!() }
@@ -138,17 +138,17 @@ macro_rules! impl_arith_primitive {
             #[inline(always)]
             fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { core::array::from_mut(self) }
             #[inline(always)]
-            fn cast_from_f32_(a: Self::F32) -> Self { a as _ }
+            fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a as _ }
             #[inline(always)]
-            fn cast_from_f64_(a: Self::F64) -> Self { a as _ }
+            fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { a as _ }
             #[inline(always)]
-            fn cast_from_i32_(a: Self::I32) -> Self { a as _ }
+            fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a as _ }
             #[inline(always)]
-            fn cast_from_i64_(a: Self::I64) -> Self { a as _ }
+            fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { a as _ }
             #[inline(always)]
-            fn cast_from_u32_(a: Self::U32) -> Self { a as _ }
+            fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a as _ }
             #[inline(always)]
-            fn cast_from_u64_(a: Self::U64) -> Self { a as _ }
+            fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { a as _ }
             #[inline(always)]
             fn max_(self, other: Self) -> Self { self.max(other) }
             #[inline(always)]

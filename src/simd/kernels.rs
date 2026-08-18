@@ -1235,31 +1235,202 @@ pub(crate) mod from_vecs {
 pub(crate) mod cast {
     #[allow(unused_imports)]
     use crate::arch::*;
-    use crate::simd::utils::{f32x2, i32x2, u32x2};
+    #[allow(unused_imports)]
+    use crate::{
+        simd::utils::{f32x2, i32x2, u32x2},
+        utils::{Load, Store},
+    };
     #[allow(unused_imports)]
     use wide::{bytemuck::cast, f32x4, i16x8, i32x4, u8x16, u32x4};
     use wide::{f64x2, f64x4, i64x2, i64x4, u64x2, u64x4};
 
-    pub(crate) use core::convert::{
-        identity as f32x4_from_f32,
-        identity as i32x4_from_i32,
-        identity as u32x4_from_u32,
-        identity as f64x4_from_f64,
-        identity as i64x4_from_i64,
-        identity as u64x4_from_u64,
-        identity as f64x2_from_f64,
-        identity as i64x2_from_i64,
-        identity as u64x2_from_u64,
+    #[allow(unused_imports)]
+    use crate::simd::utils::{Simd2Ext, swizzle};
+    #[cfg(target_feature = "simd128")]
+    use core::arch::wasm32::{
+        f32x4_convert_u32x4,
+        f32x4_demote_f64x2_zero,
+        f64x2_convert_low_i32x4,
+        f64x2_convert_low_u32x4,
+        f64x2_promote_low_f32x4,
+        i32x4_trunc_sat_f64x2_zero,
+        i64x2_extend_high_i32x4,
+        i64x2_extend_low_i32x4,
+        u32x4_shuffle,
+        u32x4_trunc_sat_f32x4,
+        u32x4_trunc_sat_f64x2_zero,
+        u64x2_extend_high_u32x4,
+        u64x2_extend_low_u32x4,
+        v128,
     };
+    #[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
+    use std::arch::aarch64::*;
+
+    // Each 64-bit four-lane result is built from its two 128-bit halves. When the caller only asks
+    // for two lanes the high half is never computed: `$high` sits in a branch that a constant `$n`
+    // deletes. Zeroed padding is what the widening produces on its own.
+    macro_rules! join_64bit {
+        ($n:expr, $low:expr, $high:expr) => {
+if $n <= 2 { Simd2Ext::widen($low) } else { swizzle!($low, $high, @concat) }
+        };
+    }
+
+    // The mirror image: two 32-bit results whose lanes 2 and 3 are already zero are interleaved
+    // into one. With two lanes asked for, the low half is the answer as it stands.
+    macro_rules! join_32bit {
+        ($n:expr, $low:expr, $high:expr) => {
+            if $n <= 2 { $low } else { swizzle!($low, $high, [0, 1, 4, 5]) }
+        };
+    }
+
+    // Packs a comparison mask over four 64-bit lanes down to four 32-bit lanes. Both halves of a
+    // canonical mask lane hold the same bits, so keeping the even 32-bit lanes preserves it.
+    macro_rules! pack_mask_64_to_32 {
+        ($mask:expr) => {{
+            let [low, high] = cast::<f64x4, [i32x4; 2]>($mask);
+            swizzle!(low, high, [0, 2, 4, 6])
+        }};
+    }
+
+    // Turns zero-extended 32-bit lanes into doubles without a conversion instruction. The mantissa
+    // of `2^52` is zero, so writing a value below `2^52` into its low bits gives exactly
+    // `2^52 + value`; subtracting `2^52` leaves the value. Every `u32` is far below `2^52`, so this
+    // is exact, and it is the way in on targets whose only packed conversion reads a *signed*
+    // source.
+    macro_rules! zero_extended_to_f64 {
+        ($widened:expr) => {{
+            const MAGIC: u64 = 0x4330_0000_0000_0000;
+            cast::<u64x2, f64x2>($widened | u64x2::splat(MAGIC))
+                - f64x2::splat(f64::from_bits(MAGIC))
+        }};
+    }
 
     #[inline(always)]
-    pub(crate) fn f32x4_from_f64(v: f64x4) -> f32x4 { todo!() }
+    pub(crate) fn f32x4_from_f32<const N: usize>(v: f32x4) -> f32x4 { v }
     #[inline(always)]
-    pub(crate) fn f32x4_from_i32(v: i32x4) -> f32x4 { f32x4::from_i32x4(v) }
+    pub(crate) fn i32x4_from_i32<const N: usize>(v: i32x4) -> i32x4 { v }
     #[inline(always)]
-    pub(crate) fn f32x4_from_i64(v: i64x4) -> f32x4 { todo!() }
+    pub(crate) fn u32x4_from_u32<const N: usize>(v: u32x4) -> u32x4 { v }
     #[inline(always)]
-    pub(crate) fn f32x4_from_u32(v: u32x4) -> f32x4 {
+    pub(crate) fn f64x4_from_f64<const N: usize>(v: f64x4) -> f64x4 { v }
+    #[inline(always)]
+    pub(crate) fn i64x4_from_i64<const N: usize>(v: i64x4) -> i64x4 { v }
+    #[inline(always)]
+    pub(crate) fn u64x4_from_u64<const N: usize>(v: u64x4) -> u64x4 { v }
+    #[inline(always)]
+    pub(crate) fn f64x2_from_f64(v: f64x2) -> f64x2 { v }
+    #[inline(always)]
+    pub(crate) fn i64x2_from_i64(v: i64x2) -> i64x2 { v }
+    #[inline(always)]
+    pub(crate) fn u64x2_from_u64(v: u64x2) -> u64x2 { v }
+
+    #[inline(always)]
+    pub(crate) fn f32x4_from_f64<const N: usize>(v: f64x4) -> f32x4 {
+        cfg_select! {
+            target_feature = "avx" => {
+                // One instruction narrows all four lanes, so there is nothing for `N` to save.
+                f32x4::from(unsafe { avx::_mm256_cvtpd_ps(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let low: float64x2_t = swizzle!(v, [0, 1]).into();
+                unsafe {
+                    let narrowed = vcvt_f32_f64(low);
+                    if N <= 2 {
+                        vcombine_f32(narrowed, vdup_n_f32(0.)).into()
+                    } else {
+                        vcvt_high_f32_f64(narrowed, swizzle!(v, [2, 3]).into()).into()
+                    }
+                }
+            }
+            target_feature = "simd128" => {
+                let low: v128 = swizzle!(v, [0, 1]).into();
+                let narrowed = f32x4::from(f32x4_demote_f64x2_zero(low));
+                join_32bit!(N, narrowed, {
+                    let high: v128 = swizzle!(v, [2, 3]).into();
+                    f32x4::from(f32x4_demote_f64x2_zero(high))
+                })
+            }
+            target_feature = "sse2" => {
+                // `cvtpd2ps` writes the two results into lanes 0 and 1 and zeroes lanes 2 and 3.
+                let narrowed =
+                    f32x4::from(unsafe { sse2::_mm_cvtpd_ps(swizzle!(v, [0, 1]).into()) });
+                join_32bit!(
+                    N,
+                    narrowed,
+                    f32x4::from(unsafe { sse2::_mm_cvtpd_ps(swizzle!(v, [2, 3]).into()) })
+                )
+            }
+            _ => {
+                let a = v.to_array();
+                f32x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f32 } else { 0. },
+                ))
+            }
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f32x2_from_f64(v: f64x2) -> f32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                unsafe { vcvt_f32_f64(v.into()) }.into()
+            }
+            target_feature = "simd128" => f32x4::from(f32x4_demote_f64x2_zero(v.into())).store(),
+            target_feature = "sse2" => f32x4::from(unsafe { sse2::_mm_cvtpd_ps(v.into()) }).store(),
+            _ => {
+                let [a, b] = v.to_array();
+                f32x4::new([a as f32, b as f32, 0., 0.]).store()
+            }
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f32x4_from_i32<const N: usize>(v: i32x4) -> f32x4 { f32x4::from_i32x4(v) }
+    #[inline(always)]
+    pub(crate) fn f32x2_from_i32(v: i32x2) -> f32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                unsafe { vcvt_f32_s32(v.into()) }.into()
+            }
+            _ => f32x4_from_i32::<2>(v.load()).store(),
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f32x4_from_i64<const N: usize>(v: i64x4) -> f32x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                // One instruction converts all four lanes, and it rounds once.
+                f32x4::from(unsafe { avx512_dq_vl::_mm256_cvtepi64_ps(v.into()) })
+            }
+            _ => {
+                // This one cannot go through `f64`. `i64 as f32` rounds once, whereas rounding to
+                // `f64` and then to `f32` rounds twice, and the two disagree: for
+                // `2^53 + 2^29 + 1` the direct result is `2^53 + 2^30` while the two-step result
+                // is `2^53`. No target outside AVX-512DQ has a packed 64-bit-to-`f32` conversion,
+                // so this falls back to lane-wise `as`.
+                let a = v.to_array();
+                f32x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f32 } else { 0. },
+                ))
+            }
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f32x2_from_i64(v: i64x2) -> f32x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                f32x4::from(unsafe { avx512_dq_vl::_mm_cvtepi64_ps(v.into()) }).store()
+            }
+            _ => {
+                // See `f32x4_from_i64`. Built from scalars rather than narrowed from four lanes,
+                // because on aarch64 the two-lane type is its own register.
+                let [a, b] = v.to_array();
+                f32x2::new([a as f32, b as f32])
+            }
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn f32x4_from_u32<const N: usize>(v: u32x4) -> f32x4 {
         cfg_select! {
             target_feature = "avx512f" => unsafe {
                 let input: x86_64::__m128i = v.into();
@@ -1268,7 +1439,16 @@ pub(crate) mod cast {
                 let low = avx512_f::_mm512_castps512_ps128(converted);
                 f32x4::from(low)
             },
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // `UCVTF` converts every lane.
+                unsafe { vcvtq_f32_u32(v.into()) }.into()
+            }
+            target_feature = "simd128" => f32x4::from(f32x4_convert_u32x4(v.into())),
             _ => {
+                // Without a packed unsigned conversion, split each lane into its low and high
+                // 16 bits, give each half an exponent that makes the mantissa read as an integer,
+                // and add the two halves back together. `549_764_200_000.0` cancels the bias the
+                // two exponents introduce.
                 const MASK: i16x8 = i16x8::new([-1, 0, -1, 0, -1, 0, -1, 0]);
                 let low =
                     MASK.select(cast::<_, i16x8>(v), cast::<_, i16x8>(u32x4::splat(0x4b00_0000)));
@@ -1279,19 +1459,183 @@ pub(crate) mod cast {
         }
     }
     #[inline(always)]
-    pub(crate) fn f32x4_from_u64(v: u64x4) -> f32x4 { todo!() }
+    pub(crate) fn f32x2_from_u32(v: u32x2) -> f32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                unsafe { vcvt_f32_u32(v.into()) }.into()
+            }
+            _ => f32x4_from_u32::<2>(v.load()).store(),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i32x4_from_f32(v: f32x4) -> i32x4 { f32x4::trunc_int(v) }
+    pub(crate) fn f32x4_from_u64<const N: usize>(v: u64x4) -> f32x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                f32x4::from(unsafe { avx512_dq_vl::_mm256_cvtepu64_ps(v.into()) })
+            }
+            _ => {
+                // See `f32x4_from_i64`: the two-step route through `f64` rounds twice.
+                let a = v.to_array();
+                f32x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f32 } else { 0. },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i32x4_from_f64(v: f64x4) -> i32x4 { todo!() }
+    pub(crate) fn f32x2_from_u64(v: u64x2) -> f32x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                f32x4::from(unsafe { avx512_dq_vl::_mm_cvtepu64_ps(v.into()) }).store()
+            }
+            _ => {
+                // See `f32x4_from_i64`. Built from scalars rather than narrowed from four lanes,
+                // because on aarch64 the two-lane type is its own register.
+                let [a, b] = v.to_array();
+                f32x2::new([a as f32, b as f32])
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i32x4_from_i64(v: i64x4) -> i32x4 { todo!() }
+    pub(crate) fn i32x4_from_f32<const N: usize>(v: f32x4) -> i32x4 { f32x4::trunc_int(v) }
     #[inline(always)]
-    pub(crate) fn i32x4_from_u32(v: u32x4) -> i32x4 { v.cast_signed() }
+    pub(crate) fn i32x2_from_f32(v: f32x2) -> i32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                unsafe { vcvt_s32_f32(v.into()) }.into()
+            }
+            _ => i32x4_from_f32::<2>(v.load()).store(),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i32x4_from_u64(v: u64x4) -> i32x4 { todo!() }
+    pub(crate) fn i32x4_from_f64<const N: usize>(v: f64x4) -> i32x4 {
+        cfg_select! {
+            target_feature = "avx512vl" => {
+                use core::arch::x86_64::{_CMP_GE_OQ, _CMP_ORD_Q};
+                let input: x86_64::__m256d = v.into();
+                // Mask registers hold the two corrections `vcvttpd2dq` needs: lanes at or above
+                // `2^31` become `i32::MAX`, and unordered lanes become zero.
+                unsafe {
+                    let converted = avx::_mm256_cvttpd_epi32(input);
+                    let overflow = avx512_vl::_mm256_cmp_pd_mask::<_CMP_GE_OQ>(
+                        input,
+                        avx::_mm256_set1_pd(2_147_483_648.),
+                    );
+                    let ordered = avx512_vl::_mm256_cmp_pd_mask::<_CMP_ORD_Q>(input, input);
+                    let saturated = avx512_vl::_mm_mask_mov_epi32(
+                        converted,
+                        overflow,
+                        sse2::_mm_set1_epi32(i32::MAX),
+                    );
+                    i32x4::from(avx512_vl::_mm_maskz_mov_epi32(ordered, saturated))
+                }
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // `FCVTZS` clamps to the 64-bit range and maps NaN to zero; `SQXTN` then clamps
+                // that to the 32-bit range. Composing the two saturations gives exactly `as`.
+                unsafe {
+                    let low = vqmovn_s64(vcvtq_s64_f64(swizzle!(v, [0, 1]).into()));
+                    if N <= 2 {
+                        vcombine_s32(low, vdup_n_s32(0)).into()
+                    } else {
+                        vqmovn_high_s64(low, vcvtq_s64_f64(swizzle!(v, [2, 3]).into())).into()
+                    }
+                }
+            }
+            target_feature = "simd128" => {
+                // `i32x4.trunc_sat_f64x2_s_zero` already saturates and maps NaN to zero, and
+                // zeroes the two lanes it does not write.
+                let low = i32x4::from(i32x4_trunc_sat_f64x2_zero(swizzle!(v, [0, 1]).into()));
+                join_32bit!(
+                    N,
+                    low,
+                    i32x4::from(i32x4_trunc_sat_f64x2_zero(swizzle!(v, [2, 3]).into()))
+                )
+            }
+            target_feature = "sse2" => {
+                // `cvttpd2dq` is not saturating: it returns `i32::MIN` for everything it cannot
+                // represent. That is already the answer for negative overflow, so only two lanes
+                // need fixing. Clearing NaN beforehand turns those into zero, and flipping every
+                // bit of a lane that reached `2^31` turns `i32::MIN` into `i32::MAX`.
+                let two31 = f64x2::splat(2_147_483_648.);
+                let low: f64x2 = swizzle!(v, [0, 1]);
+                let converted_low =
+                    i32x4::from(unsafe { sse2::_mm_cvttpd_epi32((low & low.simd_eq(low)).into()) });
+                let flip_low = cast::<f64x2, i32x4>(low.simd_ge(two31));
+                if N <= 2 {
+                    converted_low ^ swizzle!(flip_low, [0, 2, 0, 2])
+                } else {
+                    let high: f64x2 = swizzle!(v, [2, 3]);
+                    let converted_high = i32x4::from(unsafe {
+                        sse2::_mm_cvttpd_epi32((high & high.simd_eq(high)).into())
+                    });
+                    let flip_high = cast::<f64x2, i32x4>(high.simd_ge(two31));
+                    swizzle!(converted_low, converted_high, [0, 1, 4, 5])
+                        ^ swizzle!(flip_low, flip_high, [0, 2, 4, 6])
+                }
+            }
+            _ => {
+                let a = v.to_array();
+                i32x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as i32 } else { 0 },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u32x4_from_f32(v: f32x4) -> u32x4 {
+    pub(crate) fn i32x2_from_f64(v: f64x2) -> i32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // See `i32x4_from_f64`.
+                unsafe { vqmovn_s64(vcvtq_s64_f64(v.into())) }.into()
+            }
+            target_feature = "simd128" => i32x4::from(i32x4_trunc_sat_f64x2_zero(v.into())).store(),
+            target_feature = "sse2" => {
+                // See `i32x4_from_f64`.
+                let converted =
+                    i32x4::from(unsafe { sse2::_mm_cvttpd_epi32((v & v.simd_eq(v)).into()) });
+                let flip = cast::<f64x2, i32x4>(v.simd_ge(f64x2::splat(2_147_483_648.)));
+                (converted ^ swizzle!(flip, [0, 2, 0, 2])).store()
+            }
+            _ => {
+                let [a, b] = v.to_array();
+                i32x4::new([a as i32, b as i32, 0, 0]).store()
+            }
+        }
+    }
+    #[inline(always)]
+    pub(crate) fn i32x4_from_i64<const N: usize>(v: i64x4) -> i32x4 {
+        // Truncating to 32 bits keeps the low half of each 64-bit lane, so the whole conversion is
+        // a gather of the even 32-bit lanes. That is one shuffle whatever `N` is, and reading the
+        // high half when only two lanes were asked for is harmless: padding is always initialized.
+        let [low, high] = cast::<i64x4, [i32x4; 2]>(v);
+        swizzle!(low, high, [0, 2, 4, 6])
+    }
+    #[inline(always)]
+    pub(crate) fn i32x2_from_i64(v: i64x2) -> i32x2 {
+        // See `i32x4_from_i64`. The padding lanes repeat the two results, which is canonical
+        // enough for a value: nothing reads them.
+        let halves = cast::<i64x2, i32x4>(v);
+        swizzle!(halves, [0, 2]).store()
+    }
+    #[inline(always)]
+    pub(crate) fn i32x4_from_u32<const N: usize>(v: u32x4) -> i32x4 { v.cast_signed() }
+    #[inline(always)]
+    pub(crate) fn i32x2_from_u32(v: u32x2) -> i32x2 { v.cast_signed() }
+    #[inline(always)]
+    pub(crate) fn i32x4_from_u64<const N: usize>(v: u64x4) -> i32x4 {
+        // See `u32x4_from_i64`.
+        u32x4_from_u64::<N>(v).cast_signed()
+    }
+    #[inline(always)]
+    pub(crate) fn i32x2_from_u64(v: u64x2) -> i32x2 {
+        // See `u32x4_from_i64`.
+        u32x2_from_u64(v).cast_signed()
+    }
+    #[inline(always)]
+    pub(crate) fn u32x4_from_f32<const N: usize>(v: f32x4) -> u32x4 {
         cfg_select! {
             target_feature = "avx512vl" => unsafe {
                 use core::arch::x86_64::{_CMP_GE_OQ, _CMP_GT_OQ};
@@ -1307,7 +1651,16 @@ pub(crate) mod cast {
                     avx512_vl::_mm_mask_mov_epi32(converted, overflow, sse2::_mm_set1_epi32(-1));
                 u32x4::from(avx512_vl::_mm_maskz_mov_epi32(nonnegative, saturated))
             },
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // `FCVTZU` truncates toward zero, clamps to `0..=u32::MAX` and maps NaN to zero,
+                // which is what `as` does.
+                unsafe { vcvtq_u32_f32(v.into()) }.into()
+            }
+            target_feature = "simd128" => u32x4::from(u32x4_trunc_sat_f32x4(v.into())),
             _ => {
+                // `cvttps2dq` is signed and non-saturating, so subtract 2^31 from the lanes that
+                // need the high bit, convert, and put the bit back. Negative lanes are cleared
+                // first and lanes at or above 2^32 are forced to `u32::MAX`.
                 let nonnegative = v & v.simd_ge(f32x4::splat(0.));
                 let two31 = f32x4::splat(2_147_483_648.);
                 let high = nonnegative.simd_ge(two31);
@@ -1320,74 +1673,656 @@ pub(crate) mod cast {
         }
     }
     #[inline(always)]
-    pub(crate) fn u32x4_from_f64(v: f64x4) -> u32x4 { todo!() }
+    pub(crate) fn u32x2_from_f32(v: f32x2) -> u32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // See `u32x4_from_f32`.
+                unsafe { vcvt_u32_f32(v.into()) }.into()
+            }
+            _ => u32x4_from_f32::<2>(v.load()).store(),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u32x4_from_i32(v: i32x4) -> u32x4 { v.cast_unsigned() }
+    pub(crate) fn u32x4_from_f64<const N: usize>(v: f64x4) -> u32x4 {
+        cfg_select! {
+            target_feature = "avx512vl" => {
+                use core::arch::x86_64::{_CMP_GE_OQ, _CMP_GT_OQ};
+                let input: x86_64::__m256d = v.into();
+                // `vcvttpd2udq` handles the in-range lanes; the two mask registers force `u32::MAX`
+                // above the range and zero below it, which also covers NaN.
+                unsafe {
+                    let converted = avx512_vl::_mm256_cvttpd_epu32(input);
+                    let overflow = avx512_vl::_mm256_cmp_pd_mask::<_CMP_GT_OQ>(
+                        input,
+                        avx::_mm256_set1_pd(u32::MAX as f64),
+                    );
+                    let nonnegative = avx512_vl::_mm256_cmp_pd_mask::<_CMP_GE_OQ>(
+                        input,
+                        avx::_mm256_setzero_pd(),
+                    );
+                    let saturated = avx512_vl::_mm_mask_mov_epi32(
+                        converted,
+                        overflow,
+                        sse2::_mm_set1_epi32(-1),
+                    );
+                    u32x4::from(avx512_vl::_mm_maskz_mov_epi32(nonnegative, saturated))
+                }
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // `FCVTZU` clamps to the 64-bit unsigned range, mapping negatives and NaN to zero;
+                // `UQXTN` then clamps to the 32-bit range.
+                unsafe {
+                    let low = vqmovn_u64(vcvtq_u64_f64(swizzle!(v, [0, 1]).into()));
+                    if N <= 2 {
+                        vcombine_u32(low, vdup_n_u32(0)).into()
+                    } else {
+                        vqmovn_high_u64(low, vcvtq_u64_f64(swizzle!(v, [2, 3]).into())).into()
+                    }
+                }
+            }
+            target_feature = "simd128" => {
+                let low = u32x4::from(u32x4_trunc_sat_f64x2_zero(swizzle!(v, [0, 1]).into()));
+                join_32bit!(
+                    N,
+                    low,
+                    u32x4::from(u32x4_trunc_sat_f64x2_zero(swizzle!(v, [2, 3]).into()))
+                )
+            }
+            target_feature = "avx" => {
+                // `vcvttpd2dq` is signed, so subtract `2^31` from the lanes that need the high bit,
+                // convert, and put the bit back. Clearing the negative lanes first also disposes of
+                // NaN, which compares false; lanes at or above `2^32` are forced to `u32::MAX`.
+                // The two comparison masks are over 64-bit lanes and have to be packed to 32.
+                let nonnegative = v & v.simd_ge(f64x4::splat(0.));
+                let two31 = f64x4::splat(2_147_483_648.);
+                let high = nonnegative.simd_ge(two31);
+                let adjusted = nonnegative - (high & two31);
+                let converted = i32x4::from(unsafe { avx::_mm256_cvttpd_epi32(adjusted.into()) })
+                    ^ (pack_mask_64_to_32!(high) & i32x4::splat(i32::MIN));
+                let overflow = nonnegative.simd_ge(f64x4::splat(4_294_967_296.));
+                (converted | pack_mask_64_to_32!(overflow)).cast_unsigned()
+            }
+            _ => {
+                // SSE2 has no packed unsigned narrowing, and the signed-plus-fixup sequence above
+                // measured no shorter there than four scalar conversions.
+                let a = v.to_array();
+                u32x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as u32 } else { 0 },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u32x4_from_i64(v: i64x4) -> u32x4 { todo!() }
+    pub(crate) fn u32x2_from_f64(v: f64x2) -> u32x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // See `u32x4_from_f64`.
+                unsafe { vqmovn_u64(vcvtq_u64_f64(v.into())) }.into()
+            }
+            target_feature = "simd128" => u32x4::from(u32x4_trunc_sat_f64x2_zero(v.into())).store(),
+            _ => {
+                // See `u32x4_from_f64`.
+                let [a, b] = v.to_array();
+                u32x4::new([a as u32, b as u32, 0, 0]).store()
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u32x4_from_u64(v: u64x4) -> u32x4 { todo!() }
+    pub(crate) fn u32x4_from_i32<const N: usize>(v: i32x4) -> u32x4 { v.cast_unsigned() }
+    #[inline(always)]
+    pub(crate) fn u32x2_from_i32(v: i32x2) -> u32x2 { v.cast_unsigned() }
+    #[inline(always)]
+    pub(crate) fn u32x4_from_i64<const N: usize>(v: i64x4) -> u32x4 {
+        // `i64 as u32` and `i64 as i32` keep the same 32 bits and differ only in how they are
+        // read back.
+        i32x4_from_i64::<N>(v).cast_unsigned()
+    }
+    #[inline(always)]
+    pub(crate) fn u32x2_from_i64(v: i64x2) -> u32x2 {
+        // See `u32x4_from_i64`.
+        i32x2_from_i64(v).cast_unsigned()
+    }
+    #[inline(always)]
+    pub(crate) fn u32x4_from_u64<const N: usize>(v: u64x4) -> u32x4 {
+        // See `i32x4_from_i64`.
+        let [low, high] = cast::<u64x4, [u32x4; 2]>(v);
+        swizzle!(low, high, [0, 2, 4, 6])
+    }
+    #[inline(always)]
+    pub(crate) fn u32x2_from_u64(v: u64x2) -> u32x2 {
+        // See `i32x2_from_i64`.
+        let halves = cast::<u64x2, u32x4>(v);
+        swizzle!(halves, [0, 2]).store()
+    }
 
     #[inline(always)]
-    pub(crate) fn f64x4_from_f32(v: f32x4) -> f64x4 { todo!() }
+    pub(crate) fn f64x4_from_f32<const N: usize>(v: f32x4) -> f64x4 {
+        cfg_select! {
+            target_feature = "avx" => {
+                // One instruction widens all four lanes, so there is nothing for `N` to save.
+                f64x4::from(unsafe { avx::_mm256_cvtps_pd(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let reg: float32x4_t = v.into();
+                unsafe {
+                    let low = f64x2::from(vcvt_f64_f32(vget_low_f32(reg)));
+                    join_64bit!(N, low, f64x2::from(vcvt_high_f64_f32(reg)))
+                }
+            }
+            target_feature = "simd128" => {
+                let reg: v128 = v.into();
+                let low = f64x2::from(f64x2_promote_low_f32x4(reg));
+                join_64bit!(
+                    N,
+                    low,
+                    f64x2::from(f64x2_promote_low_f32x4(u32x4_shuffle::<2, 3, 0, 1>(reg, reg)))
+                )
+            }
+            target_feature = "sse2" => {
+                let reg: x86_64::__m128 = v.into();
+                // `cvtps2pd` widens the two low lanes.
+                unsafe {
+                    let low = f64x2::from(sse2::_mm_cvtps_pd(reg));
+                    join_64bit!(
+                        N,
+                        low,
+                        f64x2::from(sse2::_mm_cvtps_pd(sse::_mm_movehl_ps(reg, reg)))
+                    )
+                }
+            }
+            _ => {
+                let a = v.to_array();
+                f64x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f64 } else { 0. },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x2_from_f32(v: f32x2) -> f64x2 { todo!() }
+    pub(crate) fn f64x2_from_f32(v: f32x2) -> f64x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                f64x2::from(unsafe { vcvt_f64_f32(v.into()) })
+            }
+            target_feature = "simd128" => f64x2::from(f64x2_promote_low_f32x4(v.load().into())),
+            target_feature = "sse2" => f64x2::from(unsafe { sse2::_mm_cvtps_pd(v.load().into()) }),
+            _ => {
+                let [a, b, ..] = v.load().to_array();
+                f64x2::new([a as f64, b as f64])
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x4_from_i32(v: i32x4) -> f64x4 { todo!() }
+    pub(crate) fn f64x4_from_i32<const N: usize>(v: i32x4) -> f64x4 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let reg: int32x4_t = v.into();
+                unsafe {
+                    let low = f64x2::from(vcvtq_f64_s64(vmovl_s32(vget_low_s32(reg))));
+                    join_64bit!(N, low, f64x2::from(vcvtq_f64_s64(vmovl_high_s32(reg))))
+                }
+            }
+            target_feature = "simd128" => {
+                let reg: v128 = v.into();
+                let low = f64x2::from(f64x2_convert_low_i32x4(reg));
+                join_64bit!(
+                    N,
+                    low,
+                    f64x2::from(f64x2_convert_low_i32x4(u32x4_shuffle::<2, 3, 0, 1>(reg, reg)))
+                )
+            }
+            target_feature = "avx" => {
+                // One instruction widens all four lanes, so there is nothing for `N` to save.
+                f64x4::from(unsafe { avx::_mm256_cvtepi32_pd(v.into()) })
+            }
+            target_feature = "sse2" => {
+                // `cvtdq2pd` reads the two low lanes.
+                unsafe {
+                    let low = f64x2::from(sse2::_mm_cvtepi32_pd(v.into()));
+                    join_64bit!(
+                        N,
+                        low,
+                        f64x2::from(sse2::_mm_cvtepi32_pd(swizzle!(v, [2, 3, 2, 3]).into()))
+                    )
+                }
+            }
+            _ => {
+                let a = v.to_array();
+                f64x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f64 } else { 0. },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x2_from_i32(v: i32x2) -> f64x2 { todo!() }
+    pub(crate) fn f64x2_from_i32(v: i32x2) -> f64x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // Going through the two-lane input directly avoids widening to four lanes only to
+                // drop half of them again.
+                f64x2::from(unsafe { vcvtq_f64_s64(vmovl_s32(v.into())) })
+            }
+            // `wide` already picks the right instruction per target for the two low lanes.
+            _ => f64x2::from_i32x4_lower2(v.load()),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x4_from_i64(v: i64x4) -> f64x4 { todo!() }
+    pub(crate) fn f64x4_from_i64<const N: usize>(v: i64x4) -> f64x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                // One instruction converts all four lanes, so there is nothing for `N` to save.
+                f64x4::from(unsafe { avx512_dq_vl::_mm256_cvtepi64_pd(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                let low = f64x2::from(vcvtq_f64_s64(swizzle!(v, [0, 1]).into()));
+                join_64bit!(N, low, f64x2::from(vcvtq_f64_s64(swizzle!(v, [2, 3]).into())))
+            },
+            _ => {
+                let a = v.to_array();
+                f64x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as f64 } else { 0. },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x2_from_i64(v: i64x2) -> f64x2 { todo!() }
+    pub(crate) fn f64x2_from_i64(v: i64x2) -> f64x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                f64x2::from(unsafe { avx512_dq_vl::_mm_cvtepi64_pd(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                f64x2::from(unsafe { vcvtq_f64_s64(v.into()) })
+            }
+            _ => {
+                let [a, b] = v.to_array();
+                f64x2::new([a as f64, b as f64])
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x4_from_u32(v: u32x4) -> f64x4 { todo!() }
+    pub(crate) fn f64x4_from_u32<const N: usize>(v: u32x4) -> f64x4 {
+        cfg_select! {
+            target_feature = "avx512vl" => {
+                // One instruction widens all four lanes, so there is nothing for `N` to save.
+                f64x4::from(unsafe { avx512_vl::_mm256_cvtepu32_pd(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let reg: uint32x4_t = v.into();
+                unsafe {
+                    let low = f64x2::from(vcvtq_f64_u64(vmovl_u32(vget_low_u32(reg))));
+                    join_64bit!(N, low, f64x2::from(vcvtq_f64_u64(vmovl_high_u32(reg))))
+                }
+            }
+            target_feature = "simd128" => {
+                let reg: v128 = v.into();
+                let low = f64x2::from(f64x2_convert_low_u32x4(reg));
+                join_64bit!(
+                    N,
+                    low,
+                    f64x2::from(f64x2_convert_low_u32x4(u32x4_shuffle::<2, 3, 0, 1>(reg, reg)))
+                )
+            }
+            _ => {
+                // `cvtdq2pd` reads a signed source, so lanes at or above `2^31` would come out
+                // negative. Zero-extend first and read the value straight out of a mantissa.
+                let zero = u32x4::splat(0);
+                let low =
+                    zero_extended_to_f64!(cast::<u32x4, u64x2>(swizzle!(v, zero, [0, 4, 1, 5])));
+                join_64bit!(
+                    N,
+                    low,
+                    zero_extended_to_f64!(cast::<u32x4, u64x2>(swizzle!(v, zero, [2, 6, 3, 7])))
+                )
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x2_from_u32(v: u32x2) -> f64x2 { todo!() }
+    pub(crate) fn f64x2_from_u32(v: u32x2) -> f64x2 {
+        cfg_select! {
+            target_feature = "avx512vl" => {
+                f64x2::from(unsafe { avx512_vl::_mm_cvtepu32_pd(v.load().into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                f64x2::from(unsafe { vcvtq_f64_u64(vmovl_u32(v.into())) })
+            }
+            target_feature = "simd128" => f64x2::from(f64x2_convert_low_u32x4(v.load().into())),
+            // See `f64x4_from_u32`.
+            _ => zero_extended_to_f64!(u64x2_from_u32(v)),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x4_from_u64(v: u64x4) -> f64x4 { todo!() }
+    pub(crate) fn f64x4_from_u64<const N: usize>(v: u64x4) -> f64x4 {
+        const {
+            assert!(matches!(N, 2..=4));
+        }
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => unsafe {
+                let input: x86_64::__m256i = v.into();
+                wide::f64x4::from(avx512_dq_vl::_mm256_cvtepu64_pd(input))
+            },
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                let low = f64x2::from(vcvtq_f64_u64(swizzle!(v, [0, 1]).into()));
+                join_64bit!(N, low, f64x2::from(vcvtq_f64_u64(swizzle!(v, [2, 3]).into())))
+            },
+            _ => {
+                let array = v.to_array();
+                wide::f64x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { array[i] as f64 } else { 0. },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn f64x2_from_u64(v: u64x2) -> f64x2 { todo!() }
+    pub(crate) fn f64x2_from_u64(v: u64x2) -> f64x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                f64x2::from(unsafe { avx512_dq_vl::_mm_cvtepu64_pd(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                f64x2::from(unsafe { vcvtq_f64_u64(v.into()) })
+            }
+            _ => {
+                let [a, b] = v.to_array();
+                f64x2::new([a as f64, b as f64])
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x4_from_f32(v: f32x4) -> i64x4 { todo!() }
+    pub(crate) fn i64x4_from_f32<const N: usize>(v: f32x4) -> i64x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::{_CMP_GE_OQ, _CMP_ORD_Q};
+                let input: x86_64::__m128 = v.into();
+                // `vcvttps2qq` converts all four lanes at once but is not saturating: it returns
+                // `i64::MIN` for everything it cannot represent, which is already the answer for
+                // negative overflow. The two mask registers fix the other two cases.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm256_cvttps_epi64(input);
+                    let overflow = avx512_vl::_mm_cmp_ps_mask::<_CMP_GE_OQ>(
+                        input,
+                        sse::_mm_set1_ps(9_223_372_036_854_775_808.),
+                    );
+                    let ordered = avx512_vl::_mm_cmp_ps_mask::<_CMP_ORD_Q>(input, input);
+                    let saturated = avx512_vl::_mm256_mask_mov_epi64(
+                        converted,
+                        overflow,
+                        avx::_mm256_set1_epi64x(i64::MAX),
+                    );
+                    i64x4::from(avx512_vl::_mm256_maskz_mov_epi64(ordered, saturated))
+                }
+            }
+            _ => {
+                // Widening `f32` to `f64` is exact, so rounding happens once, in the second step.
+                // That makes the composition equal to `f32 as i64` and lets both halves use
+                // whatever packed instruction the target has.
+                i64x4_from_f64::<N>(f64x4_from_f32::<N>(v))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x2_from_f32(v: f32x2) -> i64x2 { todo!() }
+    pub(crate) fn i64x2_from_f32(v: f32x2) -> i64x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::{_CMP_GE_OQ, _CMP_ORD_Q};
+                let input: x86_64::__m128 = v.load().into();
+                // See `i64x4_from_f32`.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm_cvttps_epi64(input);
+                    let overflow = avx512_vl::_mm_cmp_ps_mask::<_CMP_GE_OQ>(
+                        input,
+                        sse::_mm_set1_ps(9_223_372_036_854_775_808.),
+                    );
+                    let ordered = avx512_vl::_mm_cmp_ps_mask::<_CMP_ORD_Q>(input, input);
+                    let saturated = avx512_vl::_mm_mask_mov_epi64(
+                        converted,
+                        overflow,
+                        sse2::_mm_set1_epi64x(i64::MAX),
+                    );
+                    i64x2::from(avx512_vl::_mm_maskz_mov_epi64(ordered, saturated))
+                }
+            }
+            _ => i64x2_from_f64(f64x2_from_f32(v)),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x4_from_f64(v: f64x4) -> i64x4 { todo!() }
+    pub(crate) fn i64x4_from_f64<const N: usize>(v: f64x4) -> i64x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                // `wide` reaches for `vcvttpd2qq` over the whole 256-bit register here.
+                v.trunc_int()
+            }
+            _ => {
+                // Elsewhere `wide` splits into halves anyway, so calling it per half is the same
+                // work and lets `N` drop the high one.
+                let low = f64x2::trunc_int(swizzle!(v, [0, 1]));
+                join_64bit!(N, low, f64x2::trunc_int(swizzle!(v, [2, 3])))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x2_from_f64(v: f64x2) -> i64x2 { todo!() }
+    pub(crate) fn i64x2_from_f64(v: f64x2) -> i64x2 {
+        // `wide` picks `vcvttpd2qq` on AVX-512DQ and `FCVTZS` on NEON, and falls back to lane-wise
+        // `as` where no packed instruction exists. All three already saturate and map NaN to zero.
+        v.trunc_int()
+    }
     #[inline(always)]
-    pub(crate) fn i64x4_from_i32(v: i32x4) -> i64x4 { todo!() }
+    pub(crate) fn i64x4_from_i32<const N: usize>(v: i32x4) -> i64x4 {
+        cfg_select! {
+            target_feature = "avx2" => {
+                // One instruction widens all four lanes, so there is nothing for `N` to save.
+                i64x4::from(unsafe { avx2::_mm256_cvtepi32_epi64(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let reg: int32x4_t = v.into();
+                unsafe {
+                    let low = i64x2::from(vmovl_s32(vget_low_s32(reg)));
+                    join_64bit!(N, low, i64x2::from(vmovl_high_s32(reg)))
+                }
+            }
+            target_feature = "simd128" => {
+                let reg: v128 = v.into();
+                let low = i64x2::from(i64x2_extend_low_i32x4(reg));
+                join_64bit!(N, low, i64x2::from(i64x2_extend_high_i32x4(reg)))
+            }
+            _ => {
+                // Interleaving each lane with its own sign bits, low half first, is exactly a
+                // sign extension once the pair is read as one 64-bit lane.
+                let sign = v >> 31;
+                let low = cast::<i32x4, i64x2>(swizzle!(v, sign, [0, 4, 1, 5]));
+                join_64bit!(N, low, cast::<i32x4, i64x2>(swizzle!(v, sign, [2, 6, 3, 7])))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x2_from_i32(v: i32x2) -> i64x2 { todo!() }
+    pub(crate) fn i64x2_from_i32(v: i32x2) -> i64x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                i64x2::from(unsafe { vmovl_s32(v.into()) })
+            }
+            target_feature = "simd128" => i64x2::from(i64x2_extend_low_i32x4(v.load().into())),
+            target_feature = "sse4.1" => {
+                i64x2::from(unsafe { sse41::_mm_cvtepi32_epi64(v.load().into()) })
+            }
+            _ => {
+                // See `i64x4_from_i32`.
+                let w = v.load();
+                cast::<i32x4, i64x2>(swizzle!(w, w >> 31, [0, 4, 1, 5]))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn i64x4_from_u32(v: u32x4) -> i64x4 { todo!() }
+    pub(crate) fn i64x4_from_u32<const N: usize>(v: u32x4) -> i64x4 {
+        // `u32 as i64` zero-extends, which always fits, so no reinterpretation is observable.
+        u64x4_from_u32::<N>(v).cast_signed()
+    }
     #[inline(always)]
-    pub(crate) fn i64x2_from_u32(v: u32x2) -> i64x2 { todo!() }
+    pub(crate) fn i64x2_from_u32(v: u32x2) -> i64x2 {
+        // See `i64x4_from_u32`.
+        u64x2_from_u32(v).cast_signed()
+    }
     #[inline(always)]
-    pub(crate) fn i64x4_from_u64(v: u64x4) -> i64x4 { todo!() }
+    pub(crate) fn i64x4_from_u64<const N: usize>(v: u64x4) -> i64x4 { v.cast_signed() }
     #[inline(always)]
-    pub(crate) fn i64x2_from_u64(v: u64x2) -> i64x2 { todo!() }
+    pub(crate) fn i64x2_from_u64(v: u64x2) -> i64x2 { v.cast_signed() }
     #[inline(always)]
-    pub(crate) fn u64x4_from_f32(v: f32x4) -> u64x4 { todo!() }
+    pub(crate) fn u64x4_from_f32<const N: usize>(v: f32x4) -> u64x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::_CMP_GE_OQ;
+                let input: x86_64::__m128 = v.into();
+                // `vcvttps2uqq` already returns `u64::MAX` above the range; the mask forces
+                // negatives and NaN, which both compare false, down to zero.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm256_cvttps_epu64(input);
+                    let nonnegative =
+                        avx512_vl::_mm_cmp_ps_mask::<_CMP_GE_OQ>(input, sse::_mm_setzero_ps());
+                    u64x4::from(avx512_vl::_mm256_maskz_mov_epi64(nonnegative, converted))
+                }
+            }
+            _ => {
+                // See `i64x4_from_f32`.
+                u64x4_from_f64::<N>(f64x4_from_f32::<N>(v))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u64x2_from_f32(v: f32x2) -> u64x2 { todo!() }
+    pub(crate) fn u64x2_from_f32(v: f32x2) -> u64x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::_CMP_GE_OQ;
+                let input: x86_64::__m128 = v.load().into();
+                // See `u64x4_from_f32`.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm_cvttps_epu64(input);
+                    let nonnegative =
+                        avx512_vl::_mm_cmp_ps_mask::<_CMP_GE_OQ>(input, sse::_mm_setzero_ps());
+                    u64x2::from(avx512_vl::_mm_maskz_mov_epi64(nonnegative, converted))
+                }
+            }
+            _ => u64x2_from_f64(f64x2_from_f32(v)),
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u64x4_from_f64(v: f64x4) -> u64x4 { todo!() }
+    pub(crate) fn u64x4_from_f64<const N: usize>(v: f64x4) -> u64x4 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::_CMP_GE_OQ;
+                let input: x86_64::__m256d = v.into();
+                // `vcvttpd2uqq` already returns `u64::MAX` above the range; the mask forces
+                // negatives and NaN, which both compare false, down to zero.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm256_cvttpd_epu64(input);
+                    let nonnegative = avx512_vl::_mm256_cmp_pd_mask::<_CMP_GE_OQ>(
+                        input,
+                        avx::_mm256_setzero_pd(),
+                    );
+                    u64x4::from(avx512_vl::_mm256_maskz_mov_epi64(nonnegative, converted))
+                }
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // `FCVTZU` saturates to the unsigned range and maps negatives and NaN to zero,
+                // which is what `as` does.
+                unsafe {
+                    let low = u64x2::from(vcvtq_u64_f64(swizzle!(v, [0, 1]).into()));
+                    join_64bit!(N, low, u64x2::from(vcvtq_u64_f64(swizzle!(v, [2, 3]).into())))
+                }
+            }
+            _ => {
+                let a = v.to_array();
+                u64x4::new(core::array::from_fn(
+                    #[inline(always)]
+                    |i| if i < N { a[i] as u64 } else { 0 },
+                ))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u64x2_from_f64(v: f64x2) -> u64x2 { todo!() }
+    pub(crate) fn u64x2_from_f64(v: f64x2) -> u64x2 {
+        cfg_select! {
+            all(target_feature = "avx512dq", target_feature = "avx512vl") => {
+                use core::arch::x86_64::_CMP_GE_OQ;
+                let input: x86_64::__m128d = v.into();
+                // See `u64x4_from_f64`.
+                unsafe {
+                    let converted = avx512_dq_vl::_mm_cvttpd_epu64(input);
+                    let nonnegative =
+                        avx512_vl::_mm_cmp_pd_mask::<_CMP_GE_OQ>(input, sse2::_mm_setzero_pd());
+                    u64x2::from(avx512_vl::_mm_maskz_mov_epi64(nonnegative, converted))
+                }
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                // See `u64x4_from_f64`.
+                u64x2::from(unsafe { vcvtq_u64_f64(v.into()) })
+            }
+            _ => {
+                let [a, b] = v.to_array();
+                u64x2::new([a as u64, b as u64])
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u64x4_from_i32(v: i32x4) -> u64x4 { todo!() }
+    pub(crate) fn u64x4_from_i32<const N: usize>(v: i32x4) -> u64x4 {
+        // `i32 as u64` sign-extends and then reinterprets, so `-1i32` becomes `u64::MAX`.
+        i64x4_from_i32::<N>(v).cast_unsigned()
+    }
     #[inline(always)]
-    pub(crate) fn u64x2_from_i32(v: i32x2) -> u64x2 { todo!() }
+    pub(crate) fn u64x2_from_i32(v: i32x2) -> u64x2 {
+        // See `u64x4_from_i32`.
+        i64x2_from_i32(v).cast_unsigned()
+    }
     #[inline(always)]
-    pub(crate) fn u64x4_from_i64(v: i64x4) -> u64x4 { todo!() }
+    pub(crate) fn u64x4_from_i64<const N: usize>(v: i64x4) -> u64x4 { v.cast_unsigned() }
     #[inline(always)]
-    pub(crate) fn u64x2_from_i64(v: i64x2) -> u64x2 { todo!() }
+    pub(crate) fn u64x2_from_i64(v: i64x2) -> u64x2 { v.cast_unsigned() }
     #[inline(always)]
-    pub(crate) fn u64x4_from_u32(v: u32x4) -> u64x4 { todo!() }
+    pub(crate) fn u64x4_from_u32<const N: usize>(v: u32x4) -> u64x4 {
+        cfg_select! {
+            target_feature = "avx2" => {
+                // One instruction widens all four lanes, so there is nothing for `N` to save.
+                u64x4::from(unsafe { avx2::_mm256_cvtepu32_epi64(v.into()) })
+            }
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                let reg: uint32x4_t = v.into();
+                unsafe {
+                    let low = u64x2::from(vmovl_u32(vget_low_u32(reg)));
+                    join_64bit!(N, low, u64x2::from(vmovl_high_u32(reg)))
+                }
+            }
+            target_feature = "simd128" => {
+                let reg: v128 = v.into();
+                let low = u64x2::from(u64x2_extend_low_u32x4(reg));
+                join_64bit!(N, low, u64x2::from(u64x2_extend_high_u32x4(reg)))
+            }
+            _ => {
+                // Interleaving each lane with zero, low half first, zero-extends it.
+                let zero = u32x4::splat(0);
+                let low = cast::<u32x4, u64x2>(swizzle!(v, zero, [0, 4, 1, 5]));
+                join_64bit!(N, low, cast::<u32x4, u64x2>(swizzle!(v, zero, [2, 6, 3, 7])))
+            }
+        }
+    }
     #[inline(always)]
-    pub(crate) fn u64x2_from_u32(v: u32x2) -> u64x2 { todo!() }
+    pub(crate) fn u64x2_from_u32(v: u32x2) -> u64x2 {
+        cfg_select! {
+            all(target_feature = "neon", target_arch = "aarch64") => {
+                u64x2::from(unsafe { vmovl_u32(v.into()) })
+            }
+            target_feature = "simd128" => u64x2::from(u64x2_extend_low_u32x4(v.load().into())),
+            target_feature = "sse4.1" => {
+                u64x2::from(unsafe { sse41::_mm_cvtepu32_epi64(v.load().into()) })
+            }
+            _ => {
+                // See `u64x4_from_u32`.
+                cast::<u32x4, u64x2>(swizzle!(v.load(), u32x4::splat(0), [0, 4, 1, 5]))
+            }
+        }
+    }
 
     #[allow(dead_code)]
     #[inline(always)]

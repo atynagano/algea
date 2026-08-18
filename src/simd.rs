@@ -27,6 +27,17 @@ macro_rules! arg_or_value {
 }
 
 macro_rules! unpack_array {
+    ([($arg:ident) $trait:ident :: $f:ident; [$valid:tt]]) => {{
+        $trait::$f::<$valid>($arg)
+    }};
+    ([($arg:ident) $trait:ident :: $f:ident; [$($valid:tt),+]]) => {{
+        let mut _index = 0;
+        [$({
+            let result = $trait::$f::<$valid>($arg[_index]);
+            _index += 1;
+            result
+        }),+]
+    }};
     ([($($arg:ident $(=$value:expr)?),+) $f:expr; 4]) => {{
         $(let $arg = arg_or_value!($arg $(=$value)?);)+
         [($f)($($arg[0]),+), ($f)($($arg[1]),+), ($f)($($arg[2]),+), ($f)($($arg[3]),+)]
@@ -160,17 +171,29 @@ macro_rules! impl_layout {
             #[inline(always)]
             fn filled(a: Self) -> Self::Storage { unpack_array!([($primitive::filled_(a)); $len]) }
             #[inline(always)]
-            fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_f32_; $len]) }
+            fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_f32_; [$($valid),+]])
+            }
             #[inline(always)]
-            fn cast_from_i32(a: <i32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_i32_; $len]) }
+            fn cast_from_i32(a: <i32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_i32_; [$($valid),+]])
+            }
             #[inline(always)]
-            fn cast_from_u32(a: <u32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_u32_; $len]) }
+            fn cast_from_u32(a: <u32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_u32_; [$($valid),+]])
+            }
             #[inline(always)]
-            fn cast_from_f64(a: <f64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_f64_; $len]) }
+            fn cast_from_f64(a: <f64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_f64_; [$($valid),+]])
+            }
             #[inline(always)]
-            fn cast_from_i64(a: <i64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_i64_; $len]) }
+            fn cast_from_i64(a: <i64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_i64_; [$($valid),+]])
+            }
             #[inline(always)]
-            fn cast_from_u64(a: <u64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::cast_from_u64_; $len]) }
+            fn cast_from_u64(a: <u64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                unpack_array!([(a) ArithPrimitive::cast_from_u64_; [$($valid),+]])
+            }
             #[inline(always)]
             fn cast_from<U: private::SealedElement<$m, $n>>(
                 a: <U as private::SealedElement<$m, $n>>::Storage,
@@ -817,6 +840,11 @@ macro_rules! call_layouts {
 call_layouts!(impl_layouts_f32(f32, f32x2, f32x4));
 call_layouts!(impl_layouts_f64(f64, f64x2, f64x4));
 call_layouts!(impl_layouts_i32(i32, i32x2, i32x4));
+// TODO(matrix-2x3-layout): a 2x3 matrix packs its three columns into two four-lane units, so the
+// second unit uses only two of its four lanes. That shape pays off where a four-lane 64-bit value
+// is one 256-bit register, but outside AVX2 it is a pair of 128-bit registers and three two-lane
+// units would fit better. The 64-bit element types should therefore pick
+// `(2, 3; $vec2 x 3 valid [2, 2, 2])` over `(2, 3; $vec4 x 2 valid [4, 2])` per target.
 call_layouts!(impl_layouts_i64(i64, i64x2, i64x4));
 call_layouts!(impl_layouts_u32(u32, u32x2, u32x4));
 call_layouts!(impl_layouts_u64(u64, u64x2, u64x4));

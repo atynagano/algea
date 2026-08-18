@@ -169,27 +169,27 @@ macro_rules! impl_layout {
             fn filled(a: Self) -> Self::Storage { [[a; $m]; $n] }
             #[inline(always)]
             fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_f32_)
+                map1(a, Self::cast_from_f32_::<1>)
             }
             #[inline(always)]
             fn cast_from_i32(a: <i32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_i32_)
+                map1(a, Self::cast_from_i32_::<1>)
             }
             #[inline(always)]
             fn cast_from_u32(a: <u32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_u32_)
+                map1(a, Self::cast_from_u32_::<1>)
             }
             #[inline(always)]
             fn cast_from_f64(a: <f64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_f64_)
+                map1(a, Self::cast_from_f64_::<1>)
             }
             #[inline(always)]
             fn cast_from_i64(a: <i64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_i64_)
+                map1(a, Self::cast_from_i64_::<1>)
             }
             #[inline(always)]
             fn cast_from_u64(a: <u64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
-                map1(a, Self::cast_from_u64_)
+                map1(a, Self::cast_from_u64_::<1>)
             }
             #[inline(always)]
             fn cast_from<U: private::SealedElement<$m, $n>>(

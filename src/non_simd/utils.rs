@@ -22,18 +22,7 @@ impl<T: ArithPrimitive<Scalar = T>, const N: usize> ArithPrimitive for [T; N] {
     fn as_array_(&self) -> &[Self::Scalar] { self }
     #[inline(always)]
     fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { self }
-    #[inline(always)]
-    fn cast_from_f32_(a: Self::F32) -> Self { a.map(T::cast_from_f32_) }
-    #[inline(always)]
-    fn cast_from_f64_(a: Self::F64) -> Self { a.map(T::cast_from_f64_) }
-    #[inline(always)]
-    fn cast_from_i32_(a: Self::I32) -> Self { a.map(T::cast_from_i32_) }
-    #[inline(always)]
-    fn cast_from_i64_(a: Self::I64) -> Self { a.map(T::cast_from_i64_) }
-    #[inline(always)]
-    fn cast_from_u32_(a: Self::U32) -> Self { a.map(T::cast_from_u32_) }
-    #[inline(always)]
-    fn cast_from_u64_(a: Self::U64) -> Self { a.map(T::cast_from_u64_) }
+
     #[inline(always)]
     fn add_noexcept_(self, rhs: Self) -> Self {
         core::array::from_fn(

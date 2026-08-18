@@ -186,7 +186,10 @@ pub(crate) use {sign, validate_lane4, validate_lane8};
 // stable Rust currently offers no equally optimizable portable representation with this layout.
 #[cfg(not(all(target_feature = "neon", target_arch = "aarch64")))]
 mod _64bit_types {
-    use crate::utils::{Load, MaskPrimitive, MaskStorage, Store};
+    use crate::{
+        simd::kernels,
+        utils::{Load, MaskPrimitive, MaskStorage, Store},
+    };
     use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 
     #[allow(non_camel_case_types)]
@@ -276,17 +279,17 @@ mod _64bit_types {
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
 
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { f32x4::cast_from_f32_(a.load()).store() }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { todo!() }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::f32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { f32x4::cast_from_i32_(a.load()).store() }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::f32x2_from_i32(a) }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::f32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { f32x4::cast_from_u32_(a.load()).store() }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::f32x2_from_u32(a) }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::f32x2_from_u64(a) }
     }
     impl crate::utils::ArithPrimitive for i32x2 {
         type Scalar = i32;
@@ -307,17 +310,17 @@ mod _64bit_types {
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
 
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { i32x4::cast_from_f32_(a.load()).store() }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::i32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { todo!() }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::i32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { i32x4::cast_from_i32_(a.load()).store() }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::i32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { i32x4::cast_from_u32_(a.load()).store() }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::i32x2_from_u32(a) }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::i32x2_from_u64(a) }
     }
     impl crate::utils::ArithPrimitive for u32x2 {
         type Scalar = u32;
@@ -338,17 +341,17 @@ mod _64bit_types {
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
 
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { u32x4::cast_from_f32_(a.load()).store() }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::u32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { todo!() }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::u32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { u32x4::cast_from_i32_(a.load()).store() }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::u32x2_from_i32(a) }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::u32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { u32x4::cast_from_u32_(a.load()).store() }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::u32x2_from_u64(a) }
     }
 
     // TODO(module-naming): what follows has nothing to do with 64-bit types; rename the
@@ -441,7 +444,10 @@ mod _64bit_types {
 
 #[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
 mod _64bit_types {
-    use crate::utils::{ArithPrimitive, MaskPrimitive, MaskStorage};
+    use crate::{
+        simd::kernels,
+        utils::{ArithPrimitive, MaskPrimitive, MaskStorage},
+    };
     use core::arch::aarch64::*;
     use wide::{f64x2, i64x2, u64x2};
 
@@ -622,19 +628,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut f32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { a }
-        // TODO(f64-to-f32-rounding): confirm this matches `f64 as f32` and
-        // `std::simd::f64x2::cast::<f32>`.
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { unsafe { Self(vcvt_f32_f64(a.into())) } }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::f32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { unsafe { Self(vcvt_f32_s32(a.0)) } }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::f32x2_from_i32(a) }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::f32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { unsafe { Self(vcvt_f32_u32(a.0)) } }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::f32x2_from_u32(a) }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::f32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmaxnm_f32(self.0, other.0)) } }
         #[inline(always)]
@@ -763,17 +767,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut i32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { unsafe { Self(vcvt_s32_f32(a.0)) } }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::i32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { todo!() }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::i32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { a }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::i32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { unsafe { Self(vreinterpret_s32_u32(a.0)) } }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::i32x2_from_u32(a) }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::i32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmax_s32(self.0, other.0)) } }
         #[inline(always)]
@@ -891,17 +895,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut u32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { unsafe { Self(vcvt_u32_f32(a.0)) } }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::u32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_f64_(a: Self::F64) -> Self { todo!() }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::u32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { unsafe { Self(vreinterpret_u32_s32(a.0)) } }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::u32x2_from_i32(a) }
         #[inline(always)]
-        fn cast_from_i64_(a: Self::I64) -> Self { todo!() }
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::u32x2_from_i64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { a }
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a }
         #[inline(always)]
-        fn cast_from_u64_(a: Self::U64) -> Self { todo!() }
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::u32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmax_u32(self.0, other.0)) } }
         #[inline(always)]
@@ -1083,7 +1087,7 @@ macro_rules! impl_from {
 impl_from!(f32x2:f32, i32x2:i32, u32x2:u32);
 
 macro_rules! impl_arith_primitive {
-    ($self_ty:ident, scalar=$scalar:ident, mask=$mask:ident, [$f32:ident, $f64:ident, $i32:ident, $i64:ident, $u32:ident, $u64:ident] { $($item:item)* }) => {
+    ($self_ty:ident, scalar=$scalar:ident, mask=$mask:ident, [$f32:ident, $f64:ident, $i32:ident, $i64:ident, $u32:ident, $u64:ident] $(, $N:ident)? { $($item:item)* }) => {
         impl ArithPrimitive for $self_ty {
             type Scalar = $scalar;
             type F32 = $f32;
@@ -1102,17 +1106,29 @@ macro_rules! impl_arith_primitive {
             #[inline(always)]
             fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { self.as_mut_array() }
             #[inline(always)]
-            fn cast_from_f32_(a: Self::F32) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_f32>](a)) }
+            fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_f32>] $(::<$N>)? (a))
+            }
             #[inline(always)]
-            fn cast_from_f64_(a: Self::F64) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_f64>](a)) }
+            fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_f64>] $(::<$N>)? (a))
+            }
             #[inline(always)]
-            fn cast_from_i32_(a: Self::I32) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_i32>](a)) }
+            fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_i32>] $(::<$N>)? (a))
+            }
             #[inline(always)]
-            fn cast_from_i64_(a: Self::I64) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_i64>](a)) }
+            fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_i64>] $(::<$N>)? (a))
+            }
             #[inline(always)]
-            fn cast_from_u32_(a: Self::U32) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_u32>](a)) }
+            fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_u32>] $(::<$N>)? (a))
+            }
             #[inline(always)]
-            fn cast_from_u64_(a: Self::U64) -> Self { paste::paste!(kernels::cast::[<$self_ty _from_u64>](a)) }
+            fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_u64>] $(::<$N>)? (a))
+            }
             #[inline(always)]
             fn max_(self, other: Self) -> Self { self.max(other) }
             #[inline(always)]
@@ -1128,9 +1144,9 @@ macro_rules! impl_arith_primitive {
     };
 }
 macro_rules! impl_arith_primitive_int {
-    ($self_ty:ident, scalar=$scalar:ident, mask=$int:ident, [$($t:ident),+] { $($item:item)* }) => {
+    ($self_ty:ident, scalar=$scalar:ident, mask=$int:ident, [$($t:ident),+] $(, $N:ident)? { $($item:item)* }) => {
         impl_arith_primitive! {
-            $self_ty, scalar=$scalar, mask=$int, [$($t),+] {
+            $self_ty, scalar=$scalar, mask=$int, [$($t),+] $(, $N)? {
                 #[inline(always)]
                 fn shl_noexcept_(self, rhs: Self) -> Self { self << rhs }
                 #[inline(always)]
@@ -1145,9 +1161,9 @@ macro_rules! impl_arith_primitive_int {
     }
 }
 macro_rules! impl_arith_primitive_all {
-    ($float_scalar:ident: $float:ident, $int_scalar:ident: $int:ident, $uint_scalar:ident: $uint:ident, [$($t:ident),+]) => {
+    ($float_scalar:ident: $float:ident, $int_scalar:ident: $int:ident, $uint_scalar:ident: $uint:ident, [$($t:ident),+] $(, $N:ident)?) => {
         impl_arith_primitive! {
-            $float, scalar=$float_scalar, mask=$int, [$($t),+] {
+            $float, scalar=$float_scalar, mask=$int, [$($t),+] $(, $N)? {
                 #[inline(always)]
                 fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
                     unsafe {
@@ -1232,7 +1248,7 @@ macro_rules! impl_arith_primitive_all {
             }
         }
         impl_arith_primitive_int! {
-            $int, scalar=$int_scalar, mask=$int, [$($t),+] {
+            $int, scalar=$int_scalar, mask=$int, [$($t),+] $(, $N)? {
                 #[inline(always)]
                 fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
                     unsafe {
@@ -1274,7 +1290,7 @@ macro_rules! impl_arith_primitive_all {
             }
         }
         impl_arith_primitive_int! {
-            $uint, scalar=$uint_scalar, mask=$int, [$($t),+] {
+            $uint, scalar=$uint_scalar, mask=$int, [$($t),+] $(, $N)? {
                 #[inline(always)]
                 fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
                     unsafe {
@@ -1308,8 +1324,8 @@ macro_rules! impl_arith_primitive_all {
     }
 }
 
-impl_arith_primitive_all!(f32:f32x4, i32:i32x4, u32:u32x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4]);
-impl_arith_primitive_all!(f64:f64x4, i64:i64x4, u64:u64x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4]);
+impl_arith_primitive_all!(f32:f32x4, i32:i32x4, u32:u32x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4], N);
+impl_arith_primitive_all!(f64:f64x4, i64:i64x4, u64:u64x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4], N);
 impl_arith_primitive_all!(f64:f64x2, i64:i64x2, u64:u64x2, [f32x2, f64x2, i32x2, i64x2, u32x2, u64x2]);
 
 // SAFETY: validation and `!` operate lane-wise. With a canonical selector,
