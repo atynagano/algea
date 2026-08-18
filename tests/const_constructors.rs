@@ -20,6 +20,12 @@ macro_rules! check_matrix_zero_one {
         fn $name() {
             assert_eq!(<[[f32; $c]; $r]>::from(Matrix::<f32, $r, $c>::ZERO), [[0.0; $c]; $r]);
             assert_eq!(<[[f32; $c]; $r]>::from(Matrix::<f32, $r, $c>::ONE), [[1.0; $c]; $r]);
+            assert_eq!(<[[f64; $c]; $r]>::from(Matrix::<f64, $r, $c>::ZERO), [[0.0; $c]; $r]);
+            assert_eq!(<[[f64; $c]; $r]>::from(Matrix::<f64, $r, $c>::ONE), [[1.0; $c]; $r]);
+            assert_eq!(<[[i64; $c]; $r]>::from(Matrix::<i64, $r, $c>::ZERO), [[0; $c]; $r]);
+            assert_eq!(<[[i64; $c]; $r]>::from(Matrix::<i64, $r, $c>::ONE), [[1; $c]; $r]);
+            assert_eq!(<[[u64; $c]; $r]>::from(Matrix::<u64, $r, $c>::ZERO), [[0; $c]; $r]);
+            assert_eq!(<[[u64; $c]; $r]>::from(Matrix::<u64, $r, $c>::ONE), [[1; $c]; $r]);
         }
     };
 }

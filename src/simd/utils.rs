@@ -1455,15 +1455,14 @@ unsafe impl MaskPrimitive for i64x4 {
     }
     #[inline(always)]
     fn any<const N: usize>(self) -> bool {
-        // Only three- and four-lane masks reach this type. The 32-bit types double as their own
-        // two-lane compute vector everywhere but NEON, so `i32x4` also serves `N == 2`; `i64x2`
-        // and `i64x4` are separate types on every target, so a two-lane 64-bit mask is stored in
-        // the former and never here.
-        std::assert_matches!(N, 3..=4);
+        // Two lanes reach this type even though `i64x2` exists: a shape of `SealedElement<2, 3>`,
+        // which is a 3x2 row-major or 2x3 column-major matrix, packs its three units of two lanes
+        // into two four-lane ones, and the second of those has only two live lanes.
+        std::assert_matches!(N, 2..=4);
         // AVX2 has a bitmask instruction spanning all four lanes, so the lanes in use are picked
         // out of its result. No other target has one: there a four-lane 64-bit value is a pair of
         // two-lane registers, so the pair is folded into a single register and handed to the
-        // two-lane reduction.
+        // two-lane reduction, or the high register is dropped when it holds nothing but padding.
         if N == 4 {
             cfg_select! {
                 target_feature = "avx2" => self.any(),
@@ -1474,7 +1473,7 @@ unsafe impl MaskPrimitive for i64x4 {
                     MaskPrimitive::any::<2>(low | high)
                 }
             }
-        } else {
+        } else if N == 3 {
             cfg_select! {
                 target_feature = "avx2" => self.to_bitmask() & 0b0111 != 0,
                 // Lane 3 is padding; clearing it stops it from making the answer true.
@@ -1484,12 +1483,21 @@ unsafe impl MaskPrimitive for i64x4 {
                     MaskPrimitive::any::<2>(low | (high & i64x2::new([-1, 0])))
                 }
             }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0011 != 0,
+                _ => {
+                    // SAFETY: see the four-lane branch.
+                    let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low)
+                }
+            }
         }
     }
     #[inline(always)]
     fn all<const N: usize>(self) -> bool {
-        std::assert_matches!(N, 3..=4);
-        // See `any` for how the two target families differ.
+        std::assert_matches!(N, 2..=4);
+        // See `any` for how the two target families differ, and for why two lanes arrive here.
         if N == 4 {
             cfg_select! {
                 target_feature = "avx2" => self.all(),
@@ -1499,7 +1507,7 @@ unsafe impl MaskPrimitive for i64x4 {
                     MaskPrimitive::all::<2>(low & high)
                 }
             }
-        } else {
+        } else if N == 3 {
             cfg_select! {
                 target_feature = "avx2" => self.to_bitmask() & 0b0111 == 0b0111,
                 // Lane 3 is padding; filling it stops it from making the answer false.
@@ -1507,6 +1515,15 @@ unsafe impl MaskPrimitive for i64x4 {
                     // SAFETY: see `any`.
                     let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
                     MaskPrimitive::all::<2>(low & (high | i64x2::new([0, -1])))
+                }
+            }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0011 == 0b0011,
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low)
                 }
             }
         }

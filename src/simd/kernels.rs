@@ -1269,6 +1269,7 @@ pub(crate) mod cast {
     // Each 64-bit four-lane result is built from its two 128-bit halves. When the caller only asks
     // for two lanes the high half is never computed: `$high` sits in a branch that a constant `$n`
     // deletes. Zeroed padding is what the widening produces on its own.
+    #[rustfmt::skip]
     #[allow(unused_macros)]
     macro_rules! join_64bit {
         ($n:expr, $low:expr, $high:expr) => {

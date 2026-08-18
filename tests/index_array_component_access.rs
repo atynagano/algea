@@ -49,6 +49,9 @@ macro_rules! vector_access_all_types {
             vector_access!([<f32_vector_ $d>], f32, $d);
             vector_access!([<i32_vector_ $d>], i32, $d);
             vector_access!([<u32_vector_ $d>], u32, $d);
+            vector_access!([<f64_vector_ $d>], f64, $d);
+            vector_access!([<i64_vector_ $d>], i64, $d);
+            vector_access!([<u64_vector_ $d>], u64, $d);
         }
     };
 }
@@ -97,6 +100,9 @@ macro_rules! matrix_access_all_shapes {
 matrix_access_all_shapes!(f32, f32_matrix);
 matrix_access_all_shapes!(i32, i32_matrix);
 matrix_access_all_shapes!(u32, u32_matrix);
+matrix_access_all_shapes!(f64, f64_matrix);
+matrix_access_all_shapes!(i64, i64_matrix);
+matrix_access_all_shapes!(u64, u64_matrix);
 
 macro_rules! component_access {
     ($name:ident, $t:ty) => {
@@ -129,6 +135,9 @@ macro_rules! component_access {
 component_access!(f32_components, f32);
 component_access!(i32_components, i32);
 component_access!(u32_components, u32);
+component_access!(f64_components, f64);
+component_access!(i64_components, i64);
+component_access!(u64_components, u64);
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]

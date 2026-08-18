@@ -2,13 +2,13 @@
 
 use algea::{Mask, MaskElement};
 
-fn assert_all_bool_arrays_round_trip<const D: usize>()
+fn assert_all_bool_arrays_round_trip<M, const D: usize>()
 where
-    i32: MaskElement<D>,
+    M: MaskElement<D>,
 {
     for bits in 0..(1_u32 << D) {
         let expected = core::array::from_fn(|lane| bits & (1 << lane) != 0);
-        let mask = Mask::<i32, D>::from(expected);
+        let mask = Mask::<M, D>::from(expected);
 
         assert_eq!(mask.to_array(), expected, "bit pattern: {bits:#0width$b}", width = D + 2);
         assert_eq!(mask.all(), bits == (1 << D) - 1);
@@ -18,15 +18,19 @@ where
 
 #[test]
 fn bool_array_round_trips_cover_all_mask_dimensions_and_bit_patterns() {
-    assert_all_bool_arrays_round_trip::<1>();
-    assert_all_bool_arrays_round_trip::<2>();
-    assert_all_bool_arrays_round_trip::<3>();
-    assert_all_bool_arrays_round_trip::<4>();
+    assert_all_bool_arrays_round_trip::<i32, 1>();
+    assert_all_bool_arrays_round_trip::<i32, 2>();
+    assert_all_bool_arrays_round_trip::<i32, 3>();
+    assert_all_bool_arrays_round_trip::<i32, 4>();
+    assert_all_bool_arrays_round_trip::<i64, 1>();
+    assert_all_bool_arrays_round_trip::<i64, 2>();
+    assert_all_bool_arrays_round_trip::<i64, 3>();
+    assert_all_bool_arrays_round_trip::<i64, 4>();
 }
 
-fn assert_bitwise_operations<const D: usize>()
+fn assert_bitwise_operations<M, const D: usize>()
 where
-    i32: MaskElement<D>,
+    M: MaskElement<D>,
 {
     for lhs_bits in 0..(1_u32 << D) {
         for rhs_bits in 0..(1_u32 << D) {
@@ -35,8 +39,8 @@ where
             let expected_and = core::array::from_fn(|lane| lhs_array[lane] && rhs_array[lane]);
             let expected_or = core::array::from_fn(|lane| lhs_array[lane] || rhs_array[lane]);
             let expected_xor = core::array::from_fn(|lane| lhs_array[lane] != rhs_array[lane]);
-            let lhs = Mask::<i32, D>::from(lhs_array);
-            let rhs = Mask::<i32, D>::from(rhs_array);
+            let lhs = Mask::<M, D>::from(lhs_array);
+            let rhs = Mask::<M, D>::from(rhs_array);
 
             assert_eq!((lhs & rhs).to_array(), expected_and);
             assert_eq!((lhs | rhs).to_array(), expected_or);
@@ -64,8 +68,12 @@ where
 
 #[test]
 fn bitwise_operations_cover_all_mask_dimensions_and_bit_patterns() {
-    assert_bitwise_operations::<1>();
-    assert_bitwise_operations::<2>();
-    assert_bitwise_operations::<3>();
-    assert_bitwise_operations::<4>();
+    assert_bitwise_operations::<i32, 1>();
+    assert_bitwise_operations::<i32, 2>();
+    assert_bitwise_operations::<i32, 3>();
+    assert_bitwise_operations::<i32, 4>();
+    assert_bitwise_operations::<i64, 1>();
+    assert_bitwise_operations::<i64, 2>();
+    assert_bitwise_operations::<i64, 3>();
+    assert_bitwise_operations::<i64, 4>();
 }

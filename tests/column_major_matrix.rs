@@ -61,3 +61,44 @@ fn elementwise_and_scalar_operations_use_column_storage() {
     assert_eq!(<[[i32; 2]; 3]>::from(100 - a), [[99, 98], [97, 96], [95, 94]]);
     assert_eq!(a, a.clone());
 }
+
+/// The 64-bit widths reach the same public surface through a separate storage path, so the logical
+/// row/column semantics are worth restating there.
+#[test]
+fn logical_views_products_and_scalar_operations_hold_at_64_bit_widths() {
+    let rows = [[1_i64, 2, 3], [4, 5, 6]];
+    let columns = [[1_i64, 4], [2, 5], [3, 6]];
+
+    let row_major = row_major::Matrix::<i64, 2, 3>::from_rows(rows);
+    let column_major = Matrix::<i64, 2, 3>::from_columns(columns);
+    assert_eq!(row_major.to_rows(), rows);
+    assert_eq!(column_major.to_columns(), columns);
+    assert_eq!(column_major.to_column_vecs().map(Vector::to_array), columns);
+    for i in 0..2 {
+        for j in 0..3 {
+            assert_eq!(row_major[(i, j)], column_major[(i, j)]);
+        }
+    }
+
+    let mut matrix = Matrix::<u64, 3, 2>::from_columns([[1, 2, 3], [4, 5, 6]]);
+    assert_eq!(matrix[(0, 0)], 1);
+    assert_eq!(matrix[(2, 1)], 6);
+    matrix[(1, 1)] = 50;
+    assert_eq!(<[[u64; 3]; 2]>::from(matrix), [[1, 2, 3], [4, 50, 6]]);
+
+    let lhs = Matrix::<f64, 2, 3>::from_columns([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]);
+    let rhs = Matrix::<f64, 3, 2>::from_columns([[7.0, 9.0, 11.0], [8.0, 10.0, 12.0]]);
+    let product: [[f64; 2]; 2] = (lhs * rhs).into();
+    assert_eq!(product, [[58.0, 139.0], [64.0, 154.0]]);
+    let matrix_vector: [f64; 2] = (lhs * Vector::from([1.0, 2.0, 3.0])).into();
+    assert_eq!(matrix_vector, [14.0, 32.0]);
+    let outer: [[f64; 2]; 2] =
+        (Vector::from([2.0, 3.0]) * Matrix::<f64, 1, 2>::from_columns([[4.0], [5.0]])).into();
+    assert_eq!(outer, [[8.0, 12.0], [10.0, 15.0]]);
+
+    let a = Matrix::<i64, 2, 3>::from_columns([[1, 2], [3, 4], [5, 6]]);
+    let b = Matrix::<i64, 2, 3>::from_columns([[10, 20], [30, 40], [50, 60]]);
+    assert_eq!(<[[i64; 2]; 3]>::from(a + b), [[11, 22], [33, 44], [55, 66]]);
+    assert_eq!(<[[i64; 2]; 3]>::from(100 - a), [[99, 98], [97, 96], [95, 94]]);
+    assert_eq!(a, a.clone());
+}

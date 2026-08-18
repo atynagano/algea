@@ -45,6 +45,9 @@ fn all_column_major_layouts_match_transposed_row_major_layouts() {
     assert_all_layouts!(f32);
     assert_all_layouts!(i32);
     assert_all_layouts!(u32);
+    assert_all_layouts!(f64);
+    assert_all_layouts!(i64);
+    assert_all_layouts!(u64);
 }
 
 #[test]

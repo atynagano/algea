@@ -569,8 +569,8 @@ macro_rules! impl_binop_all {
     (arithmetic, [$([$generic_docs:tt, $float_docs:tt, $integer_docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt $(, $option:tt)?],)+]) => {
         $(
             impl_binop_all!(@a [$generic_docs, $trait::$method, $trait_assign::$method_assign $(, $option)?]);
-            impl_binop_all!(@b [f32], [$float_docs, $trait::$method] $(, $option)?);
-            impl_binop_all!(@b [i32, u32], [$integer_docs, $trait::$method] $(, $option)?);
+            impl_binop_all!(@b [f32, f64], [$float_docs, $trait::$method] $(, $option)?);
+            impl_binop_all!(@b [i32, u32, i64, u64], [$integer_docs, $trait::$method] $(, $option)?);
         )+
     };
     ($scalar:tt, [$([$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt $(, $option:tt)?],)+]) => {
@@ -654,7 +654,7 @@ impl_binop_all!(arithmetic, [
         vector_only
     ],
 ]);
-impl_binop_all!([i32, u32], [
+impl_binop_all!([i32, u32, i64, u64], [
     [
         ["Performs component-wise bitwise AND.", "Performs component-wise bitwise AND assignment."],
         BitAnd::bitand,
