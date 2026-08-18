@@ -1269,14 +1269,16 @@ pub(crate) mod cast {
     // Each 64-bit four-lane result is built from its two 128-bit halves. When the caller only asks
     // for two lanes the high half is never computed: `$high` sits in a branch that a constant `$n`
     // deletes. Zeroed padding is what the widening produces on its own.
+    #[allow(unused_macros)]
     macro_rules! join_64bit {
         ($n:expr, $low:expr, $high:expr) => {
-if $n <= 2 { Simd2Ext::widen($low) } else { swizzle!($low, $high, @concat) }
+            if $n <= 2 { Simd2Ext::widen($low) } else { swizzle!($low, $high, @concat) }
         };
     }
 
     // The mirror image: two 32-bit results whose lanes 2 and 3 are already zero are interleaved
     // into one. With two lanes asked for, the low half is the answer as it stands.
+    #[allow(unused_macros)]
     macro_rules! join_32bit {
         ($n:expr, $low:expr, $high:expr) => {
             if $n <= 2 { $low } else { swizzle!($low, $high, [0, 1, 4, 5]) }
@@ -1285,6 +1287,7 @@ if $n <= 2 { Simd2Ext::widen($low) } else { swizzle!($low, $high, @concat) }
 
     // Packs a comparison mask over four 64-bit lanes down to four 32-bit lanes. Both halves of a
     // canonical mask lane hold the same bits, so keeping the even 32-bit lanes preserves it.
+    #[allow(unused_macros)]
     macro_rules! pack_mask_64_to_32 {
         ($mask:expr) => {{
             let [low, high] = cast::<f64x4, [i32x4; 2]>($mask);
@@ -1297,6 +1300,7 @@ if $n <= 2 { Simd2Ext::widen($low) } else { swizzle!($low, $high, @concat) }
     // `2^52 + value`; subtracting `2^52` leaves the value. Every `u32` is far below `2^52`, so this
     // is exact, and it is the way in on targets whose only packed conversion reads a *signed*
     // source.
+    #[allow(unused_macros)]
     macro_rules! zero_extended_to_f64 {
         ($widened:expr) => {{
             const MAGIC: u64 = 0x4330_0000_0000_0000;

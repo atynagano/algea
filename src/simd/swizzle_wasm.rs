@@ -425,8 +425,9 @@ mod tests {
     check_4lane_64bit!(i64x4_lanes, i64, i64x4::new, i64x4::to_array, i64x2::to_array);
     check_4lane_64bit!(u64x4_lanes, u64, u64x4::new, u64x4::to_array, u64x2::to_array);
 
-    /// Two-lane 64-bit operands. Only lanes 0 and 1 of each operand exist, so every index here
-    /// satisfies `i & 2 == 0`.
+    /// A two-lane 64-bit operand. Only lanes 0 and 1 exist, so every index here satisfies
+    /// `i & 2 == 0`. There is no two-operand case to check: that needs `SwizzleConcat`, which only
+    /// the four-lane types implement.
     macro_rules! check_2lane_64bit {
         ($name:ident, $s:ty, $new:expr, $read2:expr, $read4:expr) => {
             #[test]
@@ -436,7 +437,6 @@ mod tests {
                 let read2 = $read2;
                 let read4 = $read4;
                 let a = new([10 as $s, 11 as $s]);
-                let b = new([20 as $s, 21 as $s]);
 
                 assert_eq!(read2(swizzle4!(a, [1, 0])), [11 as $s, 10 as $s]);
                 assert_eq!(read2(swizzle4!(a, [0, 0])), [10 as $s, 10 as $s]);
