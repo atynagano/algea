@@ -155,43 +155,49 @@ macro_rules! impl_layout {
                 a
             }
             #[inline(always)]
-            fn index(a: &Self::Storage, index: (usize, usize)) -> Option<&Self> { paste::paste!(kernels::index:: [<_ $m x $n>])(a, index) }
+            fn index(a: &Self::Storage, index: (usize, usize)) -> Option<&Self> { paste::paste!(kernels::index::[<_ $bits bit>]::[<_ $m x $n>])(a, index) }
             #[inline(always)]
-            fn index_mut(a: &mut Self::Storage, index: (usize, usize)) -> Option<&mut Self> { paste::paste!(kernels::index_mut:: [<_ $m x $n>])(a, index) }
+            fn index_mut(a: &mut Self::Storage, index: (usize, usize)) -> Option<&mut Self> { paste::paste!(kernels::index_mut::[<_ $bits bit>]::[<_ $m x $n>])(a, index) }
             #[inline(always)]
             fn as_array_first(a: &Self::Storage) -> &[Self; $m] { unpack_array!(ref: a; $len)[0].as_array_().first_chunk().unwrap() }
             #[inline(always)]
             fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { unpack_array!(mut: a; $len)[0].as_mut_array_().first_chunk_mut().unwrap() }
             #[inline(always)]
-            fn to_array(a: Self::Storage) -> [[Self; $m]; $n] { paste::paste!(kernels::to_array:: [<_ $m x $n>])(a) }
+            fn to_array(a: Self::Storage) -> [[Self; $m]; $n] { paste::paste!(kernels::to_array::[<_ $bits bit>]::[<_ $m x $n>])(a) }
             #[inline(always)]
-            fn from_array(a: [[Self; $m]; $n]) -> Self::Storage { paste::paste!(kernels::from_array::$self_ty:: [<_ $m x $n>])(a) }
+            fn from_array(a: [[Self; $m]; $n]) -> Self::Storage { paste::paste!(kernels::from_array::$self_ty::[<_ $m x $n>])(a) }
             #[inline(always)]
             fn from_vecs(a: [Vector<Self, $m>; $n]) -> Self::Storage { paste::paste!(kernels::from_vecs::$self_ty:: [<_ $m x $n>])(a) }
             #[inline(always)]
             fn filled(a: Self) -> Self::Storage { unpack_array!([($primitive::filled_(a)); $len]) }
             #[inline(always)]
             fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_f32_; [$($valid),+]])
             }
             #[inline(always)]
             fn cast_from_i32(a: <i32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_i32_; [$($valid),+]])
             }
             #[inline(always)]
             fn cast_from_u32(a: <u32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_u32_; [$($valid),+]])
             }
             #[inline(always)]
             fn cast_from_f64(a: <f64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_f64_; [$($valid),+]])
             }
             #[inline(always)]
             fn cast_from_i64(a: <i64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_i64_; [$($valid),+]])
             }
             #[inline(always)]
             fn cast_from_u64(a: <u64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+                let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_u64_; [$($valid),+]])
             }
             #[inline(always)]
@@ -294,7 +300,7 @@ macro_rules! impl_layout {
             fn transpose(
                 a: <Self as private::SealedElement<$m, $n>>::Storage,
             ) -> <Self as private::SealedElement<$n, $m>>::Storage {
-                paste::paste!(crate::kernels::transpose::[<transpose $m x $n>])(a)
+                paste::paste!(crate::kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
             }
             #[inline(always)]
             fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage {
@@ -826,7 +832,6 @@ macro_rules! call_layouts {
             (3, 2; $vec4 x 2 valid [3, 3]) => {},
             (4, 2; $vec4 x 2 valid [4, 4]) => {},
             (1, 3; $vec4 x 1 valid [3]) => {},
-            (2, 3; $vec4 x 2 valid [4, 2]) => {},
             (3, 3; $vec4 x 3 valid [3, 3, 3]) => {},
             (4, 3; $vec4 x 3 valid [4, 4, 4]) => {},
             (1, 4; $vec4 x 1 valid [4]) => {},
@@ -840,11 +845,111 @@ macro_rules! call_layouts {
 call_layouts!(impl_layouts_f32(f32, f32x2, f32x4));
 call_layouts!(impl_layouts_f64(f64, f64x2, f64x4));
 call_layouts!(impl_layouts_i32(i32, i32x2, i32x4));
-// TODO(matrix-2x3-layout): a 2x3 matrix packs its three columns into two four-lane units, so the
-// second unit uses only two of its four lanes. That shape pays off where a four-lane 64-bit value
-// is one 256-bit register, but outside AVX2 it is a pair of 128-bit registers and three two-lane
-// units would fit better. The 64-bit element types should therefore pick
-// `(2, 3; $vec2 x 3 valid [2, 2, 2])` over `(2, 3; $vec4 x 2 valid [4, 2])` per target.
 call_layouts!(impl_layouts_i64(i64, i64x2, i64x4));
 call_layouts!(impl_layouts_u32(u32, u32x2, u32x4));
 call_layouts!(impl_layouts_u64(u64, u64x2, u64x4));
+
+// 2x3 is the one shape whose storage depends on the element width, so its layouts are spelled out
+// here rather than in `call_layouts!`.
+//
+// A 2x3 matrix holds three columns of two lanes. Packing the first two columns into one four-lane
+// unit and leaving the third alone in a second unit is the right shape where a four-lane 64-bit
+// value is one 256-bit register. Everywhere else that value is a pair of 128-bit registers, and
+// three two-lane units fit better. So a 64-bit element type takes `$vec4 x 2` on AVX2 and
+// `$vec2 x 3` without it, while a 32-bit one always takes `$vec4 x 2`.
+//
+// Every kernel that touches the shape therefore comes in an `_in_vec4` and an `_in_vec2` form, and
+// each element width re-exports the one it uses under the plain name. `RelayoutStorage` below
+// converts between the two arrangements, which is what a cast between element widths needs.
+
+trait RelayoutStorage<const M: usize, const N: usize, const BITS: usize> {
+    type Output;
+    fn relayout_storage(self) -> Self::Output;
+}
+macro_rules! impl_relayout_storage {
+    ($m:literal, $n:literal) => {
+        impl<T, const BITS: usize> RelayoutStorage<$m, $n, BITS> for T {
+            type Output = T;
+            #[inline(always)]
+            fn relayout_storage(self) -> Self::Output { self }
+        }
+    };
+}
+impl_relayout_storage!(1, 1);
+impl_relayout_storage!(1, 2);
+impl_relayout_storage!(1, 3);
+impl_relayout_storage!(1, 4);
+impl_relayout_storage!(2, 1);
+impl_relayout_storage!(2, 2);
+impl_relayout_storage!(2, 4);
+impl_relayout_storage!(3, 1);
+impl_relayout_storage!(3, 2);
+impl_relayout_storage!(3, 3);
+impl_relayout_storage!(3, 4);
+impl_relayout_storage!(4, 1);
+impl_relayout_storage!(4, 2);
+impl_relayout_storage!(4, 3);
+impl_relayout_storage!(4, 4);
+
+impl_layouts_f32!((2, 3; f32x4 x 2 valid [4, 2]) => {});
+impl_layouts_i32!((2, 3; i32x4 x 2 valid [4, 2]) => {});
+impl_layouts_u32!((2, 3; u32x4 x 2 valid [4, 2]) => {});
+
+#[cfg(target_feature = "avx2")]
+mod _2x3 {
+    use super::*;
+    impl_layouts_f64!((2, 3; f64x4 x 2 valid [4, 2]) => {});
+    impl_layouts_i64!((2, 3; i64x4 x 2 valid [4, 2]) => {});
+    impl_layouts_u64!((2, 3; u64x4 x 2 valid [4, 2]) => {});
+    impl_relayout_storage!(2, 3);
+}
+#[cfg(not(target_feature = "avx2"))]
+mod _2x3 {
+    // Only this branch has to move lanes around; the other one relayouts nothing.
+    use super::{utils::swizzle, *};
+
+    impl_layouts_f64!((2, 3; f64x2 x 3 valid [2, 2, 2]) => {});
+    impl_layouts_i64!((2, 3; i64x2 x 3 valid [2, 2, 2]) => {});
+    impl_layouts_u64!((2, 3; u64x2 x 3 valid [2, 2, 2]) => {});
+
+    // A 2x3 matrix is three columns of two lanes. The 32-bit layout packs the first two columns
+    // into one four-lane unit and gives the third a unit of its own; the 64-bit layout gives each
+    // column its own two-lane unit.
+    macro_rules! impl_relayout_storage_2x3 {
+        ($f32x2:ident, $f32x4:ident, $f64x2:ident, $f64x4:ident) => {
+            impl RelayoutStorage<2, 3, 64> for [$f32x4; 2] {
+                type Output = [$f32x2; 3];
+                #[inline(always)]
+                fn relayout_storage(self) -> Self::Output {
+                    let [packed, third] = self;
+                    [
+                        swizzle!(packed, [0, 1]).store(),
+                        swizzle!(packed, [2, 3]).store(),
+                        swizzle!(third, [0, 1]).store(),
+                    ]
+                }
+            }
+            impl RelayoutStorage<2, 3, 32> for [$f64x2; 3] {
+                type Output = [$f64x4; 2];
+                #[inline(always)]
+                fn relayout_storage(self) -> Self::Output {
+                    let [first, second, third] = self;
+                    [swizzle!(first, second, @concat), third.widen()]
+                }
+            }
+            impl RelayoutStorage<2, 3, 32> for [$f32x4; 2] {
+                type Output = [$f32x4; 2];
+                #[inline(always)]
+                fn relayout_storage(self) -> Self::Output { self }
+            }
+            impl RelayoutStorage<2, 3, 64> for [$f64x2; 3] {
+                type Output = [$f64x2; 3];
+                #[inline(always)]
+                fn relayout_storage(self) -> Self::Output { self }
+            }
+        };
+    }
+    impl_relayout_storage_2x3!(f32x2, f32x4, f64x2, f64x4);
+    impl_relayout_storage_2x3!(i32x2, i32x4, i64x2, i64x4);
+    impl_relayout_storage_2x3!(u32x2, u32x4, u64x2, u64x4);
+}

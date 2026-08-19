@@ -206,17 +206,30 @@ pub(crate) mod mask {
                 let [a, b, c] = to_array_3(mask);
                 [[a], [b], [c]]
             }
+            // A width aliases whichever of the two 2x3 layouts it uses, leaving the other dead.
+            #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn from_array_2x3(array: [[bool; 2]; 3]) -> MaskStorage<[$vec4; 2]> {
+            pub(crate) fn from_array_2x3_in_vec4(array: [[bool; 2]; 3]) -> MaskStorage<[$vec4; 2]> {
                 let [[a, b], [c, d], [e, f]] = array;
                 [from_array_4([a, b, c, d]), from_array_2([e, f]).widen()].into()
             }
+            #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn to_array_2x3(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 2]; 3] {
+            pub(crate) fn to_array_2x3_in_vec4(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 2]; 3] {
                 let [first, last] = mask.unpack();
                 let [a, b, c, d] = to_array_4(first);
                 let [e, f] = to_array_2(last.xy());
                 [[a, b], [c, d], [e, f]]
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn from_array_2x3_in_vec2(array: [[bool; 2]; 3]) -> MaskStorage<[$vec2; 3]> {
+                array.map(from_array_2).into()
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn to_array_2x3_in_vec2(mask: MaskStorage<[$vec2; 3]>) -> [[bool; 2]; 3] {
+                mask.unpack().map(to_array_2)
             }
             #[inline(always)]
             pub(crate) fn from_array_3x3([a, b, c]: [[bool; 3]; 3]) -> MaskStorage<[$vec4; 3]> {
@@ -410,6 +423,9 @@ pub(crate) mod mask {
         #[inline(always)]
         pub(super) fn to_array_4(mask: MaskStorage<i32x4>) -> [bool; 4] { to_array(mask) }
 
+        pub(crate) use from_array_2x3_in_vec4 as from_array_2x3;
+        pub(crate) use to_array_2x3_in_vec4 as to_array_2x3;
+
         impl_matrix_conversion!(i32, compute_i32x2, i32x4);
     }
 
@@ -476,6 +492,17 @@ pub(crate) mod mask {
             }
         }
 
+        cfg_select! {
+            target_feature = "avx2" => {
+                pub(crate) use from_array_2x3_in_vec4 as from_array_2x3;
+                pub(crate) use to_array_2x3_in_vec4 as to_array_2x3;
+            }
+            _ => {
+                pub(crate) use from_array_2x3_in_vec2 as from_array_2x3;
+                pub(crate) use to_array_2x3_in_vec2 as to_array_2x3;
+            }
+        }
+
         impl_matrix_conversion!(i64, i64x2, i64x4);
     }
 }
@@ -520,7 +547,11 @@ pub(crate) mod diagonal {
 }
 
 pub(crate) mod transpose {
-    use crate::simd::utils::{ComputeVector4, swizzle};
+    use crate::simd::utils::{ComputeVector2, ComputeVector4, Simd2Ext, swizzle};
+
+    // The `_in_vec4` and `_in_vec2` pairs are the two 2x3 storage layouts; see the note beside the
+    // 2x3 layout tables in `simd.rs` for which element width uses which. A transpose has 2x3 on one
+    // side and 3x2 on the other, so both directions come in pairs.
 
     #[inline(always)]
     pub(crate) fn transpose1x1<T>(a: T) -> T { a }
@@ -535,7 +566,15 @@ pub(crate) mod transpose {
     #[inline(always)]
     pub(crate) fn transpose2x2<Tx4: ComputeVector4>(a: Tx4) -> Tx4 { swizzle!(a, [0, 2, 1, 3]) }
     #[inline(always)]
-    pub(crate) fn transpose3x2<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] { transpose4x2(a) }
+    pub(crate) fn transpose3x2_in_vec4<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] {
+        transpose4x2(a)
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn transpose3x2_in_vec2<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4::Vector2; 3] {
+        let [c0, c1] = a;
+        [swizzle!(c0, c1, [0, 4]), swizzle!(c0, c1, [1, 5]), swizzle!(c0, c1, [2, 6])]
+    }
     #[inline(always)]
     pub(crate) fn transpose4x2<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] {
         [swizzle!(a[0], a[1], [0, 4, 1, 5]), swizzle!(a[0], a[1], [2, 6, 3, 7])]
@@ -543,8 +582,22 @@ pub(crate) mod transpose {
     #[inline(always)]
     pub(crate) fn transpose1x3<Tx4>(a: Tx4) -> Tx4 { a }
     #[inline(always)]
-    pub(crate) fn transpose2x3<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] { transpose2x4(a) }
-
+    pub(crate) fn transpose2x3_in_vec4<Tx4: ComputeVector4>(a: [Tx4; 2]) -> [Tx4; 2] {
+        transpose2x4(a)
+    }
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub(crate) fn transpose2x3_in_vec2<Tx2: ComputeVector2>(a: [Tx2; 3]) -> [Tx2::Vector4; 2] {
+        let [c0, c1, c2] = a;
+        let first_two: Tx2::Vector4 = swizzle!(c0, c1, @concat);
+        let third = c2.widen();
+        // Lane 3 of each result is padding. The first gather names `third`'s two lanes in order
+        // rather than repeating lane 0, which may cost one shuffle less; the second can only reach
+        // lane 1, so it repeats.
+        //
+        // TODO(codegen-optimization): confirm that the asymmetry actually pays before relying on it.
+        [swizzle!(first_two, third, [0, 2, 4, 5]), swizzle!(first_two, third, [1, 3, 5, _])]
+    }
     #[inline(always)]
     pub(crate) fn transpose3x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> [Tx4; 3] {
         let ab_lo = swizzle!(a[0], a[1], [0, 4, 1, 5]);
@@ -598,6 +651,30 @@ pub(crate) mod transpose {
             swizzle!(cols01_hi, cols23_hi, [0, 1, 4, 5]),
             swizzle!(cols01_hi, cols23_hi, [2, 3, 6, 7]),
         ]
+    }
+
+    pub(crate) mod _32bit {
+        pub(crate) use super::{
+            transpose2x3_in_vec4 as transpose2x3,
+            transpose3x2_in_vec4 as transpose3x2,
+            *,
+        };
+    }
+    #[cfg(target_feature = "avx2")]
+    pub(crate) mod _64bit {
+        pub(crate) use super::{
+            transpose2x3_in_vec4 as transpose2x3,
+            transpose3x2_in_vec4 as transpose3x2,
+            *,
+        };
+    }
+    #[cfg(not(target_feature = "avx2"))]
+    pub(crate) mod _64bit {
+        pub(crate) use super::{
+            transpose2x3_in_vec2 as transpose2x3,
+            transpose3x2_in_vec2 as transpose3x2,
+            *,
+        };
     }
 }
 
@@ -883,7 +960,7 @@ pub(crate) mod index {
                 if j < 3 && i == 0 { a.$as_array().$get(j) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _2x3<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x3_in_vec4<T, Tx4: ArithPrimitive<Scalar = T>>(
                 a: & $($mut)? [Tx4; 2],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -895,6 +972,16 @@ pub(crate) mod index {
                     }
                 }
                 None
+            }
+            #[inline(always)]
+            pub(crate) fn _2x3_in_vec2<T, Tx2: ArithPrimitive<Scalar = T>>(
+                a: & $($mut)? [Tx2; 3],
+                (i, j): (usize, usize),
+            ) -> Option<& $($mut)? T> {
+                match a.$get(j) {
+                    Some(column) => column.$as_array().$get(i),
+                    _ => None,
+                }
             }
             #[inline(always)]
             pub(crate) fn _3x3<T, Tx4: ArithPrimitive<Scalar = T>>(
@@ -957,6 +1044,27 @@ pub(crate) mod index {
                     _ => None,
                 }
             }
+
+            pub(crate) mod _32bit {
+                pub(crate) use super::{
+                    _2x3_in_vec4 as _2x3,
+                    *,
+                };
+            }
+            #[cfg(target_feature = "avx2")]
+            pub(crate) mod _64bit {
+                pub(crate) use super::{
+                    _2x3_in_vec4 as _2x3,
+                    *,
+                };
+            }
+            #[cfg(not(target_feature = "avx2"))]
+            pub(crate) mod _64bit {
+                pub(crate) use super::{
+                    _2x3_in_vec2 as _2x3,
+                    *,
+                };
+            }
         };
     }
 
@@ -1011,10 +1119,14 @@ pub(crate) mod to_array {
         [[a], [b], [c]]
     }
     #[inline(always)]
-    pub(crate) fn _2x3<T, Tx4: Copy + Into<[T; 4]>>(x: [Tx4; 2]) -> [[T; 2]; 3] {
+    pub(crate) fn _2x3_in_vec4<T, Tx4: Copy + Into<[T; 4]>>(x: [Tx4; 2]) -> [[T; 2]; 3] {
         let [a, b, c, d] = x[0].into();
         let [e, f, _, _] = x[1].into();
         [[a, b], [c, d], [e, f]]
+    }
+    #[inline(always)]
+    pub(crate) fn _2x3_in_vec2<T, Tx2: Copy + Into<[T; 2]>>(x: [Tx2; 3]) -> [[T; 2]; 3] {
+        x.map(Into::into)
     }
     #[inline(always)]
     pub(crate) fn _3x3<T, Tx4: Copy + Into<[T; 4]>>(a: [Tx4; 3]) -> [[T; 3]; 3] {
@@ -1043,19 +1155,31 @@ pub(crate) mod to_array {
     pub(crate) fn _4x4<T, Tx4: Copy + Into<[T; 4]>>(a: [Tx4; 4]) -> [[T; 4]; 4] {
         [a[0].into(), a[1].into(), a[2].into(), a[3].into()]
     }
+
+    pub(crate) mod _32bit {
+        pub(crate) use super::{_2x3_in_vec4 as _2x3, *};
+    }
+    #[cfg(target_feature = "avx2")]
+    pub(crate) mod _64bit {
+        pub(crate) use super::{_2x3_in_vec4 as _2x3, *};
+    }
+    #[cfg(not(target_feature = "avx2"))]
+    pub(crate) mod _64bit {
+        pub(crate) use super::{_2x3_in_vec2 as _2x3, *};
+    }
 }
 
 pub(crate) mod from_array {
     // Use `new` instead of `From<[T; 4]>` so these constructors remain `const fn`.
     macro_rules! impl_fns {
-        ($f32:ty, $x2:ty, $x4:ty, $zero:literal) => {
+        ($f32:ty, $x2:ty, $x4:ty) => {
             #[inline(always)]
             pub(crate) const fn _1x1([a]: [[$f32; 1]; 1]) -> $f32 { a[0] }
             #[inline(always)]
             pub(crate) const fn _2x1([a]: [[$f32; 2]; 1]) -> $x2 { <$x2>::new([a[0], a[1]]) }
             #[inline(always)]
             pub(crate) const fn _3x1([a]: [[$f32; 3]; 1]) -> $x4 {
-                <$x4>::new([a[0], a[1], a[2], $zero])
+                <$x4>::new([a[0], a[1], a[2], 0 as _])
             }
             #[inline(always)]
             pub(crate) const fn _4x1([a]: [[$f32; 4]; 1]) -> $x4 { <$x4>::new(a) }
@@ -1073,14 +1197,15 @@ pub(crate) mod from_array {
             }
             #[inline(always)]
             pub(crate) const fn _1x3(a: [[$f32; 1]; 3]) -> $x4 {
-                <$x4>::new([a[0][0], a[1][0], a[2][0], $zero])
+                <$x4>::new([a[0][0], a[1][0], a[2][0], 0 as _])
             }
             #[inline(always)]
-            pub(crate) const fn _2x3(x: [[$f32; 2]; 3]) -> [$x4; 2] {
-                [
-                    <$x4>::new([x[0][0], x[0][1], x[1][0], x[1][1]]),
-                    <$x4>::new([x[2][0], x[2][1], $zero, $zero]),
-                ]
+            pub(crate) const fn _2x3_in_vec4([a, b, c]: [[$f32; 2]; 3]) -> [$x4; 2] {
+                [<$x4>::new([a[0], a[1], b[0], b[1]]), <$x4>::new([c[0], c[1], 0 as _, 0 as _])]
+            }
+            #[inline(always)]
+            pub(crate) const fn _2x3_in_vec2([a, b, c]: [[$f32; 2]; 3]) -> [$x2; 3] {
+                [<$x2>::new(a), <$x2>::new(b), <$x2>::new(c)]
             }
             #[inline(always)]
             pub(crate) const fn _3x3(a: [[$f32; 3]; 3]) -> [$x4; 3] {
@@ -1112,39 +1237,60 @@ pub(crate) mod from_array {
         };
     }
 
+    // Which of the two 2x3 layouts an element width uses; see the note beside the 2x3 layout
+    // tables in `simd.rs`.
+    macro_rules! select_2x3 {
+        () => {
+            cfg_select! {
+                target_feature = "avx2" => {
+                    pub(crate) use _2x3_in_vec4 as _2x3;
+                }
+                _ => {
+                    pub(crate) use _2x3_in_vec2 as _2x3;
+                }
+            }
+        };
+    }
+
     pub(crate) mod f32 {
         use crate::simd::utils::f32x2;
+        pub(crate) use _2x3_in_vec4 as _2x3;
         use wide::f32x4;
-        impl_fns!(f32, f32x2, f32x4, 0.);
+        impl_fns!(f32, f32x2, f32x4);
     }
     pub(crate) mod f64 {
         use wide::{f64x2, f64x4};
-        impl_fns!(f64, f64x2, f64x4, 0.);
+        select_2x3!();
+        impl_fns!(f64, f64x2, f64x4);
     }
     pub(crate) mod i32 {
         use crate::simd::utils::i32x2;
+        pub(crate) use _2x3_in_vec4 as _2x3;
         use wide::i32x4;
-        impl_fns!(i32, i32x2, i32x4, 0);
+        impl_fns!(i32, i32x2, i32x4);
     }
     pub(crate) mod i64 {
         use wide::{i64x2, i64x4};
-        impl_fns!(i64, i64x2, i64x4, 0);
+        select_2x3!();
+        impl_fns!(i64, i64x2, i64x4);
     }
     pub(crate) mod u32 {
         use crate::simd::utils::u32x2;
+        pub(crate) use _2x3_in_vec4 as _2x3;
         use wide::u32x4;
-        impl_fns!(u32, u32x2, u32x4, 0);
+        impl_fns!(u32, u32x2, u32x4);
     }
     pub(crate) mod u64 {
         use wide::{u64x2, u64x4};
-        impl_fns!(u64, u64x2, u64x4, 0);
+        select_2x3!();
+        impl_fns!(u64, u64x2, u64x4);
     }
 }
 
 pub(crate) mod from_vecs {
     // These functions need no macro because they are not `const`.
     macro_rules! impl_fns {
-        ($f32:ty, $x2:ty, $x4:ty, $zero:literal) => {
+        ($f32:ty, $x2:ty, $x4:ty) => {
             #[inline(always)]
             pub(crate) fn _1x1([a]: [Vector<$f32, 1>; 1]) -> $f32 { a.storage }
             #[inline(always)]
@@ -1167,11 +1313,15 @@ pub(crate) mod from_vecs {
             pub(crate) fn _4x2([a, b]: [Vector<$f32, 4>; 2]) -> [$x4; 2] { [a.storage, b.storage] }
             #[inline(always)]
             pub(crate) fn _1x3([a, b, c]: [Vector<$f32, 1>; 3]) -> $x4 {
-                <$x4>::new([a.storage, b.storage, c.storage, $zero])
+                <$x4>::new([a.storage, b.storage, c.storage, 0 as _])
             }
             #[inline(always)]
-            pub(crate) fn _2x3([a, b, c]: [Vector<$f32, 2>; 3]) -> [$x4; 2] {
+            pub(crate) fn _2x3_in_vec4([a, b, c]: [Vector<$f32, 2>; 3]) -> [$x4; 2] {
                 [_2x2([a, b]), c.storage.load().widen()]
+            }
+            #[inline(always)]
+            pub(crate) fn _2x3_in_vec2([a, b, c]: [Vector<$f32, 2>; 3]) -> [$x2; 3] {
+                [a.storage, b.storage, c.storage]
             }
             #[inline(always)]
             pub(crate) fn _3x3([a, b, c]: [Vector<$f32, 3>; 3]) -> [$x4; 3] {
@@ -1200,6 +1350,20 @@ pub(crate) mod from_vecs {
         };
     }
 
+    // See `from_array::select_2x3`.
+    macro_rules! select_2x3 {
+        () => {
+            cfg_select! {
+                target_feature = "avx2" => {
+                    pub(crate) use _2x3_in_vec4 as _2x3;
+                }
+                _ => {
+                    pub(crate) use _2x3_in_vec2 as _2x3;
+                }
+            }
+        };
+    }
+
     use crate::{
         Vector,
         simd::utils::{Simd2Ext, f32x2, i32x2, swizzle, u32x2},
@@ -1208,27 +1372,33 @@ pub(crate) mod from_vecs {
     use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
     pub(crate) mod f32 {
         use super::*;
-        impl_fns!(f32, f32x2, f32x4, 0.);
+        pub(crate) use _2x3_in_vec4 as _2x3;
+        impl_fns!(f32, f32x2, f32x4);
     }
     pub(crate) mod f64 {
         use super::*;
-        impl_fns!(f64, f64x2, f64x4, 0.);
+        select_2x3!();
+        impl_fns!(f64, f64x2, f64x4);
     }
     pub(crate) mod i32 {
         use super::*;
-        impl_fns!(i32, i32x2, i32x4, 0);
+        pub(crate) use _2x3_in_vec4 as _2x3;
+        impl_fns!(i32, i32x2, i32x4);
     }
     pub(crate) mod i64 {
         use super::*;
-        impl_fns!(i64, i64x2, i64x4, 0);
+        select_2x3!();
+        impl_fns!(i64, i64x2, i64x4);
     }
     pub(crate) mod u32 {
         use super::*;
-        impl_fns!(u32, u32x2, u32x4, 0);
+        pub(crate) use _2x3_in_vec4 as _2x3;
+        impl_fns!(u32, u32x2, u32x4);
     }
     pub(crate) mod u64 {
         use super::*;
-        impl_fns!(u64, u64x2, u64x4, 0);
+        select_2x3!();
+        impl_fns!(u64, u64x2, u64x4);
     }
 }
 
@@ -2436,6 +2606,32 @@ pub(crate) mod matmul {
         utils::arith,
     };
 
+    // See the note beside the 2x3 layout tables in `simd.rs`. A matmul shape is affected when its
+    // left operand, its right operand
+    // or its result is 2x3, which is `2x3xC`, `Ax2x3` and `2xBx3`. Where two of the three are 2x3
+    // they switch together, because all three follow the same element width.
+    //
+    // Each instantiation aliases one form of every pair, which leaves the other dead there; hence
+    // the `allow(dead_code)` on both forms.
+    macro_rules! select_2x3 {
+        ($layout:ident) => {
+            paste::paste! {
+                pub(crate) use {
+                    [<matmul1x2x3_ $layout>] as matmul1x2x3,
+                    [<matmul2x1x3_ $layout>] as matmul2x1x3,
+                    [<matmul2x2x3_ $layout>] as matmul2x2x3,
+                    [<matmul2x3x1_ $layout>] as matmul2x3x1,
+                    [<matmul2x3x2_ $layout>] as matmul2x3x2,
+                    [<matmul2x3x3_ $layout>] as matmul2x3x3,
+                    [<matmul2x3x4_ $layout>] as matmul2x3x4,
+                    [<matmul2x4x3_ $layout>] as matmul2x4x3,
+                    [<matmul3x2x3_ $layout>] as matmul3x2x3,
+                    [<matmul4x2x3_ $layout>] as matmul4x2x3,
+                };
+            }
+        };
+    }
+
     macro_rules! impl_matmul {
         ($scalar:ident, $vec2:ident, $vec4:ident) => {
             // Kernels in this module use the column-major storage contract.
@@ -2492,12 +2688,22 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul2x3x1(a: [$vec4; 2], b: $vec4) -> $vec2 {
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x3x1_in_vec4(a: [$vec4; 2], b: $vec4) -> $vec2 {
                 let xxyy = swizzle!(b, [0, 0, 1, 1]);
                 let zz = swizzle!(b, [2, 2]);
                 let products01 = a[0] * xxyy;
                 let upper_products01 = swizzle!(products01, [2, 3]);
                 arith!((products01.xy() + upper_products01) + (a[1].xy()) * zz)
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x3x1_in_vec2(a: [$vec2; 3], b: $vec4) -> $vec2 {
+                let [a0, a1, a2] = a;
+                let b0 = swizzle!(b, [0, 0]);
+                let b1 = swizzle!(b, [1, 1]);
+                let b2 = swizzle!(b, [2, 2]);
+                arith!(a0 * b0 + a1 * b1 + a2 * b2)
             }
 
             #[inline(always)]
@@ -2601,10 +2807,17 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul2x3x2(a: [$vec4; 2], b: [$vec4; 2]) -> $vec4 {
-                // Packed 2x2 column-major output: `[r0c0, r1c0, r0c1, r1c1]`.
-                let col0 = matmul2x3x1(a, b[0]);
-                let col1 = matmul2x3x1(a, b[1]);
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x3x2_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> $vec4 {
+                let col0 = matmul2x3x1_in_vec4(a, b[0]);
+                let col1 = matmul2x3x1_in_vec4(a, b[1]);
+                swizzle!(col0, col1, @concat)
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x3x2_in_vec2(a: [$vec2; 3], b: [$vec4; 2]) -> $vec4 {
+                let col0 = matmul2x3x1_in_vec2(a, b[0]);
+                let col1 = matmul2x3x1_in_vec2(a, b[1]);
                 swizzle!(col0, col1, @concat)
             }
 
@@ -2658,15 +2871,24 @@ pub(crate) mod matmul {
             pub(crate) fn matmul1x1x3(a: $scalar, b: $vec4) -> $vec4 { $vec4::splat(a) * b }
 
             #[inline(always)]
-            pub(crate) fn matmul2x1x3(a: $vec2, b: $vec4) -> [$vec4; 2] {
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x1x3_in_vec4(a: $vec2, b: $vec4) -> [$vec4; 2] {
                 // a = [a0, a1, *, *], b = [b0, b1, b2, *]
                 // Packed output: `cols01 = [a0*b0, a1*b0, a0*b1, a1*b1]` and
                 // `col2 = [a0*b2, a1*b2, *, *]`.
                 let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let xy__ = swizzle!(a, [0, 1, _, _]);
                 let xxyy = swizzle!(b, [0, 0, 1, 1]);
                 let zz__ = swizzle!(b, [2, 2, _, _]);
-                [xyxy * xxyy, xy__ * zz__]
+                [xyxy * xxyy, xyxy * zz__]
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x1x3_in_vec2(a: $vec2, b: $vec4) -> [$vec2; 3] {
+                [
+                    a * swizzle!(b, [0, 0]),
+                    a * swizzle!(b, [1, 1]),
+                    a * swizzle!(b, [2, 2]),
+                ]
             }
 
             #[inline(always)]
@@ -2681,7 +2903,8 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul1x2x3(a: $vec2, b: [$vec4; 2]) -> $vec4 {
+            #[allow(dead_code)]
+            pub(crate) fn matmul1x2x3_in_vec4(a: $vec2, b: [$vec4; 2]) -> $vec4 {
                 // TODO(codegen-optimization): Compare this path with a single-horizontal-add packed
                 // formulation, and adopt it only when complete-kernel benchmarks improve.
 
@@ -2691,9 +2914,20 @@ pub(crate) mod matmul {
                 let yyy_ = swizzle!(a, [1, 1, 1, _]);
                 arith!(xxx_ * col0 + yyy_ * col1)
             }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul1x2x3_in_vec2(a: $vec2, b: [$vec2; 3]) -> $vec4 {
+                // TODO(codegen-optimization): this multiplies and then reduces. The four-lane
+                // sibling instead gathers `b`'s rows and runs one multiply-accumulate chain;
+                // compare the two here.
+                let products = [a * b[0], a * b[1], a * b[2]];
+                let [low, high] = transpose::transpose2x3_in_vec2::<$vec2>(products);
+                low + high
+            }
 
             #[inline(always)]
-            pub(crate) fn matmul2x2x3(a: $vec4, b: [$vec4; 2]) -> [$vec4; 2] {
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x2x3_in_vec4(a: $vec4, b: [$vec4; 2]) -> [$vec4; 2] {
                 // b[0] = [b00, b10, b01, b11], b[1] = [b02, b12, *, *]
                 // `cols01` has the same first-two-column layout as `matmul2x2x2`; `col2` stores only
                 // the final column.
@@ -2712,9 +2946,35 @@ pub(crate) mod matmul {
 
                 [cols01, col2]
             }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x2x3_in_vec2(a: $vec4, b: [$vec2; 3]) -> [$vec2; 3] {
+                let a0 = swizzle!(a, [0, 1]);
+                let a1 = swizzle!(a, [2, 3]);
+                b.map(
+                    #[inline(always)]
+                    |col| {
+                        let x = swizzle!(col, [0, 0]);
+                        let y = swizzle!(col, [1, 1]);
+                        arith!(a0 * x + a1 * y)
+                    },
+                )
+            }
 
             #[inline(always)]
-            pub(crate) fn matmul3x2x3(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
+            #[allow(dead_code)]
+            pub(crate) fn matmul3x2x3_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
+                matmul4x2x3_in_vec4(a, b)
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul3x2x3_in_vec2(a: [$vec4; 2], b: [$vec2; 3]) -> [$vec4; 3] {
+                matmul4x2x3_in_vec2(a, b)
+            }
+
+            #[inline(always)]
+            #[allow(dead_code)]
+            pub(crate) fn matmul4x2x3_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
                 // b[0] = [b00, b10, b01, b11] (columns 0,1 packed)
                 // b[1] = [b02, b12, *, *] (column 2)
                 let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]); // b00
@@ -2730,21 +2990,20 @@ pub(crate) mod matmul {
 
                 [col0, col1, col2]
             }
-
+            #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn matmul4x2x3(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
-                let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]);
-                let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]);
-                let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]);
-                let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]);
-                let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
-                let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
-
-                let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]);
-                let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]);
-                let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
-
-                [col0, col1, col2]
+            pub(crate) fn matmul4x2x3_in_vec2(a: [$vec4; 2], b: [$vec2; 3]) -> [$vec4; 3] {
+                // Each output column scales `a`'s two columns by one lane of the matching column
+                // of `b`.
+                let [a0, a1] = a;
+                b.map(
+                    #[inline(always)]
+                    |col| {
+                        let x = swizzle!(col, [0, 0, 0, 0]);
+                        let y = swizzle!(col, [1, 1, 1, 1]);
+                        arith!(a0 * x + a1 * y)
+                    },
+                )
             }
 
             #[inline(always)]
@@ -2760,11 +3019,21 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul2x3x3(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
-                let col0 = matmul2x3x1(a, b[0]);
-                let col1 = matmul2x3x1(a, b[1]);
-                let col2 = matmul2x3x1(a, b[2]);
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x3x3_in_vec4(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
+                let col0 = matmul2x3x1_in_vec4(a, b[0]);
+                let col1 = matmul2x3x1_in_vec4(a, b[1]);
+                let col2 = matmul2x3x1_in_vec4(a, b[2]);
                 [swizzle!(col0, col1, @concat), col2.widen()]
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x3x3_in_vec2(a: [$vec2; 3], b: [$vec4; 3]) -> [$vec2; 3] {
+                [
+                    matmul2x3x1_in_vec2(a, b[0]),
+                    matmul2x3x1_in_vec2(a, b[1]),
+                    matmul2x3x1_in_vec2(a, b[2]),
+                ]
             }
 
             #[inline(always)]
@@ -2792,11 +3061,17 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul2x4x3(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x4x3_in_vec4(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
                 let col0 = matmul2x4x1(a, b[0]);
                 let col1 = matmul2x4x1(a, b[1]);
                 let col2 = matmul2x4x1(a, b[2]);
                 [swizzle!(col0, col1, @concat), col2.widen()]
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x4x3_in_vec2(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec2; 3] {
+                [matmul2x4x1(a, b[0]), matmul2x4x1(a, b[1]), matmul2x4x1(a, b[2])]
             }
 
             #[inline(always)]
@@ -2920,15 +3195,26 @@ pub(crate) mod matmul {
             }
 
             #[inline(always)]
-            pub(crate) fn matmul2x3x4(a: [$vec4; 2], b: [$vec4; 4]) -> [$vec4; 2] {
-                let col0 = matmul2x3x1(a, b[0]);
-                let col1 = matmul2x3x1(a, b[1]);
-                let col2 = matmul2x3x1(a, b[2]);
-                let col3 = matmul2x3x1(a, b[3]);
+            #[allow(dead_code)]
+            pub(crate) fn matmul2x3x4_in_vec4(a: [$vec4; 2], b: [$vec4; 4]) -> [$vec4; 2] {
+                let col0 = matmul2x3x1_in_vec4(a, b[0]);
+                let col1 = matmul2x3x1_in_vec4(a, b[1]);
+                let col2 = matmul2x3x1_in_vec4(a, b[2]);
+                let col3 = matmul2x3x1_in_vec4(a, b[3]);
                 [
                     swizzle!(col0, col1, @concat),
                     swizzle!(col2, col3, @concat),
                 ]
+            }
+            #[allow(dead_code)]
+            #[inline(always)]
+            pub(crate) fn matmul2x3x4_in_vec2(a: [$vec2; 3], b: [$vec4; 4]) -> [$vec4; 2] {
+                // A 2x4 result packs two columns per unit.
+                let col0 = matmul2x3x1_in_vec2(a, b[0]);
+                let col1 = matmul2x3x1_in_vec2(a, b[1]);
+                let col2 = matmul2x3x1_in_vec2(a, b[2]);
+                let col3 = matmul2x3x1_in_vec2(a, b[3]);
+                [swizzle!(col0, col1, @concat), swizzle!(col2, col3, @concat)]
             }
 
             #[inline(always)]
@@ -2985,10 +3271,19 @@ pub(crate) mod matmul {
         use super::{super::super::utils::compute_f32x2, *};
         use wide::f32x4;
         impl_matmul!(f32, compute_f32x2, f32x4);
+        select_2x3!(in_vec4);
     }
     pub(crate) mod f64 {
         use super::*;
         use wide::{f64x2, f64x4};
         impl_matmul!(f64, f64x2, f64x4);
+        cfg_select! {
+            target_feature = "avx2" => {
+                select_2x3!(in_vec4);
+            }
+            _ => {
+                select_2x3!(in_vec2);
+            }
+        }
     }
 }
