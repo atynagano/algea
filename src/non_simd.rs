@@ -387,7 +387,6 @@ macro_rules! impl_layout {
                 #[inline(always)]
                 fn not(a: Self::Storage) -> Self::Storage { map1(a, core::ops::Not::not) }
             }}
-            // TODO(extra-type-support): add f64 layouts after the initial f32/i32/u32 release.
             if_! { $float == float {
                 #[inline(always)]
                 fn from_bits(

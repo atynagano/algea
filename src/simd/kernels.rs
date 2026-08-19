@@ -5,7 +5,7 @@ pub(crate) mod reduce {
     use crate::utils::ArithPrimitive;
     use std::ops::Add;
 
-    // TODO: product, min, max
+    // TODO(reduce-operations): only `sum` has a reduction; product, min and max do not.
 
     // TODO(reduce-sum-codegen): confirm which reduction shape wins per lane count and target.
     #[inline(always)]
