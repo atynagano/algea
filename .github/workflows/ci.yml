@@ -36,8 +36,16 @@ jobs:
         include:
           - configuration: force non-SIMD
             rustflags: '--cfg algea_force_simd="false"'
+            host-feature: ''
           - configuration: force SIMD / SSE2 only
-            rustflags: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,-avx512f,-avx512bw,-avx512vl'
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,-avx512f,-avx512bw,-avx512vl,-avx512dq'
+            host-feature: ''
+          - configuration: force SIMD / AVX without AVX2
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+avx,-avx2,-avx512f,-avx512bw,-avx512vl,-avx512dq'
+            host-feature: avx
+          - configuration: force SIMD / AVX2
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+avx2,-avx512f,-avx512bw,-avx512vl,-avx512dq'
+            host-feature: avx2
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
@@ -45,15 +53,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: |
+          # A configuration that names a target feature only runs where the host has it; elsewhere
+          # the code is compiled and left unexecuted rather than trapping.
+          if [ -z "${{ matrix.host-feature }}" ] || grep -qw "${{ matrix.host-feature }}" /proc/cpuinfo; then
+            cargo test
+          else
+            echo "host lacks ${{ matrix.host-feature }}; compiling the tests without running them"
+            cargo test --no-run
+          fi
 
   avx-512:
-    name: x86-64 / AVX-512 compile
+    name: x86-64 / ${{ matrix.configuration }} compile
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: AVX-512
+            features: '+avx512f,+avx512bw,+avx512vl,-avx512dq'
+            verify: avx512f avx512bw avx512vl
+          - configuration: AVX-512DQ
+            features: '+avx512f,+avx512bw,+avx512vl,+avx512dq'
+            verify: avx512f avx512bw avx512vl avx512dq
     env:
-      RUSTFLAGS: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=+avx512f,+avx512bw,+avx512vl'
+      RUSTFLAGS: '--cfg algea_force_simd="true" -C target-cpu=x86-64 -C target-feature=${{ matrix.features }}'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -63,14 +90,14 @@ jobs:
         run: |
           target_cfg="$(rustc --print cfg --target x86_64-unknown-linux-gnu \
             -C target-cpu=x86-64 \
-            -C target-feature=+avx512f,+avx512bw,+avx512vl)"
-          for feature in avx512f avx512bw avx512vl; do
+            -C target-feature=${{ matrix.features }})"
+          for feature in ${{ matrix.verify }}; do
             grep -Fqx "target_feature=\"${feature}\"" <<<"${target_cfg}"
           done
-      - name: Compile tests without executing AVX-512 code
-        run: cargo test --target x86_64-unknown-linux-gnu --no-run
       - name: Clippy
         run: cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+      - name: Compile tests without executing AVX-512 code
+        run: cargo test --target x86_64-unknown-linux-gnu --no-run
 
   arm64:
     name: ARM64 / ${{ matrix.configuration }}
@@ -98,8 +125,8 @@ jobs:
           test "$(uname -m)" = aarch64
           rustc --print cfg | grep 'target_arch="aarch64"'
           rustc --print cfg | grep 'target_feature="neon"'
-      - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
 
   wasm:
     name: Wasm / ${{ matrix.configuration }}
@@ -113,6 +140,8 @@ jobs:
             rustflags: '--cfg algea_force_simd="false" -C target-cpu=mvp -C target-feature=-simd128'
           - configuration: SIMD128 / force SIMD
             rustflags: '--cfg algea_force_simd="true" -C target-cpu=mvp -C target-feature=+simd128'
+          - configuration: SIMD128 + relaxed-simd / force SIMD
+            rustflags: '--cfg algea_force_simd="true" -C target-cpu=mvp -C target-feature=+simd128,+relaxed-simd'
     env:
       CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
       RUSTFLAGS: ${{ matrix.rustflags }}
@@ -125,5 +154,5 @@ jobs:
       - uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: 47.0.3
-      - run: cargo test --target wasm32-wasip1 --lib --tests
       - run: cargo clippy --target wasm32-wasip1 --lib --tests -- -D warnings
+      - run: cargo test --target wasm32-wasip1 --lib --tests
