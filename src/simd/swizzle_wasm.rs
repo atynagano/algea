@@ -289,6 +289,26 @@ impl_swizzle_32bit!(u32x4, u32_reg, u32_val);
 /// shuffle: every pattern already costs one shuffle per output half here, so a special case has
 /// nothing to save.
 macro_rules! swizzle4 {
+    // Pass-through: the requested lanes are already in place. `__xy` and `__widen` say so
+    // directly, instead of leaving the identity to be recognized as one further down.
+    // `[0, 1, 2]` reaches these through the three-index arm below.
+    //
+    // `[0, 1, 2, _]` and `[0, 1, 2, 3]` name lane 2, so the operand has four lanes and `__widen` is
+    // the identity. With a two-lane operand `[0, 1, _, _]` is a real widening instead, which fills
+    // the padding lanes with zeros; a two-lane operand that only needs its own lanes back should
+    // ask for `[0, 1]`.
+    ($a:expr, [0, 1]) => {
+        $crate::simd::swizzle_wasm::Swizzle::__xy($a)
+    };
+    ($a:expr, [0, 1, _, _]) => {
+        $crate::simd::swizzle_wasm::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, _]) => {
+        $crate::simd::swizzle_wasm::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, 3]) => {
+        $crate::simd::swizzle_wasm::Swizzle::__widen($a)
+    };
     ($a:expr, [$i0:tt]) => {
         compile_error!(
             "a swizzle produces at least two lanes; a single index selects a scalar, not a vector"
@@ -314,7 +334,12 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_wasm::swizzle4!($a, [$i0, $i1, $i2, _])
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_wasm::swizzle4!($a, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!([$crate::simd::swizzle_wasm::swizzle4], ($a), [
+            $i0,
+            $i1,
+            $i2,
+            _
+        ])
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         $crate::simd::swizzle_wasm::Swizzle::swizzle4::<
@@ -357,7 +382,12 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_wasm::swizzle4!($a, $b, [$i0, $i1, $i2, _])
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_wasm::swizzle4!($a, $b, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!([$crate::simd::swizzle_wasm::swizzle4], ($a, $b), [
+            $i0,
+            $i1,
+            $i2,
+            _
+        ])
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         $crate::simd::swizzle_wasm::SwizzleConcat::swizzle_concat4::<
@@ -394,6 +424,15 @@ mod tests {
                 let read2 = $read2;
                 let a = new([10 as $s, 11 as $s, 12 as $s, 13 as $s]);
                 let b = new([20 as $s, 21 as $s, 22 as $s, 23 as $s]);
+
+                // Pass-through, including the forms that reach it through the `_` completion. The
+                // padding lanes are whatever the operand already holds, so only the named lanes
+                // are compared.
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2, 3])), [10 as $s, 11 as $s, 12 as $s, 13 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2, _]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, _, _]))[..2], [10 as $s, 11 as $s]);
+                assert_eq!(read2(swizzle4!(a, [0, 1]))[..2], [10 as $s, 11 as $s]);
 
                 // Both output halves read the one operand.
                 assert_eq!(read4(swizzle4!(a, [3, 1, 2, 0])), [13 as $s, 11 as $s, 12 as $s, 10 as $s]);
@@ -468,7 +507,15 @@ mod tests {
                 assert_eq!(read(swizzle4!(a, b, [0, 1, 4, 5])), [10 as $s, 11 as $s, 20 as $s, 21 as $s]);
                 assert_eq!(read(swizzle4!(a, [1, 1, 1, 1])), [11 as $s, 11 as $s, 11 as $s, 11 as $s]);
 
-                // Two-lane requests repeat the pair into the padding lanes.
+                // Pass-through, including the forms that reach it through the `_` completion.
+                assert_eq!(read(swizzle4!(a, [0, 1, 2, 3])), [10 as $s, 11 as $s, 12 as $s, 13 as $s]);
+                assert_eq!(read(swizzle4!(a, [0, 1, 2, _]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read(swizzle4!(a, [0, 1, 2]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read(swizzle4!(a, [0, 1, _, _]))[..2], [10 as $s, 11 as $s]);
+                assert_eq!(read(swizzle4!(a, [0, 1]))[..2], [10 as $s, 11 as $s]);
+
+                // Two-lane requests repeat the pair into the padding lanes, except `[0, 1]` above,
+                // which passes the operand through and leaves its own lanes there.
                 assert_eq!(read(swizzle4!(a, [3, 1])), [13 as $s, 11 as $s, 13 as $s, 11 as $s]);
                 assert_eq!(read(swizzle4!(a, b, [4, 1])), [20 as $s, 11 as $s, 20 as $s, 11 as $s]);
             }

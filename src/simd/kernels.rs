@@ -591,12 +591,7 @@ pub(crate) mod transpose {
         let [c0, c1, c2] = a;
         let first_two: Tx2::Vector4 = swizzle!(c0, c1, @concat);
         let third = c2.widen();
-        // Lane 3 of each result is padding. The first gather names `third`'s two lanes in order
-        // rather than repeating lane 0, which may cost one shuffle less; the second can only reach
-        // lane 1, so it repeats.
-        //
-        // TODO(codegen-optimization): confirm that the asymmetry actually pays before relying on it.
-        [swizzle!(first_two, third, [0, 2, 4, 5]), swizzle!(first_two, third, [1, 3, 5, _])]
+        [swizzle!(first_two, third, [0, 2, 4, _]), swizzle!(first_two, third, [1, 3, 5, _])]
     }
     #[inline(always)]
     pub(crate) fn transpose3x3<Tx4: ComputeVector4>(a: [Tx4; 3]) -> [Tx4; 3] {
@@ -641,15 +636,20 @@ pub(crate) mod transpose {
     pub(crate) fn transpose4x4<Tx4: ComputeVector4>(a: [Tx4; 4]) -> [Tx4; 4] {
         let [col0, col1, col2, col3] = a;
 
-        let cols01_lo = swizzle!(col0, col1, [0, 4, 1, 5]);
-        let cols23_lo = swizzle!(col2, col3, [0, 4, 1, 5]);
-        let cols01_hi = swizzle!(col0, col1, [2, 6, 3, 7]);
-        let cols23_hi = swizzle!(col2, col3, [2, 6, 3, 7]);
+        // Stage 1 pairs lanes two apart rather than adjacent ones, so every element stays inside
+        // its own 128-bit half until stage 2 gathers halves. That matters where a four-lane
+        // 64-bit value is two registers, or the two halves of one 256-bit register: interleaving
+        // adjacent lanes would cross that boundary. For 32-bit lanes the two shapes generate the
+        // same instructions.
+        let cols01_even = swizzle!(col0, col1, [0, 4, 2, 6]);
+        let cols23_even = swizzle!(col2, col3, [0, 4, 2, 6]);
+        let cols01_odd = swizzle!(col0, col1, [1, 5, 3, 7]);
+        let cols23_odd = swizzle!(col2, col3, [1, 5, 3, 7]);
         [
-            swizzle!(cols01_lo, cols23_lo, [0, 1, 4, 5]),
-            swizzle!(cols01_lo, cols23_lo, [2, 3, 6, 7]),
-            swizzle!(cols01_hi, cols23_hi, [0, 1, 4, 5]),
-            swizzle!(cols01_hi, cols23_hi, [2, 3, 6, 7]),
+            swizzle!(cols01_even, cols23_even, [0, 1, 4, 5]),
+            swizzle!(cols01_odd, cols23_odd, [0, 1, 4, 5]),
+            swizzle!(cols01_even, cols23_even, [2, 3, 6, 7]),
+            swizzle!(cols01_odd, cols23_odd, [2, 3, 6, 7]),
         ]
     }
 

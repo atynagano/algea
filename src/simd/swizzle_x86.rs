@@ -1060,6 +1060,26 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_x86::swizzle4!($a, $b, [6, 2, 7, 3])
     };
 
+    // Pass-through: the requested lanes are already in place. `__xy` and `__widen` say so
+    // directly, instead of leaving the identity to be recognized as one further down.
+    // `[0, 1, 2]` reaches these through the three-index arm below.
+    //
+    // `[0, 1, 2, _]` and `[0, 1, 2, 3]` name lane 2, so the operand has four lanes and `__widen` is
+    // the identity. With a two-lane operand `[0, 1, _, _]` is a real widening instead, which fills
+    // the padding lanes with zeros; a two-lane operand that only needs its own lanes back should
+    // ask for `[0, 1]`.
+    ($a:expr, [0, 1]) => {
+        $crate::simd::swizzle_x86::Swizzle::__xy($a)
+    };
+    ($a:expr, [0, 1, _, _]) => {
+        $crate::simd::swizzle_x86::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, _]) => {
+        $crate::simd::swizzle_x86::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, 3]) => {
+        $crate::simd::swizzle_x86::Swizzle::__widen($a)
+    };
     ($a:expr, [$i0:tt]) => {
         compile_error!("a swizzle produces at least two lanes; a single index selects a scalar, not a vector")
     };
@@ -1077,7 +1097,9 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_x86::swizzle4!($a, [$i0, $i1, $i2, _])
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_x86::swizzle4!($a, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!(
+            [$crate::simd::swizzle_x86::swizzle4], ($a), [$i0, $i1, $i2, _]
+        )
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         // Every lane reads the one operand, so the indices are already the lane values.
@@ -1104,7 +1126,9 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_x86::swizzle4!($a, $b, [$i0, $i1, $i2, _])
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_x86::swizzle4!($a, $b, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!(
+            [$crate::simd::swizzle_x86::swizzle4], ($a, $b), [$i0, $i1, $i2, _]
+        )
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         $crate::simd::swizzle_x86::swizzle4_decode!($a, $b; [$i0, $i1, $i2, $i3]; [$i1, $i2, $i3]; []; []; $i0)
@@ -1202,6 +1226,24 @@ mod tests {
             let a = f64x4::new([0., 1., 2., 3.]);
             assert_eq!(swizzle4!(a, [$i0, $i1]).to_array(), [$i0 as f64, $i1 as f64]);
         }};
+    }
+
+    /// The index lists that ask for lanes already in place. A `_` tail leaves the padding lanes to
+    /// the operand, so only the named lanes are compared.
+    #[test]
+    fn pass_through_patterns() {
+        check_one!([0, 1, 2, 3]);
+        check_one_two!([0, 1]);
+
+        let a = f32x4::new([0., 1., 2., 3.]);
+        assert_eq!(swizzle4!(a, [0, 1, 2, _]).to_array()[..3], [0., 1., 2.]);
+        assert_eq!(swizzle4!(a, [0, 1, 2]).to_array()[..3], [0., 1., 2.]);
+        assert_eq!(swizzle4!(a, [0, 1, _, _]).to_array()[..2], [0., 1.]);
+
+        let a = f64x4::new([0., 1., 2., 3.]);
+        assert_eq!(swizzle4!(a, [0, 1, 2, _]).to_array()[..3], [0., 1., 2.]);
+        assert_eq!(swizzle4!(a, [0, 1, 2]).to_array()[..3], [0., 1., 2.]);
+        assert_eq!(swizzle4!(a, [0, 1, _, _]).to_array()[..2], [0., 1.]);
     }
 
     #[test]

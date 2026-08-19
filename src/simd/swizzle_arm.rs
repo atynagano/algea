@@ -573,10 +573,31 @@ impl_swizzle_32bit!(u32x2, u32_bytes2, u32_value4, u32_value2, u32_widen);
 // The macro
 // ---------------------------------------------------------------------------
 
-/// A partly specified index list is completed by repeating a lane, never by routing to a different
-/// instruction: every pattern already costs one instruction per output half, so a special case has
-/// nothing to save.
+/// A partly specified index list is completed by `complete_swizzle4!`, which repeats a lane unless
+/// naming the neighbouring one makes both halves of the result whole halves of a source. This
+/// backend has no general two-input four-lane 32-bit shuffle, so that difference is two lane
+/// inserts against one half move.
 macro_rules! swizzle4 {
+    // Pass-through: the requested lanes are already in place. `__xy` and `__widen` say so
+    // directly, instead of leaving the identity to be recognized as one further down.
+    // `[0, 1, 2]` reaches these through the three-index arm below.
+    //
+    // `[0, 1, 2, _]` and `[0, 1, 2, 3]` name lane 2, so the operand has four lanes and `__widen` is
+    // the identity. With a two-lane operand `[0, 1, _, _]` is a real widening instead, which fills
+    // the padding lanes with zeros; a two-lane operand that only needs its own lanes back should
+    // ask for `[0, 1]`.
+    ($a:expr, [0, 1]) => {
+        $crate::simd::swizzle_arm::Swizzle::__xy($a)
+    };
+    ($a:expr, [0, 1, _, _]) => {
+        $crate::simd::swizzle_arm::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, _]) => {
+        $crate::simd::swizzle_arm::Swizzle::__widen($a)
+    };
+    ($a:expr, [0, 1, 2, 3]) => {
+        $crate::simd::swizzle_arm::Swizzle::__widen($a)
+    };
     ($a:expr, [$i0:tt]) => {
         compile_error!(
             "a swizzle produces at least two lanes; a single index selects a scalar, not a vector"
@@ -601,7 +622,12 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_arm::swizzle4!($a, [$i0, $i1, $i2, _])
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_arm::swizzle4!($a, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!([$crate::simd::swizzle_arm::swizzle4], ($a), [
+            $i0,
+            $i1,
+            $i2,
+            _
+        ])
     };
     ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         $crate::simd::swizzle_arm::Swizzle::swizzle4::<
@@ -641,7 +667,12 @@ macro_rules! swizzle4 {
         $crate::simd::swizzle_arm::swizzle4!($a, $b, [$i0, $i1, $i2, _])
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-        $crate::simd::swizzle_arm::swizzle4!($a, $b, [$i0, $i1, $i2, $i2])
+        $crate::simd::utils::complete_swizzle4!([$crate::simd::swizzle_arm::swizzle4], ($a, $b), [
+            $i0,
+            $i1,
+            $i2,
+            _
+        ])
     };
     ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
         $crate::simd::swizzle_arm::SwizzleConcat::swizzle_concat4::<
@@ -695,6 +726,15 @@ mod tests {
                 let read2 = $read2;
                 let a = new([10 as $s, 11 as $s, 12 as $s, 13 as $s]);
                 let b = new([20 as $s, 21 as $s, 22 as $s, 23 as $s]);
+
+                // Pass-through, including the forms that reach it through the `_` completion. The
+                // padding lanes are whatever the operand already holds, so only the named lanes
+                // are compared.
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2, 3])), [10 as $s, 11 as $s, 12 as $s, 13 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2, _]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, 2]))[..3], [10 as $s, 11 as $s, 12 as $s]);
+                assert_eq!(read4(swizzle4!(a, [0, 1, _, _]))[..2], [10 as $s, 11 as $s]);
+                assert_eq!(read2(swizzle4!(a, [0, 1]))[..2], [10 as $s, 11 as $s]);
 
                 // Both output halves read the one operand.
                 assert_eq!(read4(swizzle4!(a, [3, 1, 2, 0])), [13 as $s, 11 as $s, 12 as $s, 10 as $s]);

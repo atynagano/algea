@@ -102,6 +102,62 @@ impl Simd2Ext for MaskStorage<i64x2> {
     }
 }
 
+/// Completes a four-lane index list whose last lane is `_`, then hands it to the backend macro
+/// `$mac`. The operands are passed through as one group, so this serves both the one-operand and
+/// the two-operand form.
+///
+/// Where the third lane is even, the padding lane takes the lane after it. The upper half of the
+/// result is then one whole 64-bit half of a source, which every backend moves in a single
+/// instruction; leaving the choice to the backend instead costs two lane inserts on targets
+/// without a general two-input four-lane 32-bit shuffle. Repeating the third lane cannot beat
+/// that, since a duplicated lane is a move of its own.
+///
+/// Unless the two given lanes are equal. Then the whole list may collapse into one instruction —
+/// `[x, x, x, x]` is a broadcast, `[x, x, y, y]` an interleave of one operand with itself — and
+/// naming a different lane would break that, so the third lane repeats instead.
+#[rustfmt::skip]
+macro_rules! complete_swizzle4 {
+    ([$($mac:tt)*], ($($operands:tt)*), [0, 0, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [0, 0, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [1, 1, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [1, 1, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [2, 2, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [2, 2, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [3, 3, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [3, 3, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [4, 4, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [4, 4, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [5, 5, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [5, 5, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [6, 6, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [6, 6, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [7, 7, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [7, 7, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 0, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 0, 1])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 2, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 2, 3])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 4, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 4, 5])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 6, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 6, 7])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, $i2, $i2])
+    };
+}
+
 #[rustfmt::skip]
 #[allow(unused_macros)]
 macro_rules! validate_lane4 {
@@ -179,7 +235,7 @@ macro_rules! sign {
 }
 
 #[allow(unused_imports)]
-pub(crate) use {sign, validate_lane4, validate_lane8};
+pub(crate) use {complete_swizzle4, sign, validate_lane4, validate_lane8};
 
 // A future `std::simd::Simd` backend must preserve the current eight-byte two-lane storage layout.
 // `std::simd` can represent LLVM `<2 x float>` directly, whereas `[f32; 2]` remains an aggregate;
