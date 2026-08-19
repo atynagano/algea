@@ -227,6 +227,11 @@ macro_rules! impl_arith_primitive_all {
                 fn round_ties_even_(self) -> Self { self.round_ties_even() }
                 #[inline(always)]
                 fn is_nan_(self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self.is_nan()) }
+                // Wasm has no scalar fused multiply-add: the only one it has is the relaxed
+                // vector instruction, and reaching that from a scalar costs an `f32x4.splat` per
+                // operand that neither Wasmtime nor V8 removes. A scalar `f32.fma` has been asked
+                // for since 2020 (WebAssembly/design issue 1391) but is not a proposal at any
+                // phase; revisit if one lands.
                 #[inline(always)]
                 fn mul_add_(a: Self, b: Self, c: Self) -> Self {
                     cfg_select! {

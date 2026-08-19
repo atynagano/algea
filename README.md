@@ -15,8 +15,8 @@ through four. Both [`row_major`] and [`column_major`] matrix storage are
 supported.
 
 Implementations pursue target-specific performance, so floating-point results
-are not guaranteed to be bit-for-bit identical across targets or target-feature
-sets.
+are not guaranteed to be bit-for-bit identical; see
+[Floating-point reproducibility](#floating-point-reproducibility).
 
 ## Stability
 
@@ -109,6 +109,26 @@ destination's limits and `NaN` becoming zero when a floating-point value becomes
 an integer, and the sign of zero when a floating-point value changes width. The
 bit pattern of a `NaN` result is not specified.
 
+## Floating-point reproducibility
+
+A floating-point result is not guaranteed to be the same everywhere. What varies,
+and why:
+
+- **Between targets.** Each backend picks the order of additions and whether to
+  use fused multiply-add from what the target offers, so the same expression can
+  round differently on x86-64, aarch64 and WebAssembly.
+- **Between target-feature sets of one target.** Enabling FMA on x86-64, or
+  `relaxed-simd` on WebAssembly, changes how many roundings an expression takes.
+- **Between runtimes, on WebAssembly with `relaxed-simd`.** Those instructions
+  leave fusing to the runtime, so one binary can round differently under two
+  engines. `wasmtime -W relaxed-simd-deterministic=y` pins it to the unfused
+  behaviour.
+- **Between versions of this crate.** A release may change the shape of a kernel,
+  and with it the order of additions.
+
+Integer results, comparisons, and casts are exact, so none of this applies to
+them.
+
 ## Comparison and alternatives
 
 `algea` focuses on portable, target-selected SIMD implementations of small
@@ -141,11 +161,9 @@ storage. Depending on the application, another crate may be a better fit.
 [^four]: Vector dimensions and matrix row and column counts are generic
     parameters, but only one through four are implemented.
 
-[^algeabits]: `algea` picks the order of additions and whether to use fused
-    multiply-add per target, so a floating-point result can differ between
-    targets, between target-feature sets of one target, and between versions of
-    the crate. Whether the other crates hold their arithmetic fixed from one
-    version to the next is not stated here either way.
+[^algeabits]: See [Floating-point reproducibility](#floating-point-reproducibility)
+    for what varies and why. Whether the other crates hold their arithmetic fixed
+    from one version to the next is not stated here either way.
 
 [^glam]: On by default and used for `Vec3A`, `Mat4` and the other 16-byte-aligned
     types; the `scalar-math` feature turns it off and `core-simd` swaps it for

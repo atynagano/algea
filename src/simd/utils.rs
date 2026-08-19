@@ -1142,6 +1142,47 @@ macro_rules! impl_from {
 }
 impl_from!(f32x2:f32, i32x2:i32, u32x2:u32);
 
+/// Wasm's fused multiply-add, which `wide` does not reach for: it fuses on x86 with FMA and
+/// on aarch64 NEON, and multiplies and adds separately everywhere else.
+///
+/// The names follow the operand type so that a caller holding `$float` can paste one
+/// together. Two of the three widths are one `core::arch::wasm32` instruction each; the
+/// four-lane `f64` is two registers here, so it is the one that needs writing out.
+///
+/// These instructions are *relaxed*: the runtime chooses whether to fuse the multiply and
+/// the add, so one binary can round differently on two runtimes. That is a weaker promise
+/// than the crate makes elsewhere, and it is what asking for `relaxed-simd` means.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+mod wasm_fma {
+    use super::swizzle;
+    pub(crate) use core::arch::wasm32::{
+        f32x4_relaxed_madd,
+        f32x4_relaxed_nmadd,
+        f64x2_relaxed_madd,
+        f64x2_relaxed_nmadd,
+    };
+    use wide::{bytemuck::cast, f64x2, f64x4};
+
+    #[inline(always)]
+    pub(crate) fn f64x4_relaxed_madd(a: f64x4, b: f64x4, c: f64x4) -> f64x4 {
+        let [a_lo, a_hi] = cast::<f64x4, [f64x2; 2]>(a);
+        let [b_lo, b_hi] = cast::<f64x4, [f64x2; 2]>(b);
+        let [c_lo, c_hi] = cast::<f64x4, [f64x2; 2]>(c);
+        let lo = f64x2::from(f64x2_relaxed_madd(a_lo.into(), b_lo.into(), c_lo.into()));
+        let hi = f64x2::from(f64x2_relaxed_madd(a_hi.into(), b_hi.into(), c_hi.into()));
+        swizzle!(lo, hi, @concat)
+    }
+    #[inline(always)]
+    pub(crate) fn f64x4_relaxed_nmadd(a: f64x4, b: f64x4, c: f64x4) -> f64x4 {
+        let [a_lo, a_hi] = cast::<f64x4, [f64x2; 2]>(a);
+        let [b_lo, b_hi] = cast::<f64x4, [f64x2; 2]>(b);
+        let [c_lo, c_hi] = cast::<f64x4, [f64x2; 2]>(c);
+        let lo = f64x2::from(f64x2_relaxed_nmadd(a_lo.into(), b_lo.into(), c_lo.into()));
+        let hi = f64x2::from(f64x2_relaxed_nmadd(a_hi.into(), b_hi.into(), c_hi.into()));
+        swizzle!(lo, hi, @concat)
+    }
+}
+
 macro_rules! impl_arith_primitive {
     ($self_ty:ident, scalar=$scalar:ident, mask=$mask:ident, [$f32:ident, $f64:ident, $i32:ident, $i64:ident, $u32:ident, $u64:ident] $(, $N:ident)? { $($item:item)* }) => {
         impl ArithPrimitive for $self_ty {
@@ -1295,12 +1336,35 @@ macro_rules! impl_arith_primitive_all {
                         MaskStorage::new_unchecked(self.is_nan().to_bits().cast_signed())
                     }
                 }
+                // `wide` fuses these on x86 with FMA and on aarch64 NEON, and multiplies and adds
+                // separately otherwise; on Wasm the relaxed instructions do it in one.
                 #[inline(always)]
-                fn mul_add_(a: Self, b: Self, c: Self) -> Self { a.mul_add(b, c) }
+                fn mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_madd>](a.into(), b.into(), c.into())).into()
+                        }
+                        _ => a.mul_add(b, c),
+                    }
+                }
                 #[inline(always)]
-                fn mul_sub_(a: Self, b: Self, c: Self) -> Self { a.mul_sub(b, c) }
+                fn mul_sub_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_madd>](a.into(), b.into(), (-c).into())).into()
+                        }
+                        _ => a.mul_sub(b, c),
+                    }
+                }
                 #[inline(always)]
-                fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self { a.mul_neg_add(b, c) }
+                fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_nmadd>](a.into(), b.into(), c.into())).into()
+                        }
+                        _ => a.mul_neg_add(b, c),
+                    }
+                }
             }
         }
         impl_arith_primitive_int! {
