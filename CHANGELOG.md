@@ -17,6 +17,16 @@ Notable changes to this crate are recorded here. The format follows
   WebAssembly SIMD128, and the non-SIMD fallback.
 - `Default` for `Mask`, which returns a mask with every lane false.
 
+### Changed
+
+- The documented contract on floating-point results is stronger, and stricter for
+  callers: a result may differ between targets, between target-feature sets of one
+  target, between WebAssembly runtimes when `relaxed-simd` is enabled, and between
+  versions of this crate. 0.1.0 said only that results were not guaranteed
+  identical across targets or target-feature sets. Nothing may depend on a
+  floating-point result being reproducible across any of those. See "Floating-point
+  reproducibility" in the README.
+
 ## [0.1.0] - 2026-08-08
 
 ### Added
