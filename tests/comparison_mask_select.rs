@@ -1,6 +1,6 @@
 //! Tests for lane comparisons, masks, and selection.
 
-use algea::{EachOrd, Mask, MaskElement, Select, Vector};
+use algea::{EachOrd, Element, Mask, MaskElement, Select, Vector};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn panic_message(f: impl FnOnce()) -> String {
@@ -22,9 +22,10 @@ where
     (0..D).fold(0, |mask, i| mask | (u64::from(f(a[i], b[i])) << i))
 }
 
-fn mask_bits<const D: usize>(mask: Mask<i32, D>) -> u64
+fn mask_bits<M, const D: usize>(mask: Mask<M, D>) -> u64
 where
-    i32: MaskElement<D>,
+    M: MaskElement<D>,
+    i32: Element<D>,
 {
     let lanes: [i32; D] = mask.select(Vector::from([1; D]), Vector::from([0; D])).into();
     lanes
@@ -81,6 +82,9 @@ macro_rules! comparisons_all_dimensions {
 comparisons_all_dimensions!(f32, f32);
 comparisons_all_dimensions!(i32, i32);
 comparisons_all_dimensions!(u32, u32);
+comparisons_all_dimensions!(f64, f64);
+comparisons_all_dimensions!(i64, i64);
+comparisons_all_dimensions!(u64, u64);
 
 macro_rules! integer_min_max_clamp {
     ($name:ident, $t:ty, $d:literal, $values:expr) => {
@@ -123,6 +127,9 @@ macro_rules! integer_min_max_all_dimensions {
 integer_min_max_all_dimensions!(i32, i32, i32::MIN);
 integer_min_max_all_dimensions!(u32, u32, u32::MIN);
 integer_min_max_all_dimensions!(f32, f32, f32::MIN);
+integer_min_max_all_dimensions!(i64, i64, i64::MIN);
+integer_min_max_all_dimensions!(u64, u64, u64::MIN);
+integer_min_max_all_dimensions!(f64, f64, f64::MIN);
 
 macro_rules! select_tests {
     ($name:ident, $t:ty, $d:literal) => {
@@ -163,43 +170,61 @@ macro_rules! select_all_dimensions {
 select_all_dimensions!(f32, f32);
 select_all_dimensions!(i32, i32);
 select_all_dimensions!(u32, u32);
+select_all_dimensions!(f64, f64);
+select_all_dimensions!(i64, i64);
+select_all_dimensions!(u64, u64);
 
-#[test]
-fn f32_comparisons_match_scalar_for_nan_signed_zero_and_padding() {
-    let a = Vector::<f32, 3>::from([f32::NAN, -0.0, 1.0]);
-    let b = Vector::<f32, 3>::from([0.0, 0.0, f32::NAN]);
+macro_rules! float_special_value_comparisons {
+    ($name:ident, $t:ty) => {
+        #[test]
+        fn $name() {
+            let a = Vector::<$t, 3>::from([<$t>::NAN, -0.0, 1.0]);
+            let b = Vector::<$t, 3>::from([0.0, 0.0, <$t>::NAN]);
 
-    assert_eq!(mask_bits(a.each_eq(b)), 0b010);
-    assert_eq!(mask_bits(a.each_ne(b)), 0b101);
-    assert_eq!(mask_bits(a.each_lt(b)), 0);
-    assert_eq!(mask_bits(a.each_le(b)), 0b010);
-    assert_eq!(mask_bits(a.each_gt(b)), 0);
-    assert_eq!(mask_bits(a.each_ge(b)), 0b010);
+            assert_eq!(mask_bits(a.each_eq(b)), 0b010);
+            assert_eq!(mask_bits(a.each_ne(b)), 0b101);
+            assert_eq!(mask_bits(a.each_lt(b)), 0);
+            assert_eq!(mask_bits(a.each_le(b)), 0b010);
+            assert_eq!(mask_bits(a.each_gt(b)), 0);
+            assert_eq!(mask_bits(a.each_ge(b)), 0b010);
+        }
+    };
 }
 
-#[test]
-fn f32_min_max_clamp_cover_special_values() {
-    let a = Vector::<f32, 4>::from([f32::NAN, -0.0, f32::NEG_INFINITY, f32::INFINITY]);
-    let b = Vector::<f32, 4>::from([3.0, 0.0, f32::INFINITY, f32::NEG_INFINITY]);
-    let max: [f32; 4] = a.each_max(b).into();
-    let min: [f32; 4] = a.each_min(b).into();
-    assert_eq!(max[0], 3.0);
-    assert_eq!(min[0], 3.0);
-    assert_eq!(max[1], 0.0);
-    assert_eq!(min[1], 0.0);
-    assert_eq!(max[2], f32::INFINITY);
-    assert_eq!(min[2], f32::NEG_INFINITY);
-    assert_eq!(max[3], f32::INFINITY);
-    assert_eq!(min[3], f32::NEG_INFINITY);
+float_special_value_comparisons!(f32_comparisons_match_scalar_for_nan_signed_zero_and_padding, f32);
+float_special_value_comparisons!(f64_comparisons_match_scalar_for_nan_signed_zero_and_padding, f64);
 
-    let values = Vector::<f32, 4>::from([f32::NAN, -0.0, f32::NEG_INFINITY, f32::INFINITY]);
-    let clamped: [f32; 4] =
-        values.each_clamp(Vector::from([-1.0; 4]), Vector::from([1.0; 4])).into();
-    assert!(clamped[0].is_nan());
-    assert_eq!(clamped[1].to_bits(), (-0.0_f32).to_bits());
-    assert_eq!(clamped[2], -1.0);
-    assert_eq!(clamped[3], 1.0);
+macro_rules! float_min_max_clamp_special_values {
+    ($name:ident, $t:ty) => {
+        #[test]
+        fn $name() {
+            let a = Vector::<$t, 4>::from([<$t>::NAN, -0.0, <$t>::NEG_INFINITY, <$t>::INFINITY]);
+            let b = Vector::<$t, 4>::from([3.0, 0.0, <$t>::INFINITY, <$t>::NEG_INFINITY]);
+            let max: [$t; 4] = a.each_max(b).into();
+            let min: [$t; 4] = a.each_min(b).into();
+            assert_eq!(max[0], 3.0);
+            assert_eq!(min[0], 3.0);
+            assert_eq!(max[1], 0.0);
+            assert_eq!(min[1], 0.0);
+            assert_eq!(max[2], <$t>::INFINITY);
+            assert_eq!(min[2], <$t>::NEG_INFINITY);
+            assert_eq!(max[3], <$t>::INFINITY);
+            assert_eq!(min[3], <$t>::NEG_INFINITY);
+
+            let values =
+                Vector::<$t, 4>::from([<$t>::NAN, -0.0, <$t>::NEG_INFINITY, <$t>::INFINITY]);
+            let clamped: [$t; 4] =
+                values.each_clamp(Vector::from([-1.0; 4]), Vector::from([1.0; 4])).into();
+            assert!(clamped[0].is_nan());
+            assert_eq!(clamped[1].to_bits(), (-0.0 as $t).to_bits());
+            assert_eq!(clamped[2], -1.0);
+            assert_eq!(clamped[3], 1.0);
+        }
+    };
 }
+
+float_min_max_clamp_special_values!(f32_min_max_clamp_cover_special_values, f32);
+float_min_max_clamp_special_values!(f64_min_max_clamp_cover_special_values, f64);
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
@@ -221,6 +246,26 @@ fn each_clamp_rejects_invalid_active_lane_bounds() {
         std::panic::catch_unwind(|| {
             Vector::<f32, 3>::ZERO
                 .each_clamp(Vector::from([0.0, f32::NAN, 0.0]), Vector::from([1.0, 1.0, 1.0]))
+        })
+        .is_err()
+    );
+    assert_eq!(
+        panic_message(|| {
+            Vector::<i64, 3>::ZERO.each_clamp(Vector::from([0, 2, 0]), Vector::from([1, 1, 1]));
+        }),
+        "each element in `min` must be less than or equal to the corresponding element in `max`. \
+         min = [0, 2, 0], max = [1, 1, 1]",
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            Vector::<u64, 3>::ZERO.each_clamp(Vector::from([0, 2, 0]), Vector::from([1, 1, 1]))
+        })
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            Vector::<f64, 3>::ZERO
+                .each_clamp(Vector::from([0.0, f64::NAN, 0.0]), Vector::from([1.0, 1.0, 1.0]))
         })
         .is_err()
     );

@@ -60,9 +60,17 @@ vector_ops!(u32_vector_1, u32, 1, [u32::MAX], [2], 3);
 vector_ops!(u32_vector_2, u32, 2, [u32::MAX, 1], [2, 3], 3);
 vector_ops!(u32_vector_3, u32, 3, [7, 1, u32::MAX], [2, 3, 2], 3);
 vector_ops!(u32_vector_4, u32, 4, [7, 1, u32::MAX, 16], [2, 3, 2, 4], 3);
+vector_ops!(i64_vector_1, i64, 1, [i64::MIN], [-1], 3);
+vector_ops!(i64_vector_2, i64, 2, [i64::MAX, i64::MIN], [2, -1], -3);
+vector_ops!(i64_vector_3, i64, 3, [7, -8, i64::MIN], [2, -3, -1], 3);
+vector_ops!(i64_vector_4, i64, 4, [7, -8, i64::MAX, i64::MIN], [2, -3, 2, -1], 3);
+vector_ops!(u64_vector_1, u64, 1, [u64::MAX], [2], 3);
+vector_ops!(u64_vector_2, u64, 2, [u64::MAX, 1], [2, 3], 3);
+vector_ops!(u64_vector_3, u64, 3, [7, 1, u64::MAX], [2, 3, 2], 3);
+vector_ops!(u64_vector_4, u64, 4, [7, 1, u64::MAX, 16], [2, 3, 2, 4], 3);
 
 macro_rules! abs_diff {
-    ($name:ident, $t:ty, $d:literal, $a:expr, $b:expr) => {
+    ($name:ident, $t:ty => $u:ty, $d:literal, $a:expr, $b:expr) => {
         #[test]
         fn $name() {
             let aa: [$t; $d] = $a;
@@ -71,20 +79,28 @@ macro_rules! abs_diff {
             let a = Vector::<$t, $d>::from(aa);
             let b = Vector::<$t, $d>::from(bb);
 
-            assert_eq!(<[u32; $d]>::from(a.abs_diff(b)), expected);
-            assert_eq!(<[u32; $d]>::from(b.abs_diff(a)), expected);
+            assert_eq!(<[$u; $d]>::from(a.abs_diff(b)), expected);
+            assert_eq!(<[$u; $d]>::from(b.abs_diff(a)), expected);
         }
     };
 }
 
-abs_diff!(i32_abs_diff_1, i32, 1, [i32::MIN], [i32::MAX]);
-abs_diff!(i32_abs_diff_2, i32, 2, [i32::MIN, -1], [i32::MAX, 1]);
-abs_diff!(i32_abs_diff_3, i32, 3, [-7, 0, i32::MAX], [3, 0, i32::MIN]);
-abs_diff!(i32_abs_diff_4, i32, 4, [i32::MIN, -8, 7, i32::MAX], [i32::MAX, 3, -2, 0]);
-abs_diff!(u32_abs_diff_1, u32, 1, [0], [u32::MAX]);
-abs_diff!(u32_abs_diff_2, u32, 2, [0, u32::MAX], [u32::MAX, 0]);
-abs_diff!(u32_abs_diff_3, u32, 3, [0, 7, u32::MAX], [0, 2, 1]);
-abs_diff!(u32_abs_diff_4, u32, 4, [0, 8, 7, u32::MAX], [u32::MAX, 3, 12, 0]);
+abs_diff!(i32_abs_diff_1, i32 => u32, 1, [i32::MIN], [i32::MAX]);
+abs_diff!(i32_abs_diff_2, i32 => u32, 2, [i32::MIN, -1], [i32::MAX, 1]);
+abs_diff!(i32_abs_diff_3, i32 => u32, 3, [-7, 0, i32::MAX], [3, 0, i32::MIN]);
+abs_diff!(i32_abs_diff_4, i32 => u32, 4, [i32::MIN, -8, 7, i32::MAX], [i32::MAX, 3, -2, 0]);
+abs_diff!(u32_abs_diff_1, u32 => u32, 1, [0], [u32::MAX]);
+abs_diff!(u32_abs_diff_2, u32 => u32, 2, [0, u32::MAX], [u32::MAX, 0]);
+abs_diff!(u32_abs_diff_3, u32 => u32, 3, [0, 7, u32::MAX], [0, 2, 1]);
+abs_diff!(u32_abs_diff_4, u32 => u32, 4, [0, 8, 7, u32::MAX], [u32::MAX, 3, 12, 0]);
+abs_diff!(i64_abs_diff_1, i64 => u64, 1, [i64::MIN], [i64::MAX]);
+abs_diff!(i64_abs_diff_2, i64 => u64, 2, [i64::MIN, -1], [i64::MAX, 1]);
+abs_diff!(i64_abs_diff_3, i64 => u64, 3, [-7, 0, i64::MAX], [3, 0, i64::MIN]);
+abs_diff!(i64_abs_diff_4, i64 => u64, 4, [i64::MIN, -8, 7, i64::MAX], [i64::MAX, 3, -2, 0]);
+abs_diff!(u64_abs_diff_1, u64 => u64, 1, [0], [u64::MAX]);
+abs_diff!(u64_abs_diff_2, u64 => u64, 2, [0, u64::MAX], [u64::MAX, 0]);
+abs_diff!(u64_abs_diff_3, u64 => u64, 3, [0, 7, u64::MAX], [0, 2, 1]);
+abs_diff!(u64_abs_diff_4, u64 => u64, 4, [0, 8, 7, u64::MAX], [u64::MAX, 3, 12, 0]);
 
 macro_rules! matrix_ops {
     ($name:ident, $t:ty, $r:literal, $c:literal) => {
@@ -129,6 +145,8 @@ macro_rules! all_matrix_shapes {
 
 all_matrix_shapes!(i32, i32_matrix);
 all_matrix_shapes!(u32, u32_matrix);
+all_matrix_shapes!(i64, i64_matrix);
+all_matrix_shapes!(u64, u64_matrix);
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]

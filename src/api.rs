@@ -73,8 +73,11 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
         let storage = unsafe {
             match <T as private::Sealed>::TYPE {
                 private::Type::F32 => impl_from_array!(f32, D, &array, [1, 2, 3, 4]),
+                private::Type::F64 => impl_from_array!(f64, D, &array, [1, 2, 3, 4]),
                 private::Type::I32 => impl_from_array!(i32, D, &array, [1, 2, 3, 4]),
+                private::Type::I64 => impl_from_array!(i64, D, &array, [1, 2, 3, 4]),
                 private::Type::U32 => impl_from_array!(u32, D, &array, [1, 2, 3, 4]),
+                private::Type::U64 => impl_from_array!(u64, D, &array, [1, 2, 3, 4]),
             }
         };
 
@@ -313,11 +316,20 @@ impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C
                 private::Type::F32 => {
                     impl_matrix_from_array!(f32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::F64 => {
+                    impl_matrix_from_array!(f64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::I32 => {
                     impl_matrix_from_array!(i32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::I64 => {
+                    impl_matrix_from_array!(i64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::U32 => {
                     impl_matrix_from_array!(u32, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
+                private::Type::U64 => {
+                    impl_matrix_from_array!(u64, C, R, &rows, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
             }
         };
@@ -389,11 +401,20 @@ impl<T: Element<R, C>, const R: usize, const C: usize> column_major::Matrix<T, R
                 private::Type::F32 => {
                     impl_matrix_from_array!(f32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::F64 => {
+                    impl_matrix_from_array!(f64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::I32 => {
                     impl_matrix_from_array!(i32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
+                private::Type::I64 => {
+                    impl_matrix_from_array!(i64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
                 private::Type::U32 => {
                     impl_matrix_from_array!(u32, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
+                }
+                private::Type::U64 => {
+                    impl_matrix_from_array!(u64, R, C, &columns, [1, 2, 3, 4], [1, 2, 3, 4])
                 }
             }
         };
@@ -548,8 +569,8 @@ macro_rules! impl_binop_all {
     (arithmetic, [$([$generic_docs:tt, $float_docs:tt, $integer_docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt $(, $option:tt)?],)+]) => {
         $(
             impl_binop_all!(@a [$generic_docs, $trait::$method, $trait_assign::$method_assign $(, $option)?]);
-            impl_binop_all!(@b [f32], [$float_docs, $trait::$method] $(, $option)?);
-            impl_binop_all!(@b [i32, u32], [$integer_docs, $trait::$method] $(, $option)?);
+            impl_binop_all!(@b [f32, f64], [$float_docs, $trait::$method] $(, $option)?);
+            impl_binop_all!(@b [i32, u32, i64, u64], [$integer_docs, $trait::$method] $(, $option)?);
         )+
     };
     ($scalar:tt, [$([$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt $(, $option:tt)?],)+]) => {
@@ -633,7 +654,7 @@ impl_binop_all!(arithmetic, [
         vector_only
     ],
 ]);
-impl_binop_all!([i32, u32], [
+impl_binop_all!([i32, u32, i64, u64], [
     [
         ["Performs component-wise bitwise AND.", "Performs component-wise bitwise AND assignment."],
         BitAnd::bitand,
@@ -847,6 +868,10 @@ impl<T: Element<R, C>, const R: usize, const C: usize> Default for column_major:
 impl<T: Element<D>, const D: usize> Default for Vector<T, D> {
     #[inline]
     fn default() -> Self { Self::ZERO }
+}
+impl<T: MaskElement<D>, const D: usize> Default for Mask<T, D> {
+    #[inline]
+    fn default() -> Self { Self::splat(false) }
 }
 
 struct CompactRow<'a, T>(&'a [T]);

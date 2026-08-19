@@ -1,4 +1,4 @@
-use super::mask::*;
+use super::mask::i32::*;
 use crate::{
     private,
     simd::utils::{compute_i32x2, f32x2, i32x2, u32x2},

@@ -22,10 +22,19 @@ macro_rules! arith {
 macro_rules! if_ {
     (1 == 1 and 1 != 1 { $($then:tt)* }) => { };
     (1 == 1 and $_:tt != 1 { $($then:tt)* }) => { $($then)* };
+    (2 == 2 and 1 == 1 { $($then:tt)* }) => { $($then)* };
+    (3 == 3 and 1 == 1 { $($then:tt)* }) => { $($then)* };
+    (4 == 4 and 1 == 1 { $($then:tt)* }) => { $($then)* };
+    (1 == 1 and 1 == 1 { $($then:tt)* }) => { $($then)* };
+    (2 == 2 and 2 == 2 { $($then:tt)* }) => { $($then)* };
+    (3 == 3 and 3 == 3 { $($then:tt)* }) => { $($then)* };
+    (4 == 4 and 4 == 4 { $($then:tt)* }) => { $($then)* };
+    (1 == 1 { $($then:tt)* }) => { $($then)* };
     (1 == 1 { $($then:tt)* } else { $($else:tt)* }) => { $($then)* };
     (32 == 32 { $($then:tt)* }) => { $($then)* };
     ($_:tt == 1 { $($then:tt)* } else { $($else:tt)* }) => { $($else)* };
     (signed int == signed int { $($then:tt)* }) => { $($then)* };
+    (unsigned int == unsigned int { $($then:tt)* }) => { $($then)* };
     (float == float { $($then:tt)* }) => { $($then)* };
     (not_float == not_float { $($then:tt)* }) => { $($then)* };
     (signed == signed { $($then:tt)* }) => { $($then)* };
@@ -38,11 +47,16 @@ macro_rules! if_ {
 pub(crate) use arith;
 pub(crate) use if_;
 
+// TODO(lane-count-generics): consider `ArithPrimitive<const N: usize>` and the same for
+// `MaskPrimitive`, so `any`/`all`/`cast`/`to_bitmask` can tell 2, 3 and 4 lanes apart.
 pub(crate) trait ArithPrimitive: Copy {
     type Scalar;
     type F32;
+    type F64;
     type I32;
+    type I64;
     type U32;
+    type U64;
     type Mask: MaskPrimitive;
     const ZERO_: Self;
     const ONE_: Self;
@@ -52,9 +66,12 @@ pub(crate) trait ArithPrimitive: Copy {
     fn as_array_(&self) -> &[Self::Scalar];
     #[allow(dead_code)]
     fn as_mut_array_(&mut self) -> &mut [Self::Scalar];
-    fn cast_from_f32_(_a: Self::F32) -> Self { unimplemented!() }
-    fn cast_from_i32_(_a: Self::I32) -> Self { unimplemented!() }
-    fn cast_from_u32_(_a: Self::U32) -> Self { unimplemented!() }
+    fn cast_from_f32_<const N: usize>(_a: Self::F32) -> Self { unimplemented!() }
+    fn cast_from_f64_<const N: usize>(_a: Self::F64) -> Self { unimplemented!() }
+    fn cast_from_i32_<const N: usize>(_a: Self::I32) -> Self { unimplemented!() }
+    fn cast_from_i64_<const N: usize>(_a: Self::I64) -> Self { unimplemented!() }
+    fn cast_from_u32_<const N: usize>(_a: Self::U32) -> Self { unimplemented!() }
+    fn cast_from_u64_<const N: usize>(_a: Self::U64) -> Self { unimplemented!() }
 
     fn max_(self, _other: Self) -> Self { unimplemented!() }
     fn min_(self, _other: Self) -> Self { unimplemented!() }
@@ -82,6 +99,7 @@ pub(crate) trait ArithPrimitive: Copy {
     fn signum_(self) -> Self { unimplemented!() }
 
     // Floating-point operations.
+    #[allow(dead_code)]
     fn round_ties_even_(self) -> Self { unimplemented!() }
     fn is_nan_(self) -> MaskStorage<Self::Mask> { unimplemented!() }
     /// a * b + c
@@ -100,219 +118,168 @@ pub(crate) trait ArithPrimitive: Copy {
     fn shr_scalar_noexcept_(self, _rhs: Self::Scalar) -> Self { unimplemented!() }
 }
 
-impl ArithPrimitive for f32 {
-    type Scalar = Self;
-    type F32 = f32;
-    type I32 = i32;
-    type U32 = u32;
-    type Mask = i32;
-    const ZERO_: Self = 0.;
-    const ONE_: Self = 1.;
-    #[inline(always)]
-    fn filled_(a: Self::Scalar) -> Self { a }
-    #[inline(always)]
-    fn as_array_(&self) -> &[Self::Scalar] { core::array::from_ref(self) }
-    #[inline(always)]
-    fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { core::array::from_mut(self) }
-    #[inline(always)]
-    fn cast_from_f32_(a: Self::F32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_i32_(a: Self::I32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_u32_(a: Self::U32) -> Self { a as _ }
-    #[inline(always)]
-    fn max_(self, other: Self) -> Self { self.max(other) }
-    #[inline(always)]
-    fn min_(self, other: Self) -> Self { self.min(other) }
-    #[inline(always)]
-    fn clamp_noexcept_(mut self, min: Self, max: Self) -> Self {
-        if self < min {
-            self = min;
-        }
-        if self > max {
-            self = max;
-        }
-        self
-    }
-    #[inline(always)]
-    fn add_noexcept_(self, rhs: Self) -> Self { core::ops::Add::add(self, rhs) }
-    #[inline(always)]
-    fn sub_noexcept_(self, rhs: Self) -> Self { core::ops::Sub::sub(self, rhs) }
-    #[inline(always)]
-    fn mul_noexcept_(self, rhs: Self) -> Self { core::ops::Mul::mul(self, rhs) }
-    #[inline(always)]
-    fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self == other) }
-    #[inline(always)]
-    fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self != other) }
-    #[inline(always)]
-    fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self > other) }
-    #[inline(always)]
-    fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self < other) }
-    #[inline(always)]
-    fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self >= other) }
-    #[inline(always)]
-    fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self <= other) }
-    #[inline(always)]
-    fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
-        if mask.into_inner() < 0 { true_values } else { false_values }
-    }
-    #[inline(always)]
-    fn neg_noexcept_(self) -> Self { core::ops::Neg::neg(self) }
-    #[inline(always)]
-    fn abs_noexcept_(self) -> Self { self.abs() }
-    #[inline(always)]
-    fn signum_(self) -> Self { self.signum() }
-    #[inline(always)]
-    fn round_ties_even_(self) -> Self { self.round_ties_even() }
-    #[inline(always)]
-    fn is_nan_(self) -> MaskStorage<Self::Mask> { MaskStorage::new(self.is_nan()) }
-    #[inline(always)]
-    fn mul_add_(a: Self, b: Self, c: Self) -> Self {
-        cfg_select! {
-            any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
-                a.mul_add(b, c)
+macro_rules! impl_arith_primitive {
+    ($self_ty:ty, mask=$mask:ty { $($item:item)* }) => {
+        impl ArithPrimitive for $self_ty {
+            type Scalar = Self;
+            type F32 = f32;
+            type F64 = f64;
+            type I32 = i32;
+            type I64 = i64;
+            type U32 = u32;
+            type U64 = u64;
+            type Mask = $mask;
+            const ZERO_: Self = 0 as _;
+            const ONE_: Self = 1 as _;
+            #[inline(always)]
+            fn filled_(a: Self::Scalar) -> Self { a }
+            #[inline(always)]
+            fn as_array_(&self) -> &[Self::Scalar] { core::array::from_ref(self) }
+            #[inline(always)]
+            fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { core::array::from_mut(self) }
+            #[inline(always)]
+            fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a as _ }
+            #[inline(always)]
+            fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { a as _ }
+            #[inline(always)]
+            fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a as _ }
+            #[inline(always)]
+            fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { a as _ }
+            #[inline(always)]
+            fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a as _ }
+            #[inline(always)]
+            fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { a as _ }
+            #[inline(always)]
+            fn max_(self, other: Self) -> Self { self.max(other) }
+            #[inline(always)]
+            fn min_(self, other: Self) -> Self { self.min(other) }
+            #[inline(always)]
+            fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self == other) }
+            #[inline(always)]
+            fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self != other) }
+            #[inline(always)]
+            fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self > other) }
+            #[inline(always)]
+            fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self < other) }
+            #[inline(always)]
+            fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self >= other) }
+            #[inline(always)]
+            fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self <= other) }
+            #[inline(always)]
+            fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+                if mask.into_inner() < 0 { true_values } else { false_values }
             }
-            _ => a * b + c,
+            $($item)*
         }
-    }
-    // NOTE: LLVM lowers the following `mul_add` calls to the matching fused instructions.
-    #[inline(always)]
-    fn mul_sub_(a: Self, b: Self, c: Self) -> Self {
-        cfg_select! {
-            any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
-                a.mul_add(b, -c)
-            }
-            _ => a * b - c,
-        }
-    }
-    #[inline(always)]
-    fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self {
-        cfg_select! {
-            any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
-                (-a).mul_add(b, c)
-            }
-            _ => c - a * b,
-        }
-    }
+    };
 }
-impl ArithPrimitive for i32 {
-    type Scalar = Self;
-    type F32 = f32;
-    type I32 = i32;
-    type U32 = u32;
-    type Mask = i32;
-    const ZERO_: Self = 0;
-    const ONE_: Self = 1;
-    #[inline(always)]
-    fn filled_(a: Self::Scalar) -> Self { a }
-    #[inline(always)]
-    fn as_array_(&self) -> &[Self::Scalar] { core::array::from_ref(self) }
-    #[inline(always)]
-    fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { core::array::from_mut(self) }
-    #[inline(always)]
-    fn cast_from_f32_(a: Self::F32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_i32_(a: Self::I32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_u32_(a: Self::U32) -> Self { a as _ }
-    #[inline(always)]
-    fn max_(self, other: Self) -> Self { self.max(other) }
-    #[inline(always)]
-    fn min_(self, other: Self) -> Self { self.min(other) }
+macro_rules! impl_arith_primitive_int {
+    ($self_ty:ty, mask=$mask:ty { $($item:item)* }) => {
+        impl_arith_primitive! {
+            $self_ty, mask=$mask {
+                #[inline(always)]
+                fn add_noexcept_(self, rhs: Self) -> Self { self.wrapping_add(rhs) }
+                #[inline(always)]
+                fn sub_noexcept_(self, rhs: Self) -> Self { self.wrapping_sub(rhs) }
+                #[inline(always)]
+                fn mul_noexcept_(self, rhs: Self) -> Self { self.wrapping_mul(rhs) }
 
-    #[inline(always)]
-    fn add_noexcept_(self, rhs: Self) -> Self { self.wrapping_add(rhs) }
-    #[inline(always)]
-    fn sub_noexcept_(self, rhs: Self) -> Self { self.wrapping_sub(rhs) }
-    #[inline(always)]
-    fn mul_noexcept_(self, rhs: Self) -> Self { self.wrapping_mul(rhs) }
-    #[inline(always)]
-    fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self == other) }
-    #[inline(always)]
-    fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self != other) }
-    #[inline(always)]
-    fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self > other) }
-    #[inline(always)]
-    fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self < other) }
-    #[inline(always)]
-    fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self >= other) }
-    #[inline(always)]
-    fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self <= other) }
-    #[inline(always)]
-    fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
-        if mask.into_inner() < 0 { true_values } else { false_values }
+                #[inline(always)]
+                fn shl_noexcept_(self, rhs: Self) -> Self { self.wrapping_shl(rhs as u32) }
+                #[inline(always)]
+                fn shr_noexcept_(self, rhs: Self) -> Self { self.wrapping_shr(rhs as u32) }
+                #[inline(always)]
+                fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shl(rhs as u32) }
+                #[inline(always)]
+                fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shr(rhs as u32) }
+                $($item)*
+            }
+        }
     }
-    #[inline(always)]
-    fn neg_noexcept_(self) -> Self { self.wrapping_neg() }
-    #[inline(always)]
-    fn abs_noexcept_(self) -> Self { self.wrapping_abs() }
-    #[inline(always)]
-    fn signum_(self) -> Self { self.signum() }
-    #[inline(always)]
-    fn shl_noexcept_(self, rhs: Self) -> Self { self.wrapping_shl(rhs as u32) }
-    #[inline(always)]
-    fn shr_noexcept_(self, rhs: Self) -> Self { self.wrapping_shr(rhs as u32) }
-    #[inline(always)]
-    fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shl(rhs as u32) }
-    #[inline(always)]
-    fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shr(rhs as u32) }
 }
-impl ArithPrimitive for u32 {
-    type Scalar = Self;
-    type F32 = f32;
-    type I32 = i32;
-    type U32 = u32;
-    type Mask = i32;
-    const ZERO_: Self = 0;
-    const ONE_: Self = 1;
-    #[inline(always)]
-    fn filled_(a: Self::Scalar) -> Self { a }
-    #[inline(always)]
-    fn as_array_(&self) -> &[Self::Scalar] { core::array::from_ref(self) }
-    #[inline(always)]
-    fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { core::array::from_mut(self) }
-    #[inline(always)]
-    fn cast_from_f32_(a: Self::F32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_i32_(a: Self::I32) -> Self { a as _ }
-    #[inline(always)]
-    fn cast_from_u32_(a: Self::U32) -> Self { a as _ }
-    #[inline(always)]
-    fn max_(self, other: Self) -> Self { self.max(other) }
-    #[inline(always)]
-    fn min_(self, other: Self) -> Self { self.min(other) }
-    #[inline(always)]
-    fn add_noexcept_(self, other: Self) -> Self { self.wrapping_add(other) }
+macro_rules! impl_arith_primitive_all {
+    ($float:ty, $int:ty, $uint:ty) => {
+        impl_arith_primitive! {
+            $float, mask=$int {
+                #[inline(always)]
+                fn add_noexcept_(self, rhs: Self) -> Self { core::ops::Add::add(self, rhs) }
+                #[inline(always)]
+                fn sub_noexcept_(self, rhs: Self) -> Self { core::ops::Sub::sub(self, rhs) }
+                #[inline(always)]
+                fn mul_noexcept_(self, rhs: Self) -> Self { core::ops::Mul::mul(self, rhs) }
+                #[inline(always)]
+                fn clamp_noexcept_(mut self, min: Self, max: Self) -> Self {
+                    if self < min {
+                        self = min;
+                    }
+                    if self > max {
+                        self = max;
+                    }
+                    self
+                }
+                #[inline(always)]
+                fn neg_noexcept_(self) -> Self { core::ops::Neg::neg(self) }
+                #[inline(always)]
+                fn abs_noexcept_(self) -> Self { self.abs() }
+                #[inline(always)]
+                fn signum_(self) -> Self { self.signum() }
+                #[inline(always)]
+                fn round_ties_even_(self) -> Self { self.round_ties_even() }
+                #[inline(always)]
+                fn is_nan_(self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self.is_nan()) }
+                // Wasm has no scalar fused multiply-add: the only one it has is the relaxed
+                // vector instruction, and reaching that from a scalar costs an `f32x4.splat` per
+                // operand that neither Wasmtime nor V8 removes. A scalar `f32.fma` has been asked
+                // for since 2020 (WebAssembly/design issue 1391) but is not a proposal at any
+                // phase; revisit if one lands.
+                #[inline(always)]
+                fn mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
+                            a.mul_add(b, c)
+                        }
+                        _ => a * b + c,
+                    }
+                }
+                // NOTE: LLVM lowers the following `mul_add` calls to the matching fused instructions.
+                #[inline(always)]
+                fn mul_sub_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
+                            a.mul_add(b, -c)
+                        }
+                        _ => a * b - c,
+                    }
+                }
+                #[inline(always)]
+                fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        any(target_feature = "fma", all(target_feature = "neon", target_arch = "aarch64")) => {
+                            (-a).mul_add(b, c)
+                        }
+                        _ => c - a * b,
+                    }
+                }
+            }
+        }
+        impl_arith_primitive_int! {
+            $int, mask=$int {
+                #[inline(always)]
+                fn neg_noexcept_(self) -> Self { self.wrapping_neg() }
+                #[inline(always)]
+                fn abs_noexcept_(self) -> Self { self.wrapping_abs() }
+                #[inline(always)]
+                fn signum_(self) -> Self { self.signum() }
+            }
+        }
+        impl_arith_primitive_int! {
+            $uint, mask=$int {}
+        }
+    }
+}
 
-    #[inline(always)]
-    fn sub_noexcept_(self, other: Self) -> Self { self.wrapping_sub(other) }
-    #[inline(always)]
-    fn mul_noexcept_(self, other: Self) -> Self { self.wrapping_mul(other) }
-    #[inline(always)]
-    fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self == other) }
-    #[inline(always)]
-    fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self != other) }
-    #[inline(always)]
-    fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self > other) }
-    #[inline(always)]
-    fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self < other) }
-    #[inline(always)]
-    fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self >= other) }
-    #[inline(always)]
-    fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::new(self <= other) }
-    #[inline(always)]
-    fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
-        if mask.into_inner() < 0 { true_values } else { false_values }
-    }
-    #[inline(always)]
-    fn shl_noexcept_(self, rhs: Self) -> Self { self.wrapping_shl(rhs) }
-    #[inline(always)]
-    fn shr_noexcept_(self, rhs: Self) -> Self { self.wrapping_shr(rhs) }
-    #[inline(always)]
-    fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shl(rhs) }
-    #[inline(always)]
-    fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.wrapping_shr(rhs) }
-}
+impl_arith_primitive_all!(f32, i32, u32);
+impl_arith_primitive_all!(f64, i64, u64);
 
 pub(super) trait Load {
     type Output;
@@ -340,6 +307,18 @@ macro_rules! impl_default_load {
 pub(crate) use impl_default_load;
 
 mod mask_utils {
+    // TODO(mask-bitmask-storage): AVX-512 has dedicated mask registers whose bits carry no lane
+    // width, so a bitmask representation would make the 32-bit/64-bit mask casts free and let
+    // `any`/`all`/`to_bitmask` read the register directly. Keeping one lane per element instead
+    // costs a shuffle on every cross-width `select` there. Not attempted: every other target
+    // wants the wide form, so this would need a second storage type behind a target feature.
+
+    // TODO(non-simd-bool-mask-storage): the non-SIMD backend could store `[[bool; M]; N]` for
+    // every element type instead of mirroring the element's width in `i32`/`i64` lanes. Nothing
+    // in the public API promises a storage layout, and without vector instructions there is no
+    // reason for the lane width to match the values being selected: the width casts and the
+    // canonical `0`/`-1` invariant would both disappear.
+
     /// Storage whose physical lanes are all-zero or all-one bit patterns.
     #[derive(Copy, Clone)]
     #[repr(transparent)]
@@ -401,6 +380,31 @@ mod mask_utils {
             self < 0
         }
     }
+    unsafe impl MaskPrimitive for i64 {
+        fn is_valid(self) -> bool { self == 0 || self == -1 }
+        #[inline(always)]
+        fn not(self) -> Self { !self }
+        #[inline(always)]
+        fn bitand(self, rhs: Self) -> Self { self & rhs }
+        #[inline(always)]
+        fn bitor(self, rhs: Self) -> Self { self | rhs }
+        #[inline(always)]
+        fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+        #[inline(always)]
+        fn select(self, true_values: Self, false_values: Self) -> Self {
+            if self < 0 { true_values } else { false_values }
+        }
+        #[inline(always)]
+        fn any<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
+        }
+        #[inline(always)]
+        fn all<const N: usize>(self) -> bool {
+            assert_eq!(N, 1);
+            self < 0
+        }
+    }
     // SAFETY: every array element is validated, transformed, and selected
     // through its `MaskPrimitive` implementation, including elements used as
     // padding.
@@ -410,31 +414,31 @@ mod mask_utils {
         fn not(self) -> Self { self.map(MaskPrimitive::not) }
         #[inline(always)]
         fn bitand(self, rhs: Self) -> Self {
-            core::array::from_fn({
+            core::array::from_fn(
                 #[inline(always)]
-                |i| self[i].bitand(rhs[i])
-            })
+                |i| self[i].bitand(rhs[i]),
+            )
         }
         #[inline(always)]
         fn bitor(self, rhs: Self) -> Self {
-            core::array::from_fn({
+            core::array::from_fn(
                 #[inline(always)]
-                |i| self[i].bitor(rhs[i])
-            })
+                |i| self[i].bitor(rhs[i]),
+            )
         }
         #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self {
-            core::array::from_fn({
+            core::array::from_fn(
                 #[inline(always)]
-                |i| self[i].bitxor(rhs[i])
-            })
+                |i| self[i].bitxor(rhs[i]),
+            )
         }
         #[inline(always)]
         fn select(self, true_values: Self, false_values: Self) -> Self {
-            core::array::from_fn({
+            core::array::from_fn(
                 #[inline(always)]
-                |i| MaskPrimitive::select(self[i], true_values[i], false_values[i])
-            })
+                |i| MaskPrimitive::select(self[i], true_values[i], false_values[i]),
+            )
         }
         fn any<const M: usize>(self) -> bool { unimplemented!() }
         fn all<const M: usize>(self) -> bool { unimplemented!() }
@@ -513,6 +517,22 @@ mod mask_utils {
             unsafe {
                 // SAFETY: false is 0 and true is -1
                 Self::new_unchecked(-(value as i32))
+            }
+        }
+    }
+    impl MaskStorage<i64> {
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn unpack(self) -> Self { self }
+        #[expect(dead_code)]
+        pub(crate) const TRUE: Self = Self(-1);
+        #[expect(dead_code)]
+        pub(crate) const FALSE: Self = Self(0);
+        #[inline(always)]
+        pub(crate) fn new(value: bool) -> Self {
+            unsafe {
+                // SAFETY: false is 0 and true is -1
+                Self::new_unchecked(-(value as i64))
             }
         }
     }

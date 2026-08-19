@@ -7,26 +7,46 @@ macro_rules! matrix_index_tests {
         mod $module {
             use super::*;
 
-            #[test]
-            fn indexes_match_source_rows() {
-                let rows: [[i32; $c]; $r] = $values;
-                let matrix = Matrix::<i32, $r, $c>::from_rows(rows);
+            macro_rules! per_type {
+                ($sub:ident, $t:ty) => {
+                    mod $sub {
+                        use super::*;
 
-                for i in 0..$r {
-                    for j in 0..$c {
-                        assert_eq!(matrix[(i, j)], rows[i][j]);
+                        // The shared value lists are written as integers, so each element type
+                        // converts them rather than repeating them.
+                        fn rows() -> [[$t; $c]; $r] {
+                            let source: [[i32; $c]; $r] = $values;
+                            core::array::from_fn(|i| core::array::from_fn(|j| source[i][j] as $t))
+                        }
+
+                        #[test]
+                        fn indexes_match_source_rows() {
+                            let rows = rows();
+                            let matrix = Matrix::<$t, $r, $c>::from_rows(rows);
+
+                            for i in 0..$r {
+                                for j in 0..$c {
+                                    assert_eq!(matrix[(i, j)], rows[i][j]);
+                                }
+                            }
+                        }
+
+                        #[test]
+                        fn array_round_trip_preserves_source_rows() {
+                            let rows = rows();
+                            let matrix = Matrix::<$t, $r, $c>::from_rows(rows);
+                            let actual: [[$t; $c]; $r] = matrix.into();
+
+                            assert_eq!(actual, rows);
+                        }
                     }
-                }
+                };
             }
 
-            #[test]
-            fn array_round_trip_preserves_source_rows() {
-                let rows: [[i32; $c]; $r] = $values;
-                let matrix = Matrix::<i32, $r, $c>::from_rows(rows);
-                let actual: [[i32; $c]; $r] = matrix.into();
-
-                assert_eq!(actual, rows);
-            }
+            per_type!(i32_elements, i32);
+            per_type!(i64_elements, i64);
+            per_type!(u64_elements, u64);
+            per_type!(f64_elements, f64);
         }
     };
 }

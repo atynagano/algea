@@ -2,6 +2,8 @@ use crate::{
     private,
     utils::{Load, MaskStorage, Store},
 };
+#[allow(unused_imports)]
+use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 
 pub(crate) trait Simd2Ext {
     type Vector4;
@@ -11,791 +13,149 @@ pub(crate) trait Simd4Ext {
     type Vector2;
     fn xy(self) -> Self::Vector2;
 }
-
-#[cfg(target_feature = "sse")]
-pub(crate) mod swizzle_impl {
-    use super::Simd4Ext;
-    use crate::arch::sse;
-    use wide::{f32x4, i32x4, u32x4};
-
-    // TODO(codegen-optimization): Verify that every single-lane insertion pattern lowers to an insert
-    // instruction, and use `_mm_insert_ps` explicitly only for patterns where two shuffles remain.
-    pub(crate) trait Swizzle: Simd4Ext<Vector2 = Self> {
-        fn shuffle<const M: i32>(a: Self, b: Self) -> Self;
-        fn unpack_lo(a: Self, b: Self) -> Self;
-        fn unpack_hi(a: Self, b: Self) -> Self;
-    }
-    impl Swizzle for f32x4 {
-        #[inline(always)]
-        fn shuffle<const M: i32>(a: Self, b: Self) -> Self {
-            // Let LLVM select `movelh` when this shuffle pattern permits it.
-            let a = a.into();
-            let b = b.into();
-            unsafe { Self::from(sse::_mm_shuffle_ps::<M>(a, b)) }
-        }
-        #[inline(always)]
-        fn unpack_lo(a: Self, b: Self) -> Self {
-            let a = a.into();
-            let b = b.into();
-            unsafe { Self::from(sse::_mm_unpacklo_ps(a, b)) }
-        }
-        #[inline(always)]
-        fn unpack_hi(a: Self, b: Self) -> Self {
-            let a = a.into();
-            let b = b.into();
-            unsafe { Self::from(sse::_mm_unpackhi_ps(a, b)) }
-        }
-    }
-    impl Swizzle for i32x4 {
-        #[inline(always)]
-        fn shuffle<const M: i32>(a: Self, b: Self) -> Self {
-            f32x4::shuffle::<M>(
-                f32x4::from_bits(a.cast_unsigned()),
-                f32x4::from_bits(b.cast_unsigned()),
-            )
-            .to_bits()
-            .cast_signed()
-        }
-        #[inline(always)]
-        fn unpack_lo(a: Self, b: Self) -> Self {
-            f32x4::unpack_lo(
-                f32x4::from_bits(a.cast_unsigned()),
-                f32x4::from_bits(b.cast_unsigned()),
-            )
-            .to_bits()
-            .cast_signed()
-        }
-        #[inline(always)]
-        fn unpack_hi(a: Self, b: Self) -> Self {
-            f32x4::unpack_hi(
-                f32x4::from_bits(a.cast_unsigned()),
-                f32x4::from_bits(b.cast_unsigned()),
-            )
-            .to_bits()
-            .cast_signed()
-        }
-    }
-    impl Swizzle for u32x4 {
-        #[inline(always)]
-        fn shuffle<const M: i32>(a: Self, b: Self) -> Self {
-            f32x4::shuffle::<M>(f32x4::from_bits(a), f32x4::from_bits(b)).to_bits()
-        }
-        #[inline(always)]
-        fn unpack_lo(a: Self, b: Self) -> Self {
-            f32x4::unpack_lo(f32x4::from_bits(a), f32x4::from_bits(b)).to_bits()
-        }
-        #[inline(always)]
-        fn unpack_hi(a: Self, b: Self) -> Self {
-            f32x4::unpack_hi(f32x4::from_bits(a), f32x4::from_bits(b)).to_bits()
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) const fn sse_shuffle_mask(l0: i32, l1: i32, l2: i32, l3: i32) -> i32 {
-        l0 | l1 << 2 | l2 << 4 | l3 << 6
-    }
-
-    #[cfg(target_feature = "sse")]
-    macro_rules! emit_sse_swizzle {
-        ($a:expr, $b:expr; [A, B, A, B]; [0, 0, 1, 1]) => {
-            $crate::simd::utils::Swizzle::unpack_lo($a, $b)
-        };
-        ($a:expr, $b:expr; [A, B, A, B]; [2, 2, 3, 3]) => {
-            $crate::simd::utils::Swizzle::unpack_hi($a, $b)
-        };
-        ($a:expr, $b:expr; [B, A, B, A]; [0, 0, 1, 1]) => {
-            $crate::simd::utils::Swizzle::unpack_lo($b, $a)
-        };
-        ($a:expr, $b:expr; [B, A, B, A]; [2, 2, 3, 3]) => {
-            $crate::simd::utils::Swizzle::unpack_hi($b, $a)
-        };
-        // Use the general shuffle and let LLVM select `movelh` when applicable.
-        ($a:expr, $b:expr; [A, A, A, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, $lane2, $lane3) }>($a, $a)
-        }};
-        ($a:expr, $b:expr; [A, A, A, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane2, 0, $lane3, 0) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, 0, 2) }>($a, temp)
-        }};
-        ($a:expr, $b:expr; [A, A, B, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane2, 0, $lane3, 0) }>($b, $a);
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, 0, 2) }>($a, temp)
-        }};
-        ($a:expr, $b:expr; [A, A, B, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, $lane2, $lane3) }>($a, $b)
-        }};
-        ($a:expr, $b:expr; [A, B, A, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane0, 0, $lane1, 0) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, $lane2, $lane3) }>(temp, $a)
-        }};
-        ($a:expr, $b:expr; [A, B, A, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp =
-                Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane2, $lane1, $lane3) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, 1, 3) }>(temp, temp)
-        }};
-        ($a:expr, $b:expr; [A, B, B, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp =
-                Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane3, $lane1, $lane2) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, 3, 1) }>(temp, temp)
-        }};
-        ($a:expr, $b:expr; [A, B, B, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane0, 0, $lane1, 0) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, $lane2, $lane3) }>(temp, $b)
-        }};
-        ($a:expr, $b:expr; [B, A, A, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane0, 0, $lane1, 0) }>($b, $a);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, $lane2, $lane3) }>(temp, $a)
-        }};
-        ($a:expr, $b:expr; [B, A, A, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp =
-                Swizzle::shuffle::<{ sse_shuffle_mask($lane1, $lane2, $lane0, $lane3) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(2, 0, 1, 3) }>(temp, temp)
-        }};
-        ($a:expr, $b:expr; [B, A, B, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp =
-                Swizzle::shuffle::<{ sse_shuffle_mask($lane1, $lane3, $lane0, $lane2) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask(2, 0, 3, 1) }>(temp, temp)
-        }};
-        ($a:expr, $b:expr; [B, A, B, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane0, 0, $lane1, 0) }>($b, $a);
-            Swizzle::shuffle::<{ sse_shuffle_mask(0, 2, $lane2, $lane3) }>(temp, $b)
-        }};
-        ($a:expr, $b:expr; [B, B, A, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, $lane2, $lane3) }>($b, $a)
-        }};
-        ($a:expr, $b:expr; [B, B, A, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane2, 0, $lane3, 0) }>($a, $b);
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, 0, 2) }>($b, temp)
-        }};
-        ($a:expr, $b:expr; [B, B, B, A]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            let temp = Swizzle::shuffle::<{ sse_shuffle_mask($lane2, 0, $lane3, 0) }>($b, $a);
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, 0, 2) }>($b, temp)
-        }};
-        ($a:expr, $b:expr; [B, B, B, B]; [$lane0:tt, $lane1:tt, $lane2:tt, $lane3:tt]) => {{
-            use crate::simd::utils::swizzle_impl::{Swizzle, sse_shuffle_mask};
-            Swizzle::shuffle::<{ sse_shuffle_mask($lane0, $lane1, $lane2, $lane3) }>($b, $b)
-        }};
-    }
-
-    #[cfg(target_feature = "sse")]
-    macro_rules! decode_sse_swizzle_indices {
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 0) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, A]; [$lane0, $lane1, $lane2, 0])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 1) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, A]; [$lane0, $lane1, $lane2, 1])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 2) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, A]; [$lane0, $lane1, $lane2, 2])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 3) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, A]; [$lane0, $lane1, $lane2, 3])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 4) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, B]; [$lane0, $lane1, $lane2, 0])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 5) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, B]; [$lane0, $lane1, $lane2, 1])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 6) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, B]; [$lane0, $lane1, $lane2, 2])
-        };
-        ($a:expr, $b:expr; []; [$s0:ident, $s1:ident, $s2:ident]; [$lane0:tt, $lane1:tt, $lane2:tt]; 7) => {
-            $crate::simd::utils::swizzle_impl::emit_sse_swizzle!($a, $b; [$s0, $s1, $s2, B]; [$lane0, $lane1, $lane2, 3])
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 0) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* A]; [$($lane,)* 0]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 1) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* A]; [$($lane,)* 1]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 2) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* A]; [$($lane,)* 2]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 3) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* A]; [$($lane,)* 3]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 4) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* B]; [$($lane,)* 0]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 5) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* B]; [$($lane,)* 1]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 6) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* B]; [$($lane,)* 2]; $next)
-        };
-        ($a:expr, $b:expr; [$next:tt $(, $i:tt)*]; [$($src:ident),*]; [$($lane:tt),*]; 7) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$($i),*]; [$($src,)* B]; [$($lane,)* 3]; $next)
-        };
-    }
-
-    macro_rules! swizzle {
-        ($a:expr, [$i0:tt, _, _, _]) => {
-            compile_error!()
-        };
-        ($a:expr, [$i0:tt, $i1:tt, _, _]) => {
-            // Let codegen select `movddup` when profitable.
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {{
-            $crate::simd::utils::Swizzle::shuffle::<{
-                $crate::simd::utils::swizzle_impl::sse_shuffle_mask(
-                    $crate::simd::utils::validate_lane4!($i0),
-                    $crate::simd::utils::validate_lane4!($i1),
-                    $crate::simd::utils::validate_lane4!($i2),
-                    $crate::simd::utils::validate_lane4!($i3),
-                )
-            }>($a, $a)
-        }};
-        ($a:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, _, _])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, _])
-        };
-
-        ($a:expr, $b:expr, [$i0:tt, _, _, _]) => {
-            compile_error!()
-        };
-        // Complete partial unpack requests with the corresponding full unpack pattern.
-        ($a:expr, $b:expr, [0, 4, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [0, 4, 1, 5])
-        };
-        ($a:expr, $b:expr, [2, 6, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [2, 6, 3, 7])
-        };
-        ($a:expr, $b:expr, [4, 0, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [4, 0, 5, 1])
-        };
-        ($a:expr, $b:expr, [6, 2, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [6, 2, 7, 3])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, _, _]) => {
-            // Let codegen select `movddup` when profitable.
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i0, $i1])
-        };
-        // Complete partial unpack requests with the corresponding full unpack pattern.
-        ($a:expr, $b:expr, [0, 4, 1, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [0, 4, 1, 5])
-        };
-        ($a:expr, $b:expr, [2, 6, 3, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [2, 6, 3, 7])
-        };
-        ($a:expr, $b:expr, [4, 0, 5, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [4, 0, 5, 1])
-        };
-        ($a:expr, $b:expr, [6, 2, 7, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [6, 2, 7, 3])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::swizzle_impl::decode_sse_swizzle_indices!($a, $b; [$i1, $i2, $i3]; []; []; $i0)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, _, _])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, _])
-        };
-    }
-
-    pub(crate) use decode_sse_swizzle_indices;
-    pub(crate) use emit_sse_swizzle;
-    pub(crate) use swizzle;
+pub(crate) trait ComputeVector: Copy {
+    type Vector2: ComputeVector2;
+    type Vector4: ComputeVector4;
 }
+macro_rules! impl_compute_vector {
+    ([$($type:ty),+]: [$vector2:ty, $vector4:ty]) => {
+        $(impl ComputeVector for $type {
+            type Vector2 = $vector2;
+            type Vector4 = $vector4;
+        })+
+    };
+}
+impl_compute_vector!([f32x2, f32x4]: [compute_f32x2, f32x4]);
+impl_compute_vector!([i32x2, i32x4]: [compute_i32x2, i32x4]);
+impl_compute_vector!([u32x2, u32x4]: [compute_u32x2, u32x4]);
+impl_compute_vector!([f64x2, f64x4]: [f64x2, f64x4]);
+impl_compute_vector!([i64x2, i64x4]: [i64x2, i64x4]);
+impl_compute_vector!([u64x2, u64x4]: [u64x2, u64x4]);
 
 #[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
-pub(crate) mod swizzle_impl {
-    use super::_64bit_types::{f32x2, i32x2, u32x2};
-    use core::arch::aarch64::*;
-    use wide::{f32x4, i32x4, u32x4};
-
-    pub(crate) trait SwizzleBase: Sized {
-        type Vector2;
-        type Vector4;
-
-        fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> Self::Vector2;
-        fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-        ) -> Self::Vector4;
-        fn swizzle_concat2<const I0: usize, const I1: usize>(a: Self, b: Self) -> Self::Vector2;
-        fn swizzle_concat4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self::Vector4;
-    }
-    pub(crate) trait Swizzle: SwizzleBase<Vector4 = Self> {}
-
-    impl Swizzle for f32x4 {}
-    impl Swizzle for i32x4 {}
-    impl Swizzle for u32x4 {}
-
-    // --- Shared byte-level core, used by every element type (f32/i32/u32) and both register
-    // widths (2-lane/64-bit, 4-lane/128-bit) below ---
-    //
-    // Every lane here, regardless of whether the caller interprets it as `f32`, `i32`, or `u32`,
-    // is 4 bytes wide, so a lane index `I` always selects bytes `[I*4, I*4+4)`. `f32x4`/`i32x4`/
-    // `u32x4` (and `f32x2`/`i32x2`/`u32x2`) therefore share this single implementation instead of
-    // each hand-rolling their own NEON shuffle.
-    //
-    // Verified in dev/neon-tbl-vs-simd-swizzle.md: passing a compile-time-constant index table to
-    // `vqtbl1q_u8`/`vqtbl2q_u8` lets LLVM pick the same specialized instruction (`zip1`, `ext` +
-    // `trn1`, etc.) it would for `core::simd::simd_swizzle!`, rather than emitting a literal table
-    // lookup — confirmed exhaustively for the 2-input, 4-lane case (4096 patterns: 98.6% identical
-    // instruction count, no systematic disadvantage in the remaining 1.4%). The 2-lane (64-bit)
-    // path below reuses the same 128-bit primitives by zero-widening first, which has not been
-    // separately codegen-checked.
-    #[inline(always)]
-    fn byte_table<const I0: usize, const I1: usize, const I2: usize, const I3: usize>() -> [u8; 16]
-    {
-        [
-            (I0 * 4) as u8,
-            (I0 * 4 + 1) as u8,
-            (I0 * 4 + 2) as u8,
-            (I0 * 4 + 3) as u8,
-            (I1 * 4) as u8,
-            (I1 * 4 + 1) as u8,
-            (I1 * 4 + 2) as u8,
-            (I1 * 4 + 3) as u8,
-            (I2 * 4) as u8,
-            (I2 * 4 + 1) as u8,
-            (I2 * 4 + 2) as u8,
-            (I2 * 4 + 3) as u8,
-            (I3 * 4) as u8,
-            (I3 * 4 + 1) as u8,
-            (I3 * 4 + 2) as u8,
-            (I3 * 4 + 3) as u8,
-        ]
-    }
-
-    #[inline(always)]
-    fn tbl1_16<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-        a: uint8x16_t,
-    ) -> uint8x16_t {
-        let idx = byte_table::<I0, I1, I2, I3>();
-        // SAFETY: `idx` is a fully initialized 16-byte array; NEON permits unaligned loads, and
-        // NEON itself is guaranteed available under this module's `target_feature = "neon"` gate.
-        unsafe { vqtbl1q_u8(a, vld1q_u8(idx.as_ptr())) }
-    }
-    #[inline(always)]
-    fn tbl2_16<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-        a: uint8x16_t,
-        b: uint8x16_t,
-    ) -> uint8x16_t {
-        let idx = byte_table::<I0, I1, I2, I3>();
-        // SAFETY: see `tbl1_16`.
-        unsafe { vqtbl2q_u8(uint8x16x2_t(a, b), vld1q_u8(idx.as_ptr())) }
-    }
-
-    // `$t`, and its `Vector2`/`Vector4` associated types, are all NEON vector-register wrapper
-    // types (`wide::{f32x4,i32x4,u32x4}`, each a `#[repr(C)]` newtype around a 128-bit NEON
-    // register) with the same size and bit validity as `uint8x16_t`/`uint8x8_t`, so transmuting
-    // between them is sound.
-    macro_rules! impl_swizzle_base_4lane {
-        ($t:ty, Vector2 = $v2:ty) => {
-            impl SwizzleBase for $t {
-                type Vector2 = $v2;
-                type Vector4 = $t;
-
-                #[inline(always)]
-                fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> Self::Vector2 {
-                    // SAFETY: see the comment on `impl_swizzle_base_4lane!`.
-                    unsafe {
-                        let bytes: uint8x16_t = core::mem::transmute(a);
-                        let result = vget_low_u8(tbl1_16::<I0, I1, 0, 0>(bytes));
-                        core::mem::transmute(result)
-                    }
-                }
-                #[inline(always)]
-                fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-                    a: Self,
-                ) -> Self::Vector4 {
-                    // SAFETY: see the comment on `impl_swizzle_base_4lane!`.
-                    unsafe {
-                        let bytes: uint8x16_t = core::mem::transmute(a);
-                        core::mem::transmute(tbl1_16::<I0, I1, I2, I3>(bytes))
-                    }
-                }
-                #[inline(always)]
-                fn swizzle_concat2<const I0: usize, const I1: usize>(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector2 {
-                    // SAFETY: see the comment on `impl_swizzle_base_4lane!`.
-                    unsafe {
-                        let a_bytes: uint8x16_t = core::mem::transmute(a);
-                        let b_bytes: uint8x16_t = core::mem::transmute(b);
-                        let result = vget_low_u8(tbl2_16::<I0, I1, 0, 0>(a_bytes, b_bytes));
-                        core::mem::transmute(result)
-                    }
-                }
-                #[inline(always)]
-                fn swizzle_concat4<
-                    const I0: usize,
-                    const I1: usize,
-                    const I2: usize,
-                    const I3: usize,
-                >(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector4 {
-                    // SAFETY: see the comment on `impl_swizzle_base_4lane!`.
-                    unsafe {
-                        let a_bytes: uint8x16_t = core::mem::transmute(a);
-                        let b_bytes: uint8x16_t = core::mem::transmute(b);
-                        core::mem::transmute(tbl2_16::<I0, I1, I2, I3>(a_bytes, b_bytes))
-                    }
-                }
-            }
-        };
-    }
-    impl_swizzle_base_4lane!(f32x4, Vector2 = f32x2);
-    impl_swizzle_base_4lane!(i32x4, Vector2 = i32x2);
-    impl_swizzle_base_4lane!(u32x4, Vector2 = u32x2);
-
-    // 2-lane (64-bit) self: widen to a 128-bit register (the upper 8 bytes are unused padding,
-    // never selected by a valid index) and reuse the exact same `tbl1_16`/`tbl2_16` primitives
-    // as the 4-lane case above. This keeps the whole implementation on one, already-checked code
-    // path, at the cost of not being separately verified for codegen quality (see the comment on
-    // `tbl1_16`/`tbl2_16`).
-    macro_rules! impl_swizzle_base_2lane {
-        ($t:ty, Vector4 = $v4:ty) => {
-            impl SwizzleBase for $t {
-                type Vector2 = $t;
-                type Vector4 = $v4;
-
-                #[inline(always)]
-                fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> Self::Vector2 {
-                    // SAFETY: `$t` is a `#[repr(transparent)]` newtype around a 64-bit NEON
-                    // register, the same size as `uint8x8_t`, so transmuting is sound.
-                    unsafe {
-                        let low: uint8x8_t = core::mem::transmute(a);
-                        let bytes = vcombine_u8(low, vdup_n_u8(0));
-                        core::mem::transmute(vget_low_u8(tbl1_16::<I0, I1, 0, 0>(bytes)))
-                    }
-                }
-                #[inline(always)]
-                fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-                    a: Self,
-                ) -> Self::Vector4 {
-                    // SAFETY: see `swizzle2` above.
-                    unsafe {
-                        let low: uint8x8_t = core::mem::transmute(a);
-                        let bytes = vcombine_u8(low, vdup_n_u8(0));
-                        core::mem::transmute(tbl1_16::<I0, I1, I2, I3>(bytes))
-                    }
-                }
-                #[inline(always)]
-                fn swizzle_concat2<const I0: usize, const I1: usize>(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector2 {
-                    // SAFETY: see `swizzle2` above.
-                    unsafe {
-                        let a_low: uint8x8_t = core::mem::transmute(a);
-                        let b_low: uint8x8_t = core::mem::transmute(b);
-                        let a_bytes = vcombine_u8(a_low, vdup_n_u8(0));
-                        let b_bytes = vcombine_u8(b_low, vdup_n_u8(0));
-                        let result = vget_low_u8(tbl2_16::<I0, I1, 0, 0>(a_bytes, b_bytes));
-                        core::mem::transmute(result)
-                    }
-                }
-                #[inline(always)]
-                fn swizzle_concat4<
-                    const I0: usize,
-                    const I1: usize,
-                    const I2: usize,
-                    const I3: usize,
-                >(
-                    a: Self,
-                    b: Self,
-                ) -> Self::Vector4 {
-                    // SAFETY: see `swizzle2` above.
-                    unsafe {
-                        let a_low: uint8x8_t = core::mem::transmute(a);
-                        let b_low: uint8x8_t = core::mem::transmute(b);
-                        let a_bytes = vcombine_u8(a_low, vdup_n_u8(0));
-                        let b_bytes = vcombine_u8(b_low, vdup_n_u8(0));
-                        core::mem::transmute(tbl2_16::<I0, I1, I2, I3>(a_bytes, b_bytes))
-                    }
-                }
-            }
-        };
-    }
-    impl_swizzle_base_2lane!(f32x2, Vector4 = f32x4);
-    impl_swizzle_base_2lane!(i32x2, Vector4 = i32x4);
-    impl_swizzle_base_2lane!(u32x2, Vector4 = u32x4);
-
-    macro_rules! swizzle {
-        ($a:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle4::<
-                { $crate::simd::utils::validate_lane4!($i0) },
-                { $crate::simd::utils::validate_lane4!($i1) },
-                { $crate::simd::utils::validate_lane4!($i2) },
-                { $crate::simd::utils::validate_lane4!($i3) },
-            >($a)
-        };
-        ($a:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle2::<
-                { $crate::simd::utils::validate_lane4!($i0) },
-                { $crate::simd::utils::validate_lane4!($i1) },
-            >($a)
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, _])
-        };
-
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle_concat4::<
-                { $crate::simd::utils::validate_lane8!($i0) },
-                { $crate::simd::utils::validate_lane8!($i1) },
-                { $crate::simd::utils::validate_lane8!($i2) },
-                { $crate::simd::utils::validate_lane8!($i3) },
-            >($a, $b)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle_impl::SwizzleBase::swizzle_concat2::<
-                { $crate::simd::utils::validate_lane8!($i0) },
-                { $crate::simd::utils::validate_lane8!($i1) },
-            >($a, $b)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, _])
-        };
-    }
-
-    pub(crate) use swizzle;
-
-    #[cfg(test)]
-    mod tests {
-        use super::{SwizzleBase, u32x2, u32x4};
-
-        #[test]
-        fn swizzle4_selects_lanes_from_one_input() {
-            let a = u32x4::new([10, 11, 12, 13]);
-
-            let actual = SwizzleBase::swizzle4::<3, 1, 0, 2>(a);
-
-            assert_eq!(actual.to_array(), [13, 11, 10, 12]);
-        }
-
-        #[test]
-        fn swizzle_concat4_selects_lanes_from_both_inputs() {
-            let a = u32x4::new([10, 11, 12, 13]);
-            let b = u32x4::new([20, 21, 22, 23]);
-
-            let actual = SwizzleBase::swizzle_concat4::<7, 0, 5, 2>(a, b);
-
-            assert_eq!(actual.to_array(), [23, 10, 21, 12]);
-        }
-
-        #[test]
-        fn swizzle2_selects_lanes_from_one_input() {
-            let a = u32x2::new([10, 11]);
-
-            let actual = SwizzleBase::swizzle2::<1, 0>(a);
-
-            assert_eq!(actual.to_array(), [11, 10]);
-        }
-
-        #[test]
-        fn swizzle_concat2_selects_lanes_from_both_inputs() {
-            // Indices 0/1 select `a`'s two lanes and 4/5 select `b`'s, matching the same
-            // "`a` widened into the low half, `b` into the high half" convention as
-            // `Simd2Ext::widen`; 2/3/6/7 would read each operand's zero-padding.
-            let a = u32x2::new([10, 11]);
-            let b = u32x2::new([20, 21]);
-
-            let actual = SwizzleBase::swizzle_concat2::<5, 0>(a, b);
-
-            assert_eq!(actual.to_array(), [21, 10]);
-        }
-    }
-}
-
+pub(crate) use super::swizzle_arm::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
 #[cfg(target_feature = "simd128")]
-pub(crate) mod swizzle_impl {
-    use super::Simd4Ext;
-    use wide::{f32x4, i32x4, u32x4};
+pub(crate) use super::swizzle_wasm::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
+#[cfg(target_feature = "sse2")]
+pub(crate) use super::swizzle_x86::{Swizzle, SwizzleConcat, swizzle4 as swizzle};
 
-    pub(crate) trait Swizzle: Simd4Ext<Vector2 = Self> {
-        fn swizzle<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self;
+pub(crate) trait ComputeVector4:
+    SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
+{
+}
+pub(crate) trait ComputeVector2:
+    Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
+{
+}
+impl<T> ComputeVector4 for T where
+    T: SwizzleConcat<Vector4 = Self, Vector2: ComputeVector<Vector4 = Self>>
+{
+}
+impl<T> ComputeVector2 for T where T: Swizzle<Vector2 = Self, Vector4: ComputeVector<Vector2 = Self>>
+{}
+
+impl<T: ComputeVector4> Simd4Ext for T {
+    type Vector2 = <T as ComputeVector>::Vector2;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 { <T as Swizzle>::__xy(self) }
+}
+impl<T: ComputeVector2> Simd2Ext for T {
+    type Vector4 = <T as ComputeVector>::Vector4;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 { <T as Swizzle>::__widen(self) }
+}
+// Mask storage is never swizzled, so it is given `Simd2Ext`/`Simd4Ext` directly rather than a
+// `Swizzle` implementation it would never call just to reach the blanket impls above. Each one
+// forwards to the storage vector it wraps, which those blanket impls do cover.
+impl Simd4Ext for MaskStorage<i32x4> {
+    type Vector2 = MaskStorage<compute_i32x2>;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 {
+        // SAFETY: narrowing keeps the low lanes of an already-canonical mask, each of which is
+        // `0` or `-1` and so canonical on its own.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
     }
-
-    impl Swizzle for f32x4 {
-        #[inline(always)]
-        fn swizzle<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self {
-            use core::arch::wasm32::{u32x4_shuffle, v128_load, v128_store};
-
-            let a = a.to_array();
-            let b = b.to_array();
-            // SAFETY: Both arrays contain exactly 16 initialized bytes.
-            // WebAssembly's v128 loads and stores permit unaligned addresses.
-            unsafe {
-                let a = v128_load(a.as_ptr().cast());
-                let b = v128_load(b.as_ptr().cast());
-                let shuffled = u32x4_shuffle::<I0, I1, I2, I3>(a, b);
-                let mut result = [0.; 4];
-                v128_store(result.as_mut_ptr().cast(), shuffled);
-                Self::new(result)
-            }
-        }
+}
+impl Simd2Ext for MaskStorage<compute_i32x2> {
+    type Vector4 = MaskStorage<i32x4>;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 {
+        // SAFETY: widening zero-fills the padding lanes, and `0` is itself the canonical "false"
+        // value, so the result still satisfies the invariant.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
     }
-    impl Swizzle for i32x4 {
-        #[inline(always)]
-        fn swizzle<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self {
-            f32x4::swizzle::<I0, I1, I2, I3>(
-                f32x4::from_bits(a.cast_unsigned()),
-                f32x4::from_bits(b.cast_unsigned()),
-            )
-            .to_bits()
-            .cast_signed()
-        }
+}
+impl Simd4Ext for MaskStorage<i64x4> {
+    type Vector2 = MaskStorage<i64x2>;
+    #[inline(always)]
+    fn xy(self) -> Self::Vector2 {
+        // SAFETY: see `MaskStorage<i32x4>::xy`.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
     }
-    impl Swizzle for u32x4 {
-        #[inline(always)]
-        fn swizzle<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            a: Self,
-            b: Self,
-        ) -> Self {
-            f32x4::swizzle::<I0, I1, I2, I3>(f32x4::from_bits(a), f32x4::from_bits(b)).to_bits()
-        }
+}
+impl Simd2Ext for MaskStorage<i64x2> {
+    type Vector4 = MaskStorage<i64x4>;
+    #[inline(always)]
+    fn widen(self) -> Self::Vector4 {
+        // SAFETY: see `MaskStorage<compute_i32x2>::widen`.
+        unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
     }
-
-    macro_rules! swizzle {
-        ($a:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::Swizzle::swizzle::<
-                { $crate::simd::utils::validate_lane4!($i0) },
-                { $crate::simd::utils::validate_lane4!($i1) },
-                { $crate::simd::utils::validate_lane4!($i2) },
-                { $crate::simd::utils::validate_lane4!($i3) },
-            >($a, $a)
-        };
-        ($a:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, _, _])
-        };
-        ($a:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, [$i0, $i1, $i2, _])
-        };
-
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, _, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i0, $i1])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, _]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, $i2])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-            $crate::simd::utils::Swizzle::swizzle::<
-                { $crate::simd::utils::validate_lane8!($i0) },
-                { $crate::simd::utils::validate_lane8!($i1) },
-                { $crate::simd::utils::validate_lane8!($i2) },
-                { $crate::simd::utils::validate_lane8!($i3) },
-            >($a, $b)
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, _, _])
-        };
-        ($a:expr, $b:expr, [$i0:tt, $i1:tt, $i2:tt]) => {
-            $crate::simd::utils::swizzle!($a, $b, [$i0, $i1, $i2, _])
-        };
-    }
-
-    pub(crate) use swizzle;
 }
 
-#[cfg(not(all(target_feature = "neon", target_arch = "aarch64")))]
-mod aliased_2lane {
-    use super::{Simd2Ext, Simd4Ext};
-    use crate::utils::MaskStorage;
-    use wide::{f32x4, i32x4, u32x4};
-
-    impl Simd4Ext for f32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
-    }
-    impl Simd4Ext for i32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
-    }
-    impl Simd4Ext for u32x4 {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
-    }
-    impl Simd4Ext for MaskStorage<i32x4> {
-        type Vector2 = Self;
-        #[inline(always)]
-        fn xy(self) -> Self::Vector2 { self }
-    }
-    impl Simd2Ext for f32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for i32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for u32x4 {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
-    impl Simd2Ext for MaskStorage<i32x4> {
-        type Vector4 = Self;
-        #[inline(always)]
-        fn widen(self) -> Self::Vector4 { self }
-    }
+/// Completes a four-lane index list whose last lane is `_`, then hands it to the backend macro
+/// `$mac`. The operands are passed through as one group, so this serves both the one-operand and
+/// the two-operand form.
+///
+/// Where the third lane is even, the padding lane takes the lane after it. The upper half of the
+/// result is then one whole 64-bit half of a source, which every backend moves in a single
+/// instruction; leaving the choice to the backend instead costs two lane inserts on targets
+/// without a general two-input four-lane 32-bit shuffle. Repeating the third lane cannot beat
+/// that, since a duplicated lane is a move of its own.
+///
+/// Unless the two given lanes are equal. Then the whole list may collapse into one instruction —
+/// `[x, x, x, x]` is a broadcast, `[x, x, y, y]` an interleave of one operand with itself — and
+/// naming a different lane would break that, so the third lane repeats instead.
+#[rustfmt::skip]
+macro_rules! complete_swizzle4 {
+    ([$($mac:tt)*], ($($operands:tt)*), [0, 0, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [0, 0, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [1, 1, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [1, 1, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [2, 2, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [2, 2, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [3, 3, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [3, 3, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [4, 4, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [4, 4, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [5, 5, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [5, 5, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [6, 6, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [6, 6, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [7, 7, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [7, 7, $i2, $i2])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 0, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 0, 1])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 2, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 2, 3])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 4, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 4, 5])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, 6, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, 6, 7])
+    };
+    ([$($mac:tt)*], ($($operands:tt)*), [$i0:tt, $i1:tt, $i2:tt, _]) => {
+        $($mac)*!($($operands)*, [$i0, $i1, $i2, $i2])
+    };
 }
 
 #[rustfmt::skip]
@@ -819,62 +179,74 @@ macro_rules! validate_lane8 {
     (7) => { 7 };
 }
 
+// NOTE: lets a caller write `__bitxor` without annotating whether the operand is `f32` or
+// `f64`, which inference cannot pin down on its own here.
+pub(crate) trait __BitXorSelf: core::ops::BitXor + Sized {
+    fn __bitxor(lhs: Self, rhs: Self) -> Self::Output;
+}
+impl<T: core::ops::BitXor> __BitXorSelf for T {
+    #[inline(always)]
+    fn __bitxor(lhs: Self, rhs: Self) -> Self::Output { core::ops::BitXor::bitxor(lhs, rhs) }
+}
+
 macro_rules! sign {
     ($vector:expr, [+, +, +, -]) => {
-        $vector ^ f32x4::new([0., 0., 0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., 0., 0., -0.].into())
     };
     ($vector:expr, [+, +, -, +]) => {
-        $vector ^ f32x4::new([0., 0., -0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., 0., -0., 0.].into())
     };
     ($vector:expr, [+, +, -, -]) => {
-        $vector ^ f32x4::new([0., 0., -0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., 0., -0., -0.].into())
     };
     ($vector:expr, [+, -, +, +]) => {
-        $vector ^ f32x4::new([0., -0., 0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., -0., 0., 0.].into())
     };
     ($vector:expr, [+, -, +, -]) => {
-        $vector ^ f32x4::new([0., -0., 0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., -0., 0., -0.].into())
     };
     ($vector:expr, [+, -, -, +]) => {
-        $vector ^ f32x4::new([0., -0., -0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., -0., -0., 0.].into())
     };
     ($vector:expr, [+, -, -, -]) => {
-        $vector ^ f32x4::new([0., -0., -0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [0., -0., -0., -0.].into())
     };
     ($vector:expr, [-, +, +, +]) => {
-        $vector ^ f32x4::new([-0., 0., 0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., 0., 0., 0.].into())
     };
     ($vector:expr, [-, +, +, -]) => {
-        $vector ^ f32x4::new([-0., 0., 0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., 0., 0., -0.].into())
     };
     ($vector:expr, [-, +, -, +]) => {
-        $vector ^ f32x4::new([-0., 0., -0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., 0., -0., 0.].into())
     };
     ($vector:expr, [-, +, -, -]) => {
-        $vector ^ f32x4::new([-0., 0., -0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., 0., -0., -0.].into())
     };
     ($vector:expr, [-, -, +, +]) => {
-        $vector ^ f32x4::new([-0., -0., 0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., -0., 0., 0.].into())
     };
     ($vector:expr, [-, -, +, -]) => {
-        $vector ^ f32x4::new([-0., -0., 0., -0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., -0., 0., -0.].into())
     };
     ($vector:expr, [-, -, -, +]) => {
-        $vector ^ f32x4::new([-0., -0., -0., 0.])
+        $crate::simd::utils::__BitXorSelf::__bitxor($vector, [-0., -0., -0., 0.].into())
     };
 }
 
-pub(crate) use swizzle_impl::{Swizzle, swizzle};
 #[allow(unused_imports)]
-pub(crate) use {sign, validate_lane4, validate_lane8};
+pub(crate) use {complete_swizzle4, sign, validate_lane4, validate_lane8};
 
 // A future `std::simd::Simd` backend must preserve the current eight-byte two-lane storage layout.
 // `std::simd` can represent LLVM `<2 x float>` directly, whereas `[f32; 2]` remains an aggregate;
 // stable Rust currently offers no equally optimizable portable representation with this layout.
 #[cfg(not(all(target_feature = "neon", target_arch = "aarch64")))]
 mod _64bit_types {
-    use crate::utils::{Load, MaskStorage, Store};
-    use wide::{f32x4, i32x4, u32x4};
+    use crate::{
+        simd::kernels,
+        utils::{Load, MaskPrimitive, MaskStorage, Store},
+    };
+    use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 
     #[allow(non_camel_case_types)]
     #[derive(Copy, Clone)]
@@ -906,12 +278,16 @@ mod _64bit_types {
         pub(crate) const fn new(a: [i32; 2]) -> Self { Self(a) }
         #[inline(always)]
         pub(crate) fn to_array(self) -> [i32; 2] { self.0 }
+        #[inline(always)]
+        pub(crate) fn cast_unsigned(self) -> u32x2 { u32x2(self.0.map(i32::cast_unsigned)) }
     }
     impl u32x2 {
         #[inline(always)]
         pub(crate) const fn new(a: [u32; 2]) -> Self { Self(a) }
         #[inline(always)]
         pub(crate) fn to_array(self) -> [u32; 2] { self.0 }
+        #[inline(always)]
+        pub(crate) fn cast_signed(self) -> i32x2 { i32x2(self.0.map(u32::cast_signed)) }
     }
 
     // SAFETY: the C layout contains exactly two integer lanes. Their total
@@ -943,53 +319,118 @@ mod _64bit_types {
     impl crate::utils::ArithPrimitive for f32x2 {
         type Scalar = f32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0., 0.]);
-        const ONE_: Self = Self::new([1., 1.]);
+        const ZERO_: Self = Self::new([0.; 2]);
+        const ONE_: Self = Self::new([1.; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
         #[inline(always)]
         fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
         #[inline(always)]
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
+
+        #[inline(always)]
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a }
+        #[inline(always)]
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::f32x2_from_f64(a) }
+        #[inline(always)]
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::f32x2_from_i32(a) }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::f32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::f32x2_from_u32(a) }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::f32x2_from_u64(a) }
     }
     impl crate::utils::ArithPrimitive for i32x2 {
         type Scalar = i32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0, 0]);
-        const ONE_: Self = Self::new([1, 1]);
+        const ZERO_: Self = Self::new([0; 2]);
+        const ONE_: Self = Self::new([1; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
         #[inline(always)]
         fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
         #[inline(always)]
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
+
+        #[inline(always)]
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::i32x2_from_f32(a) }
+        #[inline(always)]
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::i32x2_from_f64(a) }
+        #[inline(always)]
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::i32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::i32x2_from_u32(a) }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::i32x2_from_u64(a) }
     }
     impl crate::utils::ArithPrimitive for u32x2 {
         type Scalar = u32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0, 0]);
-        const ONE_: Self = Self::new([1, 1]);
+        const ZERO_: Self = Self::new([0; 2]);
+        const ONE_: Self = Self::new([1; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
         #[inline(always)]
         fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
         #[inline(always)]
         fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
+
+        #[inline(always)]
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::u32x2_from_f32(a) }
+        #[inline(always)]
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::u32x2_from_f64(a) }
+        #[inline(always)]
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::u32x2_from_i32(a) }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::u32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::u32x2_from_u64(a) }
     }
+
+    // TODO(module-naming): what follows has nothing to do with 64-bit types; rename the
+    // module around it.
+    macro_rules! impl_load {
+        ($($t:ty),*) => {
+            $(
+                impl Load for $t {
+                    type Output = Self;
+                    #[inline(always)]
+                    fn load(self) -> Self::Output { self }
+                }
+            )*
+        };
+    }
+    impl_load!(f32, i32, u32, f32x4, i32x4, u32x4, MaskStorage<i32>, MaskStorage<i32x4>);
+    impl_load!(f64, i64, u64, f64x4, i64x4, u64x4, MaskStorage<i64>, MaskStorage<i64x4>);
+    impl_load!(f64x2, i64x2, u64x2, MaskStorage<i64x2>);
 
     impl Load for f32x2 {
         type Output = f32x4;
         #[inline(always)]
-        fn load(self) -> Self::Output { f32x4::new([self.0[0], self.0[1], 0.0, 0.0]) }
+        fn load(self) -> Self::Output { f32x4::new([self.0[0], self.0[1], 0., 0.]) }
     }
     impl Load for i32x2 {
         type Output = i32x4;
@@ -1022,16 +463,6 @@ mod _64bit_types {
             u32x2([a, b])
         }
     }
-    impl Load for MaskStorage<i32x4> {
-        type Output = Self;
-        #[inline(always)]
-        fn load(self) -> Self::Output { self }
-    }
-    impl<const N: usize> Load for MaskStorage<[i32x4; N]> {
-        type Output = Self;
-        #[inline(always)]
-        fn load(self) -> Self::Output { self }
-    }
     impl Load for MaskStorage<i32x2> {
         type Output = MaskStorage<i32x4>;
         #[inline(always)]
@@ -1053,26 +484,12 @@ mod _64bit_types {
             }
         }
     }
-
-    macro_rules! impl_load {
-        ($($t:ty),*) => {
-            $(
-                impl Load for $t {
-                    type Output = $t;
-                    #[inline(always)]
-                    fn load(self) -> Self::Output { self }
-                }
-            )*
-        };
-    }
-    impl_load!(f32, i32, u32);
-    impl_load!(f32x4, i32x4, u32x4);
-    impl<T: Load<Output = T>, const N: usize> Load for [T; N] {
+    impl<T: MaskPrimitive, const N: usize> Load for MaskStorage<[T; N]> {
         type Output = Self;
         #[inline(always)]
         fn load(self) -> Self::Output { self }
     }
-    impl Load for MaskStorage<i32> {
+    impl<T: Load<Output = T>, const N: usize> Load for [T; N] {
         type Output = Self;
         #[inline(always)]
         fn load(self) -> Self::Output { self }
@@ -1083,8 +500,12 @@ mod _64bit_types {
 
 #[cfg(all(target_feature = "neon", target_arch = "aarch64"))]
 mod _64bit_types {
-    use crate::utils::{ArithPrimitive, MaskPrimitive, MaskStorage};
+    use crate::{
+        simd::kernels,
+        utils::{ArithPrimitive, MaskPrimitive, MaskStorage},
+    };
     use core::arch::aarch64::*;
+    use wide::{f64x2, i64x2, u64x2};
 
     #[allow(non_camel_case_types)]
     #[derive(Copy, Clone)]
@@ -1171,6 +592,10 @@ mod _64bit_types {
             arr
         }
         #[inline(always)]
+        pub(crate) fn cast_unsigned(self) -> u32x2 {
+            unsafe { u32x2(vreinterpret_u32_s32(self.0)) }
+        }
+        #[inline(always)]
         pub(crate) fn to_bitmask(self) -> u32 {
             unsafe {
                 // Set every bit of a lane to 1 if that lane is negative (canonical mask
@@ -1195,6 +620,8 @@ mod _64bit_types {
             unsafe { vst1_u32(arr.as_mut_ptr(), self.0) };
             arr
         }
+        #[inline(always)]
+        pub(crate) fn cast_signed(self) -> i32x2 { unsafe { i32x2(vreinterpret_s32_u32(self.0)) } }
     }
 
     const _: () = {
@@ -1238,11 +665,14 @@ mod _64bit_types {
     impl ArithPrimitive for f32x2 {
         type Scalar = f32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0., 0.]);
-        const ONE_: Self = Self::new([1., 1.]);
+        const ZERO_: Self = Self::new([0.; 2]);
+        const ONE_: Self = Self::new([1.; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { unsafe { Self(vdup_n_f32(a)) } }
         #[inline(always)]
@@ -1254,11 +684,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut f32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { a }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { unsafe { Self(vcvt_f32_s32(a.0)) } }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::f32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { unsafe { Self(vcvt_f32_u32(a.0)) } }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::f32x2_from_i32(a) }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::f32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::f32x2_from_u32(a) }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::f32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmaxnm_f32(self.0, other.0)) } }
         #[inline(always)]
@@ -1368,11 +804,14 @@ mod _64bit_types {
     impl ArithPrimitive for i32x2 {
         type Scalar = i32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0, 0]);
-        const ONE_: Self = Self::new([1, 1]);
+        const ZERO_: Self = Self::new([0; 2]);
+        const ONE_: Self = Self::new([1; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { unsafe { Self(vdup_n_s32(a)) } }
         #[inline(always)]
@@ -1384,11 +823,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut i32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { unsafe { Self(vcvt_s32_f32(a.0)) } }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::i32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { a }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::i32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { unsafe { Self(vreinterpret_s32_u32(a.0)) } }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::i32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::i32x2_from_u32(a) }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::i32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmax_s32(self.0, other.0)) } }
         #[inline(always)]
@@ -1487,11 +932,14 @@ mod _64bit_types {
     impl ArithPrimitive for u32x2 {
         type Scalar = u32;
         type F32 = f32x2;
+        type F64 = f64x2;
         type I32 = i32x2;
+        type I64 = i64x2;
         type U32 = u32x2;
+        type U64 = u64x2;
         type Mask = i32x2;
-        const ZERO_: Self = Self::new([0, 0]);
-        const ONE_: Self = Self::new([1, 1]);
+        const ZERO_: Self = Self::new([0; 2]);
+        const ONE_: Self = Self::new([1; 2]);
         #[inline(always)]
         fn filled_(a: Self::Scalar) -> Self { unsafe { Self(vdup_n_u32(a)) } }
         #[inline(always)]
@@ -1503,11 +951,17 @@ mod _64bit_types {
             unsafe { core::slice::from_raw_parts_mut(self as *mut _ as *mut u32, 2) }
         }
         #[inline(always)]
-        fn cast_from_f32_(a: Self::F32) -> Self { unsafe { Self(vcvt_u32_f32(a.0)) } }
+        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::u32x2_from_f32(a) }
         #[inline(always)]
-        fn cast_from_i32_(a: Self::I32) -> Self { unsafe { Self(vreinterpret_u32_s32(a.0)) } }
+        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::u32x2_from_f64(a) }
         #[inline(always)]
-        fn cast_from_u32_(a: Self::U32) -> Self { a }
+        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::u32x2_from_i32(a) }
+        #[inline(always)]
+        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::u32x2_from_i64(a) }
+        #[inline(always)]
+        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a }
+        #[inline(always)]
+        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::u32x2_from_u64(a) }
         #[inline(always)]
         fn max_(self, other: Self) -> Self { unsafe { Self(vmax_u32(self.0, other.0)) } }
         #[inline(always)]
@@ -1599,6 +1053,7 @@ mod _64bit_types {
         (impl $trait:ident for [$($ty:ty),+] { $f_trait:ident => $f:ident }) => {
             $(impl core::ops::$trait for $ty {
                 type Output = Self;
+                #[inline(always)]
                 fn $f_trait(self, rhs: Self) -> Self::Output { crate::utils::ArithPrimitive::$f(self, rhs) }
             })+
         };
@@ -1608,38 +1063,47 @@ mod _64bit_types {
     impl_ops!(impl Mul for [f32x2, i32x2, u32x2] { mul => mul_noexcept_ });
     impl core::ops::Div for f32x2 {
         type Output = Self;
+        #[inline(always)]
         fn div(self, rhs: Self) -> Self::Output { unsafe { Self(vdiv_f32(self.0, rhs.0)) } }
     }
     impl core::ops::BitAnd for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitand(self, rhs: Self) -> Self::Output { unsafe { Self(vand_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitAnd for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitand(self, rhs: Self) -> Self::Output { unsafe { Self(vand_u32(self.0, rhs.0)) } }
     }
     impl core::ops::BitOr for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitor(self, rhs: Self) -> Self::Output { unsafe { Self(vorr_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitOr for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitor(self, rhs: Self) -> Self::Output { unsafe { Self(vorr_u32(self.0, rhs.0)) } }
     }
     impl core::ops::BitXor for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self::Output { unsafe { Self(veor_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitXor for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self::Output { unsafe { Self(veor_u32(self.0, rhs.0)) } }
     }
     impl core::ops::Not for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn not(self) -> Self::Output { unsafe { Self(vmvn_s32(self.0)) } }
     }
     impl core::ops::Not for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn not(self) -> Self::Output { unsafe { Self(vmvn_u32(self.0)) } }
     }
     impl MaskStorage<i32x2> {
@@ -1647,76 +1111,29 @@ mod _64bit_types {
         pub(crate) fn unpack(self) -> Self { self }
     }
 
-    impl super::Simd2Ext for f32x2 {
-        type Vector4 = wide::f32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: `wide::f32x4` is a `#[repr(transparent)]`-equivalent wrapper around a
-            // single `float32x4_t` NEON register on this target, so reinterpreting one as the
-            // other is valid.
-            unsafe { vcombine_f32(self.0, vdup_n_f32(0.)).into() }
-        }
-    }
-    impl super::Simd2Ext for i32x2 {
-        type Vector4 = wide::i32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: see `f32x2::widen`; `wide::i32x4` wraps a single `int32x4_t`.
-            unsafe { vcombine_s32(self.0, vdup_n_s32(0)).into() }
-        }
-    }
-    impl super::Simd2Ext for u32x2 {
-        type Vector4 = wide::u32x4;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: see `f32x2::widen`; `wide::u32x4` wraps a single `uint32x4_t`.
-            unsafe { vcombine_u32(self.0, vdup_n_u32(0)).into() }
-        }
-    }
-    impl super::Simd2Ext for MaskStorage<i32x2> {
-        type Vector4 = MaskStorage<wide::i32x4>;
-
-        fn widen(self) -> Self::Vector4 {
-            // SAFETY: `i32x2::widen` zero-extends the two canonical mask lanes (each `0` or
-            // `-1`) into a 4-lane vector; the padding lanes are `0`, itself a valid canonical
-            // "false" mask value, so the result is a valid canonical mask.
-            unsafe { MaskStorage::new_unchecked(self.into_inner().widen()) }
-        }
-    }
-    impl super::Simd4Ext for wide::f32x4 {
-        type Vector2 = f32x2;
-
-        fn xy(self) -> Self::Vector2 {
-            // SAFETY: see `f32x2::widen`; `wide::f32x4` wraps a single `float32x4_t`.
-            unsafe { f32x2(vget_low_f32(self.into())) }
-        }
-    }
-    impl super::Simd4Ext for MaskStorage<wide::i32x4> {
-        type Vector2 = MaskStorage<i32x2>;
-
-        fn xy(self) -> Self::Vector2 {
-            // SAFETY: `wide::i32x4` wraps a single `int32x4_t` (see `f32x2::widen`), and the
-            // low two lanes of an already-canonical mask are themselves canonical (`0` or
-            // `-1`), so the narrowed value is a valid canonical mask.
-            unsafe { MaskStorage::new_unchecked(self.into_inner().xy()) }
-        }
-    }
-    impl super::Simd4Ext for wide::i32x4 {
-        type Vector2 = i32x2;
-        fn xy(self) -> Self::Vector2 { unsafe { i32x2(vget_low_s32(self.into())) } }
-    }
-
     pub(crate) use f32x2 as compute_f32x2;
     pub(crate) use i32x2 as compute_i32x2;
     pub(crate) use u32x2 as compute_u32x2;
 }
 
+use crate::{
+    simd::kernels,
+    utils::{ArithPrimitive, MaskPrimitive},
+};
 #[allow(unused_imports)]
 pub(crate) use _64bit_types::{compute_f32x2, compute_i32x2, compute_u32x2, f32x2, i32x2, u32x2};
 
-impl<const N: usize> Store<MaskStorage<[wide::i32x4; N]>> for [MaskStorage<wide::i32x4>; N] {
+impl<const N: usize> Store<MaskStorage<[i32x4; N]>> for [MaskStorage<i32x4>; N] {
     #[inline(always)]
-    fn store(self) -> MaskStorage<[wide::i32x4; N]> { self.into() }
+    fn store(self) -> MaskStorage<[i32x4; N]> { self.into() }
+}
+impl<const N: usize> Store<MaskStorage<[i64x4; N]>> for [MaskStorage<i64x4>; N] {
+    #[inline(always)]
+    fn store(self) -> MaskStorage<[i64x4; N]> { self.into() }
+}
+impl<const N: usize> Store<MaskStorage<[i64x2; N]>> for [MaskStorage<i64x2>; N] {
+    #[inline(always)]
+    fn store(self) -> MaskStorage<[i64x2; N]> { self.into() }
 }
 
 macro_rules! impl_from {
@@ -1734,6 +1151,526 @@ macro_rules! impl_from {
     };
 }
 impl_from!(f32x2:f32, i32x2:i32, u32x2:u32);
+
+/// Wasm's fused multiply-add, which `wide` does not reach for: it fuses on x86 with FMA and
+/// on aarch64 NEON, and multiplies and adds separately everywhere else.
+///
+/// The names follow the operand type so that a caller holding `$float` can paste one
+/// together. Two of the three widths are one `core::arch::wasm32` instruction each; the
+/// four-lane `f64` is two registers here, so it is the one that needs writing out.
+///
+/// These instructions are *relaxed*: the runtime chooses whether to fuse the multiply and
+/// the add, so one binary can round differently on two runtimes. That is a weaker promise
+/// than the crate makes elsewhere, and it is what asking for `relaxed-simd` means.
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+mod wasm_fma {
+    use super::swizzle;
+    pub(crate) use core::arch::wasm32::{
+        f32x4_relaxed_madd,
+        f32x4_relaxed_nmadd,
+        f64x2_relaxed_madd,
+        f64x2_relaxed_nmadd,
+    };
+    use wide::{bytemuck::cast, f64x2, f64x4};
+
+    #[inline(always)]
+    pub(crate) fn f64x4_relaxed_madd(a: f64x4, b: f64x4, c: f64x4) -> f64x4 {
+        let [a_lo, a_hi] = cast::<f64x4, [f64x2; 2]>(a);
+        let [b_lo, b_hi] = cast::<f64x4, [f64x2; 2]>(b);
+        let [c_lo, c_hi] = cast::<f64x4, [f64x2; 2]>(c);
+        let lo = f64x2::from(f64x2_relaxed_madd(a_lo.into(), b_lo.into(), c_lo.into()));
+        let hi = f64x2::from(f64x2_relaxed_madd(a_hi.into(), b_hi.into(), c_hi.into()));
+        swizzle!(lo, hi, @concat)
+    }
+    #[inline(always)]
+    pub(crate) fn f64x4_relaxed_nmadd(a: f64x4, b: f64x4, c: f64x4) -> f64x4 {
+        let [a_lo, a_hi] = cast::<f64x4, [f64x2; 2]>(a);
+        let [b_lo, b_hi] = cast::<f64x4, [f64x2; 2]>(b);
+        let [c_lo, c_hi] = cast::<f64x4, [f64x2; 2]>(c);
+        let lo = f64x2::from(f64x2_relaxed_nmadd(a_lo.into(), b_lo.into(), c_lo.into()));
+        let hi = f64x2::from(f64x2_relaxed_nmadd(a_hi.into(), b_hi.into(), c_hi.into()));
+        swizzle!(lo, hi, @concat)
+    }
+}
+
+macro_rules! impl_arith_primitive {
+    ($self_ty:ident, scalar=$scalar:ident, mask=$mask:ident, [$f32:ident, $f64:ident, $i32:ident, $i64:ident, $u32:ident, $u64:ident] $(, $N:ident)? { $($item:item)* }) => {
+        impl ArithPrimitive for $self_ty {
+            type Scalar = $scalar;
+            type F32 = $f32;
+            type F64 = $f64;
+            type I32 = $i32;
+            type I64 = $i64;
+            type U32 = $u32;
+            type U64 = $u64;
+            type Mask = $mask;
+            const ZERO_: Self = Self::ZERO;
+            const ONE_: Self = Self::ONE;
+            #[inline(always)]
+            fn filled_(a: Self::Scalar) -> Self { Self::splat(a) }
+            #[inline(always)]
+            fn as_array_(&self) -> &[Self::Scalar] { self.as_array() }
+            #[inline(always)]
+            fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { self.as_mut_array() }
+            #[inline(always)]
+            fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_f32>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_f64>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_i32>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_i64>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_u32>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self {
+                paste::paste!(kernels::cast::[<$self_ty _from_u64>] $(::<$N>)? (a))
+            }
+            #[inline(always)]
+            fn max_(self, other: Self) -> Self { self.max(other) }
+            #[inline(always)]
+            fn min_(self, other: Self) -> Self { self.min(other) }
+            #[inline(always)]
+            fn add_noexcept_(self, rhs: Self) -> Self { core::ops::Add::add(self, rhs) }
+            #[inline(always)]
+            fn sub_noexcept_(self, rhs: Self) -> Self { core::ops::Sub::sub(self, rhs) }
+            #[inline(always)]
+            fn mul_noexcept_(self, rhs: Self) -> Self { core::ops::Mul::mul(self, rhs) }
+            $($item)*
+        }
+    };
+}
+macro_rules! impl_arith_primitive_int {
+    ($self_ty:ident, scalar=$scalar:ident, mask=$int:ident, [$($t:ident),+] $(, $N:ident)? { $($item:item)* }) => {
+        impl_arith_primitive! {
+            $self_ty, scalar=$scalar, mask=$int, [$($t),+] $(, $N)? {
+                #[inline(always)]
+                fn shl_noexcept_(self, rhs: Self) -> Self { self << rhs }
+                #[inline(always)]
+                fn shr_noexcept_(self, rhs: Self) -> Self { self >> rhs }
+                #[inline(always)]
+                fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self << rhs }
+                #[inline(always)]
+                fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self >> rhs }
+                $($item)*
+            }
+        }
+    }
+}
+macro_rules! impl_arith_primitive_all {
+    ($float_scalar:ident: $float:ident, $int_scalar:ident: $int:ident, $uint_scalar:ident: $uint:ident, [$($t:ident),+] $(, $N:ident)?) => {
+        impl_arith_primitive! {
+            $float, scalar=$float_scalar, mask=$int, [$($t),+] $(, $N)? {
+                #[inline(always)]
+                fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_eq` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_eq(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn ne_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_ne` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_ne(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn gt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_gt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_gt(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn lt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_lt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_lt(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn ge_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_ge` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_ge(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn le_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_le` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.simd_le(other).to_bits().cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+                    Self::from_bits(mask.into_inner().cast_unsigned()).select(true_values, false_values)
+                }
+
+                #[inline(always)]
+                fn clamp_noexcept_(mut self, min: Self, max: Self) -> Self {
+                    self = self.simd_lt(min).select(min, self);
+                    self = self.simd_gt(max).select(max, self);
+                    self
+                }
+                #[inline(always)]
+                fn neg_noexcept_(self) -> Self { core::ops::Neg::neg(self) }
+                #[inline(always)]
+                fn abs_noexcept_(self) -> Self { self.abs() }
+                #[inline(always)]
+                fn signum_(self) -> Self { self.signum() }
+                #[inline(always)]
+                fn round_ties_even_(self) -> Self { paste::paste!(kernels::round::[<$float _round_ties_even>](self)) }
+                #[inline(always)]
+                fn is_nan_(self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `is_nan` produces an all-zero or all-one bit
+                        // pattern in every lane. `to_bits` and `cast_signed` preserve those bits.
+                        MaskStorage::new_unchecked(self.is_nan().to_bits().cast_signed())
+                    }
+                }
+                // `wide` fuses these on x86 with FMA and on aarch64 NEON, and multiplies and adds
+                // separately otherwise; on Wasm the relaxed instructions do it in one.
+                #[inline(always)]
+                fn mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_madd>](a.into(), b.into(), c.into())).into()
+                        }
+                        _ => a.mul_add(b, c),
+                    }
+                }
+                #[inline(always)]
+                fn mul_sub_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_madd>](a.into(), b.into(), (-c).into())).into()
+                        }
+                        _ => a.mul_sub(b, c),
+                    }
+                }
+                #[inline(always)]
+                fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self {
+                    cfg_select! {
+                        all(target_arch = "wasm32", target_feature = "relaxed-simd") => {
+                            paste::paste!(wasm_fma::[<$float _relaxed_nmadd>](a.into(), b.into(), c.into())).into()
+                        }
+                        _ => a.mul_neg_add(b, c),
+                    }
+                }
+            }
+        }
+        impl_arith_primitive_int! {
+            $int, scalar=$int_scalar, mask=$int, [$($t),+] $(, $N)? {
+                #[inline(always)]
+                fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_eq` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_eq(other))
+                    }
+                }
+                #[inline(always)]
+                fn gt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_gt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_gt(other))
+                    }
+                }
+                #[inline(always)]
+                fn lt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_lt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_lt(other))
+                    }
+                }
+                #[inline(always)]
+                fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+                    mask.into_inner().select(true_values, false_values)
+                }
+
+                #[inline(always)]
+                fn neg_noexcept_(self) -> Self { core::ops::Neg::neg(self) }
+                #[inline(always)]
+                fn abs_noexcept_(self) -> Self { self.abs() }
+                #[inline(always)]
+                fn signum_(self) -> Self {
+                    // TODO(vector-extra-operations): implement SIMD signum or hide public signum APIs.
+                    todo!()
+                }
+            }
+        }
+        impl_arith_primitive_int! {
+            $uint, scalar=$uint_scalar, mask=$int, [$($t),+] $(, $N)? {
+                #[inline(always)]
+                fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_eq` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_eq(other).cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn gt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_gt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_gt(other).cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn lt_(self, other: Self) -> MaskStorage<Self::Mask> {
+                    unsafe {
+                        // SAFETY: `simd_lt` produces an all-zero or all-one bit pattern in every
+                        // lane, whatever the element type.
+                        MaskStorage::new_unchecked(self.simd_lt(other).cast_signed())
+                    }
+                }
+                #[inline(always)]
+                fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+                    mask.into_inner().cast_unsigned().select(true_values, false_values)
+                }
+            }
+        }
+    }
+}
+
+impl_arith_primitive_all!(f32:f32x4, i32:i32x4, u32:u32x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4], N);
+impl_arith_primitive_all!(f64:f64x4, i64:i64x4, u64:u64x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4], N);
+impl_arith_primitive_all!(f64:f64x2, i64:i64x2, u64:u64x2, [f32x2, f64x2, i32x2, i64x2, u32x2, u64x2]);
+
+// SAFETY: validation and `!` operate lane-wise. With a canonical selector,
+// `select` copies each complete physical lane from one of the canonical inputs.
+unsafe impl MaskPrimitive for i32x4 {
+    fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+    #[inline(always)]
+    fn not(self) -> Self { !self }
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    #[inline(always)]
+    fn select(self, true_values: Self, false_values: Self) -> Self {
+        i32x4::select(self, true_values, false_values)
+    }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 2..=4);
+        if N == 4 {
+            self.any()
+        } else if N == 3 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                    use core::arch::aarch64::*;
+                    let clear_padding_lane: int32x4_t = core::mem::transmute([-1, -1, -1, 0i32]);
+                    let masked = vandq_s32(self.into(), clear_padding_lane);
+                    vminvq_s32(masked) < 0
+                },
+                _ => self.to_bitmask() & 0b0111 != 0,
+            }
+        } else if N == 2 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => self.xy().any::<2>(),
+                _ => self.to_bitmask() & 0b0011 != 0,
+            }
+        } else {
+            unreachable!()
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 2..=4);
+        if N == 4 {
+            self.all()
+        } else if N == 3 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                    use core::arch::aarch64::*;
+                    let set_padding_lane: int32x4_t = core::mem::transmute([0, 0, 0, -1i32]);
+                    let masked = vorrq_s32(self.into(), set_padding_lane);
+                    vmaxvq_s32(masked) < 0
+                },
+                _ => self.to_bitmask() & 0b0111 == 0b0111,
+            }
+        } else if N == 2 {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => self.xy().all::<2>(),
+                _ => self.to_bitmask() & 0b0011 == 0b0011,
+            }
+        } else {
+            unreachable!()
+        }
+    }
+}
+// SAFETY: see `MaskPrimitive for i64x4`; a two-lane register has no padding to mask out.
+unsafe impl MaskPrimitive for i64x2 {
+    fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+    #[inline(always)]
+    fn not(self) -> Self { !self }
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    #[inline(always)]
+    fn select(self, true_values: Self, false_values: Self) -> Self {
+        i64x2::select(self, true_values, false_values)
+    }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        assert_eq!(N, 2);
+        cfg_select! {
+            // NEON has no bitmask instruction. A canonical 64-bit lane is all-zero or all-one, so
+            // it stays canonical read as two 32-bit lanes -- a width NEON does reduce
+            // horizontally, after which the same "least lane is negative" test as the 32-bit
+            // types applies. `core::simd` lowers `Mask<i64, 2>::any` the same way; `wide`'s own
+            // reduction folds the two lanes together instead and costs one instruction more.
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                vminvq_s32(vreinterpretq_s32_s64(self.into())) < 0
+            },
+            _ => self.any(),
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        assert_eq!(N, 2);
+        cfg_select! {
+            // See `any`.
+            all(target_feature = "neon", target_arch = "aarch64") => unsafe {
+                use core::arch::aarch64::*;
+                vmaxvq_s32(vreinterpretq_s32_s64(self.into())) < 0
+            },
+            _ => self.all(),
+        }
+    }
+}
+// SAFETY: validation and `not` operate lane-wise. With a canonical selector,
+// `select` copies each complete physical lane from one of the canonical inputs.
+unsafe impl MaskPrimitive for i64x4 {
+    fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+    #[inline(always)]
+    fn not(self) -> Self { !self }
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    #[inline(always)]
+    fn select(self, true_values: Self, false_values: Self) -> Self {
+        i64x4::select(self, true_values, false_values)
+    }
+    #[inline(always)]
+    fn any<const N: usize>(self) -> bool {
+        // Two lanes reach this type even though `i64x2` exists: a shape of `SealedElement<2, 3>`,
+        // which is a 3x2 row-major or 2x3 column-major matrix, packs its three units of two lanes
+        // into two four-lane ones, and the second of those has only two live lanes.
+        std::assert_matches!(N, 2..=4);
+        // AVX2 has a bitmask instruction spanning all four lanes, so the lanes in use are picked
+        // out of its result. No other target has one: there a four-lane 64-bit value is a pair of
+        // two-lane registers, so the pair is folded into a single register and handed to the
+        // two-lane reduction, or the high register is dropped when it holds nothing but padding.
+        if N == 4 {
+            cfg_select! {
+                target_feature = "avx2" => self.any(),
+                _ => {
+                    // SAFETY: without a 256-bit register `wide::i64x4` is `#[repr(C)] { a: i64x2,
+                    // b: i64x2 }`, which has the same layout as `[i64x2; 2]`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low | high)
+                }
+            }
+        } else if N == 3 {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0111 != 0,
+                // Lane 3 is padding; clearing it stops it from making the answer true.
+                _ => {
+                    // SAFETY: see the four-lane branch.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low | (high & i64x2::new([-1, 0])))
+                }
+            }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0011 != 0,
+                _ => {
+                    // SAFETY: see the four-lane branch.
+                    let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::any::<2>(low)
+                }
+            }
+        }
+    }
+    #[inline(always)]
+    fn all<const N: usize>(self) -> bool {
+        std::assert_matches!(N, 2..=4);
+        // See `any` for how the two target families differ, and for why two lanes arrive here.
+        if N == 4 {
+            cfg_select! {
+                target_feature = "avx2" => self.all(),
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low & high)
+                }
+            }
+        } else if N == 3 {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0111 == 0b0111,
+                // Lane 3 is padding; filling it stops it from making the answer false.
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low & (high | i64x2::new([0, -1])))
+                }
+            }
+        } else {
+            cfg_select! {
+                target_feature = "avx2" => self.to_bitmask() & 0b0011 == 0b0011,
+                _ => {
+                    // SAFETY: see `any`.
+                    let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
+                    MaskPrimitive::all::<2>(low)
+                }
+            }
+        }
+    }
+}
+impl MaskStorage<i32x4> {
+    #[inline(always)]
+    pub(crate) fn unpack(self) -> Self { self }
+}
+impl MaskStorage<i64x2> {
+    #[inline(always)]
+    pub(crate) fn unpack(self) -> Self { self }
+}
+impl MaskStorage<i64x4> {
+    #[inline(always)]
+    pub(crate) fn unpack(self) -> Self { self }
+}
 
 // FINDING (kept for future reference — do not "fix" this without re-reading it):
 //
@@ -1858,8 +1795,11 @@ macro_rules! impl_swizzle_dispatch_unimplemented {
 macro_rules! impl_swizzle_dispatch {
     ($m:tt, $n:tt, $kind:ident[$($i:tt),*]) => {
         impl_swizzle_dispatch_one!(f32, $m, $n, $kind[$($i),*]);
+        impl_swizzle_dispatch_one!(f64, $m, $n, $kind[$($i),*]);
         impl_swizzle_dispatch_one!(i32, $m, $n, $kind[$($i),*]);
+        impl_swizzle_dispatch_one!(i64, $m, $n, $kind[$($i),*]);
         impl_swizzle_dispatch_one!(u32, $m, $n, $kind[$($i),*]);
+        impl_swizzle_dispatch_one!(u64, $m, $n, $kind[$($i),*]);
     };
 }
 

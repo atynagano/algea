@@ -21,32 +21,40 @@ macro_rules! matrix_to_rows {
     }};
 }
 
-trait VectorProduct<const R: usize, const C: usize> {
-    fn product(lhs: [f32; R], rhs: [[f32; C]; R]) -> [f32; C];
-}
-impl<const R: usize, const C: usize> VectorProduct<R, C> for f32
-where
-    f32: MatrixVectorProduct<C, R>,
-{
-    fn product(lhs: [f32; R], rhs: [[f32; C]; R]) -> [f32; C] {
-        let transposed: [[f32; R]; C] =
-            core::array::from_fn(|j| core::array::from_fn(|i| rhs[i][j]));
-        let matrix: Matrix<f32, C, R> = Matrix::from(columns(transposed));
-        (matrix * Vector::from(lhs)).into()
-    }
+trait VectorProduct<const R: usize, const C: usize>: Sized {
+    fn product(lhs: [Self; R], rhs: [[Self; C]; R]) -> [Self; C];
 }
 
-trait OuterProductAdapter<const R: usize, const C: usize> {
-    fn product(lhs: [f32; R], rhs: [f32; C]) -> [[f32; C]; R];
+trait OuterProductAdapter<const R: usize, const C: usize>: Sized {
+    fn product(lhs: [Self; R], rhs: [Self; C]) -> [[Self; C]; R];
 }
-impl<const R: usize, const C: usize> OuterProductAdapter<R, C> for f32
-where
-    f32: OuterProduct<R, C>,
-{
-    fn product(lhs: [f32; R], rhs: [f32; C]) -> [[f32; C]; R] {
-        let matrix: Matrix<f32, 1, C> = Matrix::from(core::array::from_fn(|j| [rhs[j]]));
-        columns((Vector::from(lhs) * matrix).into())
-    }
+
+macro_rules! impl_adapters {
+    ($t:ty) => {
+        impl<const R: usize, const C: usize> VectorProduct<R, C> for $t
+        where
+            $t: MatrixVectorProduct<C, R>,
+        {
+            fn product(lhs: [$t; R], rhs: [[$t; C]; R]) -> [$t; C] {
+                let transposed: [[$t; R]; C] =
+                    core::array::from_fn(|j| core::array::from_fn(|i| rhs[i][j]));
+                let matrix: Matrix<$t, C, R> = Matrix::from(columns(transposed));
+                (matrix * Vector::from(lhs)).into()
+            }
+        }
+
+        impl<const R: usize, const C: usize> OuterProductAdapter<R, C> for $t
+        where
+            $t: OuterProduct<R, C>,
+        {
+            fn product(lhs: [$t; R], rhs: [$t; C]) -> [[$t; C]; R] {
+                let matrix: Matrix<$t, 1, C> = Matrix::from(core::array::from_fn(|j| [rhs[j]]));
+                columns((Vector::from(lhs) * matrix).into())
+            }
+        }
+    };
 }
+impl_adapters!(f32);
+impl_adapters!(f64);
 
 include!("common/matrix_multiplication.rs");

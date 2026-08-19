@@ -113,6 +113,25 @@ integer_vector_ops!(i32_vector_4, i32, 4, [-17, 18, i32::MIN, i32::MAX], [5, -7,
 integer_vector_ops!(u32_vector_1, u32, 1, [u32::MAX], [7], 3, [33]);
 integer_vector_ops!(u32_vector_2, u32, 2, [17, u32::MAX], [5, 7], 3, [0, 32]);
 integer_vector_ops!(u32_vector_3, u32, 3, [17, 18, u32::MAX], [5, 7, 11], 3, [1, 31, 33]);
+// Shift amounts straddle the 64-bit width, since a shift of 64 or more wraps.
+integer_vector_ops!(i64_vector_1, i64, 1, [i64::MIN], [-1], 3, [-1]);
+integer_vector_ops!(i64_vector_2, i64, 2, [-17, i64::MIN], [5, -1], 3, [0, 64]);
+integer_vector_ops!(i64_vector_3, i64, 3, [-17, 18, i64::MIN], [5, -7, -1], 3, [1, 63, 65]);
+integer_vector_ops!(i64_vector_4, i64, 4, [-17, 18, i64::MIN, i64::MAX], [5, -7, -1, 11], 3, [
+    0, 1, 63, 64
+]);
+integer_vector_ops!(u64_vector_1, u64, 1, [u64::MAX], [7], 3, [65]);
+integer_vector_ops!(u64_vector_2, u64, 2, [17, u64::MAX], [5, 7], 3, [0, 64]);
+integer_vector_ops!(u64_vector_3, u64, 3, [17, 18, u64::MAX], [5, 7, 11], 3, [1, 63, 65]);
+integer_vector_ops!(
+    u64_vector_4,
+    u64,
+    4,
+    [17, 18, u64::MAX, 0x8000_0000_0000_0000],
+    [5, 7, 11, 13],
+    3,
+    [0, 1, 63, 64]
+);
 integer_vector_ops!(u32_vector_4, u32, 4, [17, 18, u32::MAX, 0x8000_0000], [5, 7, 11, 13], 3, [
     0, 1, 32, 63
 ]);

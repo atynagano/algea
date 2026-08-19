@@ -30,7 +30,7 @@ cfg_select! {
         use non_simd::kernels;
     }
     any(
-        target_feature = "sse",
+        target_feature = "sse2",
         all(target_feature = "neon", target_arch = "aarch64"),
         target_feature = "simd128",
     ) => {
@@ -177,9 +177,12 @@ pub mod marker {
     /// and the corresponding matrix methods.
     #[expect(private_bounds)]
     pub trait CastFrom<T>: private::Sealed {}
-    impl_cast_from!(f32 from [f32, i32, u32]);
-    impl_cast_from!(i32 from [f32, i32, u32]);
-    impl_cast_from!(u32 from [f32, i32, u32]);
+    impl_cast_from!(f32 from [f32, f64, i32, i64, u32, u64]);
+    impl_cast_from!(f64 from [f32, f64, i32, i64, u32, u64]);
+    impl_cast_from!(i32 from [f32, f64, i32, i64, u32, u64]);
+    impl_cast_from!(i64 from [f32, f64, i32, i64, u32, u64]);
+    impl_cast_from!(u32 from [f32, f64, i32, i64, u32, u64]);
+    impl_cast_from!(u64 from [f32, f64, i32, i64, u32, u64]);
 
     // TODO(extra-type-support): Separate comparison bounds from numeric operations before adding
     // `char`, which is ordered but not numeric.
@@ -255,16 +258,19 @@ pub mod marker {
         /// The unsigned integer type containing this type's representation bits.
         type Bits: Uint;
     }
-    impl_marker_trait!(Signed for [f32, i32]);
-    impl_marker_trait!(Unsigned for [u32]);
+    impl_marker_trait!(Signed for [f32, f64, i32, i64]);
+    impl_marker_trait!(Unsigned for [u32, u64]);
     impl_marker_trait!(Int for [
         i32 { type Signed = Self; type Unsigned = u32; },
+        i64 { type Signed = Self; type Unsigned = u64; },
         u32 { type Signed = i32; type Unsigned = Self; },
+        u64 { type Signed = i64; type Unsigned = Self; },
     ]);
-    impl_marker_trait!(Sint for [i32]);
-    impl_marker_trait!(Uint for [u32]);
+    impl_marker_trait!(Sint for [i32, i64]);
+    impl_marker_trait!(Uint for [u32, u64]);
     impl_marker_trait!(Float for [
-        f32 { type Bits = u32; }
+        f32 { type Bits = u32; },
+        f64 { type Bits = u64; },
     ]);
 
     /// Marks scalar types stored in a directly referenceable form.
@@ -283,7 +289,7 @@ pub mod marker {
     /// [`Index`]: core::ops::Index
     #[expect(private_bounds)]
     pub trait StoredVerbatim: private::Sealed {}
-    impl_marker_trait!(StoredVerbatim for [f32, i32, u32]);
+    impl_marker_trait!(StoredVerbatim for [f32, f64, i32, i64, u32, u64]);
 
     // TODO(api-cleanup): Audit every public trait for a sealed boundary before release.
     // TODO(api-cleanup): Define a consistent rule for requiring `Copy` only when operations need
@@ -298,8 +304,11 @@ pub mod marker {
     // `Float: HasBits<Bits: SimdElement<D>>`; `FloatElement<D>` carries it instead.
     impl_marker_trait!(Lane for [
         f32 { type Mask = i32; },
+        f64 { type Mask = i64; },
         i32 { type Mask = i32; },
+        i64 { type Mask = i64; },
         u32 { type Mask = i32; },
+        u64 { type Mask = i64; },
     ]);
 }
 
@@ -325,8 +334,7 @@ pub mod support {
             $(impl SupportedMatrixElement<$r, $c> for $t {})+
         };
     }
-    // TODO(extra-type-support): consider fixed::FixedU32 after the initial f32/i32/u32 release.
-    impl_element!([f32, i32, u32], [1, 2, 3, 4]);
+    impl_element!([f32, f64, i32, i64, u32, u64], [1, 2, 3, 4]);
 
     macro_rules! impl_element2 {
         ({$($acc:tt)*}, $r:tt,) => {
@@ -500,6 +508,15 @@ pub(crate) mod private {
         + SwizzleDispatch<u32, 2, N>
         + SwizzleDispatch<u32, 3, N>
         + SwizzleDispatch<u32, 4, N>
+        + SwizzleDispatch<f64, 2, N>
+        + SwizzleDispatch<f64, 3, N>
+        + SwizzleDispatch<f64, 4, N>
+        + SwizzleDispatch<i64, 2, N>
+        + SwizzleDispatch<i64, 3, N>
+        + SwizzleDispatch<i64, 4, N>
+        + SwizzleDispatch<u64, 2, N>
+        + SwizzleDispatch<u64, 3, N>
+        + SwizzleDispatch<u64, 4, N>
     {
     }
     impl<T, const N: usize> SwizzleDispatchAny<N> for T where
@@ -512,6 +529,15 @@ pub(crate) mod private {
             + SwizzleDispatch<u32, 2, N>
             + SwizzleDispatch<u32, 3, N>
             + SwizzleDispatch<u32, 4, N>
+            + SwizzleDispatch<f64, 2, N>
+            + SwizzleDispatch<f64, 3, N>
+            + SwizzleDispatch<f64, 4, N>
+            + SwizzleDispatch<i64, 2, N>
+            + SwizzleDispatch<i64, 3, N>
+            + SwizzleDispatch<i64, 4, N>
+            + SwizzleDispatch<u64, 2, N>
+            + SwizzleDispatch<u64, 3, N>
+            + SwizzleDispatch<u64, 4, N>
     {
     }
 
@@ -528,8 +554,11 @@ pub(crate) mod private {
 
     pub(crate) enum Type {
         F32,
+        F64,
         I32,
+        I64,
         U32,
+        U64,
     }
 
     // TODO(trait-consolidation): evaluate making `Sealed` inherit
@@ -551,12 +580,24 @@ pub(crate) mod private {
             const TYPE: Type = Type::F32;
             #[inline(always)] fn sqrt(self) -> Self { self.sqrt() }
         },
+        f64 {
+            const TYPE: Type = Type::F64;
+            #[inline(always)] fn sqrt(self) -> Self { self.sqrt() }
+        },
         i32 {
             const TYPE: Type = Type::I32;
             #[inline(always)] fn sqrt(self) -> Self { self.isqrt() }
         },
+        i64 {
+            const TYPE: Type = Type::I64;
+            #[inline(always)] fn sqrt(self) -> Self { self.isqrt() }
+        },
         u32 {
             const TYPE: Type = Type::U32;
+            #[inline(always)] fn sqrt(self) -> Self { self.isqrt() }
+        },
+        u64 {
+            const TYPE: Type = Type::U64;
             #[inline(always)] fn sqrt(self) -> Self { self.isqrt() }
         },
     ]);
@@ -607,9 +648,21 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
+        fn substantiate_f64(_a: Self::Storage) -> <f64 as SealedElement<M, N>>::Storage
+        where
+            f64: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
         fn substantiate_i32(_a: Self::Storage) -> <i32 as SealedElement<M, N>>::Storage
         where
             i32: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
+        fn substantiate_i64(_a: Self::Storage) -> <i64 as SealedElement<M, N>>::Storage
+        where
+            i64: SealedElement<M, N>,
         {
             unimplemented!()
         }
@@ -619,9 +672,21 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
+        fn substantiate_u64(_a: Self::Storage) -> <u64 as SealedElement<M, N>>::Storage
+        where
+            u64: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
         fn cast_from_f32(_a: <f32 as SealedElement<M, N>>::Storage) -> Self::Storage
         where
             f32: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
+        fn cast_from_f64(_a: <f64 as SealedElement<M, N>>::Storage) -> Self::Storage
+        where
+            f64: SealedElement<M, N>,
         {
             unimplemented!()
         }
@@ -631,9 +696,21 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
+        fn cast_from_i64(_a: <i64 as SealedElement<M, N>>::Storage) -> Self::Storage
+        where
+            i64: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
         fn cast_from_u32(_a: <u32 as SealedElement<M, N>>::Storage) -> Self::Storage
         where
             u32: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
+        fn cast_from_u64(_a: <u64 as SealedElement<M, N>>::Storage) -> Self::Storage
+        where
+            u64: SealedElement<M, N>,
         {
             unimplemented!()
         }
@@ -719,6 +796,14 @@ pub(crate) mod private {
         ) -> MaskStorage<<i32 as SealedElement<M, N>>::Storage>
         where
             i32: SealedElement<M, N>,
+        {
+            unimplemented!()
+        }
+        fn cast_i64(
+            _a: MaskStorage<Self::Storage>,
+        ) -> MaskStorage<<i64 as SealedElement<M, N>>::Storage>
+        where
+            i64: SealedElement<M, N>,
         {
             unimplemented!()
         }
@@ -882,9 +967,9 @@ pub(crate) mod private {
         fn shl(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
         fn shr(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
 
-        fn sum(_a: Self::Storage) -> Self { unimplemented!() }
+        fn reduce_sum(_a: Self::Storage) -> Self { unimplemented!() }
         #[inline(always)]
-        fn dot(a: Self::Storage, b: Self::Storage) -> Self { Self::sum(Self::mul(a, b)) }
+        fn dot(a: Self::Storage, b: Self::Storage) -> Self { Self::reduce_sum(Self::mul(a, b)) }
         #[expect(dead_code)]
         fn cross(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
 

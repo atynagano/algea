@@ -1,7 +1,7 @@
 use super::{Element, private};
 use crate::{
     Vector,
-    kernels::matmul::f32::*,
+    kernels::matmul,
     utils::{Load, Store},
 };
 
@@ -152,93 +152,106 @@ impl<T: OuterProduct<R, C>, const R: usize, const C: usize> core::ops::Mul<Matri
 // matrix-element bound only after every integer and floating-point shape is verified; integer
 // kernels must retain a non-FMA path.
 macro_rules! impl_mat_mul_mat {
-    ([$($a:literal),*]; $b:tt; $c:tt) => {
-        $(impl_mat_mul_mat!(@a $a; $b; $c);)*
+    ($self:ident, [$($a:literal),*]; $b:tt; $c:tt) => {
+        $(impl_mat_mul_mat!(@a $self, $a; $b; $c);)*
     };
-    (@a $a:literal; [$($b:literal),*]; $c:tt) => {
-        $(impl_mat_mul_mat!(@ab $a; $b; $c);)*
+    (@a $self:ident, $a:literal; [$($b:literal),*]; $c:tt) => {
+        $(impl_mat_mul_mat!(@ab $self, $a; $b; $c);)*
     };
-    (@ab $a:literal; $b:literal; [$($c:literal),*]) => {
+    (@ab $self:ident, $a:literal; $b:literal; [$($c:literal),*]) => {
         $(
             paste::paste! {
-                impl_mat_mul_mat!(@c $a, $b, $c, [<matmul $a x $b x $c>]);
+                impl_mat_mul_mat!(@c $self, $a, $b, $c, [<matmul $a x $b x $c>]);
             }
         )*
     };
-    (@c $a:literal, $b:literal, $c:literal, $f:ident) => {
-        impl MatrixProduct<$a, $b, $c> for f32 {
+    (@c $self:ident, $a:literal, $b:literal, $c:literal, $f:ident) => {
+        impl MatrixProduct<$a, $b, $c> for $self {
             #[doc(hidden)]
             #[inline(always)]
             fn __matrix_product(
                 lhs: Matrix<Self, $a, $b>,
                 rhs: Matrix<Self, $b, $c>,
             ) -> Matrix<Self, $a, $c> {
-                Matrix { storage: $f(lhs.storage.load(), rhs.storage.load()).store() }
+                Matrix { storage: matmul::$self::$f(lhs.storage.load(), rhs.storage.load()).store() }
             }
         }
     };
 }
 
-impl_mat_mul_mat!([1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
-
 macro_rules! impl_vec_mul_mat {
-    ($a:literal, $b:literal, $f:ident) => {
-        impl MatrixVectorProduct<$a, $b> for f32 {
+    ($self:ident, $a:literal, $b:literal, $f:ident) => {
+        impl MatrixVectorProduct<$a, $b> for $self {
             #[doc(hidden)]
             #[inline(always)]
             fn __matrix_vector_product(
                 lhs: Matrix<Self, $a, $b>,
                 rhs: Vector<Self, $b>,
             ) -> Vector<Self, $a> {
-                Vector { storage: $f(lhs.storage.load(), rhs.storage.load()).store() }
+                Vector {
+                    storage: matmul::$self::$f(lhs.storage.load(), rhs.storage.load()).store(),
+                }
             }
         }
     };
 }
-impl_vec_mul_mat!(1, 1, matmul1x1x1);
-impl_vec_mul_mat!(1, 2, matmul1x2x1);
-impl_vec_mul_mat!(1, 3, matmul1x3x1);
-impl_vec_mul_mat!(1, 4, matmul1x4x1);
-impl_vec_mul_mat!(2, 1, matmul2x1x1);
-impl_vec_mul_mat!(2, 2, matmul2x2x1);
-impl_vec_mul_mat!(2, 3, matmul2x3x1);
-impl_vec_mul_mat!(2, 4, matmul2x4x1);
-impl_vec_mul_mat!(3, 1, matmul3x1x1);
-impl_vec_mul_mat!(3, 2, matmul3x2x1);
-impl_vec_mul_mat!(3, 3, matmul3x3x1);
-impl_vec_mul_mat!(3, 4, matmul3x4x1);
-impl_vec_mul_mat!(4, 1, matmul4x1x1);
-impl_vec_mul_mat!(4, 2, matmul4x2x1);
-impl_vec_mul_mat!(4, 3, matmul4x3x1);
-impl_vec_mul_mat!(4, 4, matmul4x4x1);
 
 macro_rules! impl_mat_mul_vec {
-    ($a:literal, $b:literal, $f:ident) => {
-        impl OuterProduct<$a, $b> for f32 {
+    ($self:ident, $a:literal, $b:literal, $f:ident) => {
+        impl OuterProduct<$a, $b> for $self {
             #[doc(hidden)]
             #[inline(always)]
             fn __outer_product(
                 lhs: Vector<Self, $a>,
                 rhs: Matrix<Self, 1, $b>,
             ) -> Matrix<Self, $a, $b> {
-                Matrix { storage: $f(lhs.storage.load(), rhs.storage.load()).store() }
+                Matrix {
+                    storage: matmul::$self::$f(lhs.storage.load(), rhs.storage.load()).store(),
+                }
             }
         }
     };
 }
-impl_mat_mul_vec!(1, 1, matmul1x1x1);
-impl_mat_mul_vec!(1, 2, matmul1x1x2);
-impl_mat_mul_vec!(1, 3, matmul1x1x3);
-impl_mat_mul_vec!(1, 4, matmul1x1x4);
-impl_mat_mul_vec!(2, 1, matmul2x1x1);
-impl_mat_mul_vec!(2, 2, matmul2x1x2);
-impl_mat_mul_vec!(2, 3, matmul2x1x3);
-impl_mat_mul_vec!(2, 4, matmul2x1x4);
-impl_mat_mul_vec!(3, 1, matmul3x1x1);
-impl_mat_mul_vec!(3, 2, matmul3x1x2);
-impl_mat_mul_vec!(3, 3, matmul3x1x3);
-impl_mat_mul_vec!(3, 4, matmul3x1x4);
-impl_mat_mul_vec!(4, 1, matmul4x1x1);
-impl_mat_mul_vec!(4, 2, matmul4x1x2);
-impl_mat_mul_vec!(4, 3, matmul4x1x3);
-impl_mat_mul_vec!(4, 4, matmul4x1x4);
+
+macro_rules! impl_mat_mul_float {
+    ($($self:ident),+) => {
+        $(
+            impl_mat_mul_mat!($self, [1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
+
+            impl_vec_mul_mat!($self, 1, 1, matmul1x1x1);
+            impl_vec_mul_mat!($self, 1, 2, matmul1x2x1);
+            impl_vec_mul_mat!($self, 1, 3, matmul1x3x1);
+            impl_vec_mul_mat!($self, 1, 4, matmul1x4x1);
+            impl_vec_mul_mat!($self, 2, 1, matmul2x1x1);
+            impl_vec_mul_mat!($self, 2, 2, matmul2x2x1);
+            impl_vec_mul_mat!($self, 2, 3, matmul2x3x1);
+            impl_vec_mul_mat!($self, 2, 4, matmul2x4x1);
+            impl_vec_mul_mat!($self, 3, 1, matmul3x1x1);
+            impl_vec_mul_mat!($self, 3, 2, matmul3x2x1);
+            impl_vec_mul_mat!($self, 3, 3, matmul3x3x1);
+            impl_vec_mul_mat!($self, 3, 4, matmul3x4x1);
+            impl_vec_mul_mat!($self, 4, 1, matmul4x1x1);
+            impl_vec_mul_mat!($self, 4, 2, matmul4x2x1);
+            impl_vec_mul_mat!($self, 4, 3, matmul4x3x1);
+            impl_vec_mul_mat!($self, 4, 4, matmul4x4x1);
+
+            impl_mat_mul_vec!($self, 1, 1, matmul1x1x1);
+            impl_mat_mul_vec!($self, 1, 2, matmul1x1x2);
+            impl_mat_mul_vec!($self, 1, 3, matmul1x1x3);
+            impl_mat_mul_vec!($self, 1, 4, matmul1x1x4);
+            impl_mat_mul_vec!($self, 2, 1, matmul2x1x1);
+            impl_mat_mul_vec!($self, 2, 2, matmul2x1x2);
+            impl_mat_mul_vec!($self, 2, 3, matmul2x1x3);
+            impl_mat_mul_vec!($self, 2, 4, matmul2x1x4);
+            impl_mat_mul_vec!($self, 3, 1, matmul3x1x1);
+            impl_mat_mul_vec!($self, 3, 2, matmul3x1x2);
+            impl_mat_mul_vec!($self, 3, 3, matmul3x1x3);
+            impl_mat_mul_vec!($self, 3, 4, matmul3x1x4);
+            impl_mat_mul_vec!($self, 4, 1, matmul4x1x1);
+            impl_mat_mul_vec!($self, 4, 2, matmul4x1x2);
+            impl_mat_mul_vec!($self, 4, 3, matmul4x1x3);
+            impl_mat_mul_vec!($self, 4, 4, matmul4x1x4);
+        )+
+    };
+}
+impl_mat_mul_float!(f32, f64);

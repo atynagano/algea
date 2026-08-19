@@ -25,22 +25,34 @@ check_vector_foundation!(u32_vector_1, u32, 1, [11]);
 check_vector_foundation!(u32_vector_2, u32, 2, [11, 22]);
 check_vector_foundation!(u32_vector_3, u32, 3, [11, 22, 33]);
 check_vector_foundation!(u32_vector_4, u32, 4, [11, 22, 33, 44]);
+check_vector_foundation!(i64_vector_1, i64, 1, [-11]);
+check_vector_foundation!(i64_vector_2, i64, 2, [-11, 22]);
+check_vector_foundation!(i64_vector_3, i64, 3, [-11, 22, -33]);
+check_vector_foundation!(i64_vector_4, i64, 4, [-11, 22, -33, 44]);
+check_vector_foundation!(u64_vector_1, u64, 1, [11]);
+check_vector_foundation!(u64_vector_2, u64, 2, [11, 22]);
+check_vector_foundation!(u64_vector_3, u64, 3, [11, 22, 33]);
+check_vector_foundation!(u64_vector_4, u64, 4, [11, 22, 33, 44]);
 
-macro_rules! check_f32_vector_constants {
-    ($name:ident, $d:literal) => {
+macro_rules! check_float_vector_constants {
+    ($name:ident, $t:ty, $d:literal) => {
         #[test]
         fn $name() {
-            assert_eq!(<[f32; $d]>::from(Vector::<f32, $d>::ZERO), [0.0; $d]);
-            assert_eq!(<[f32; $d]>::from(Vector::<f32, $d>::ONE), [1.0; $d]);
-            assert_eq!(<[f32; $d]>::from(Vector::<f32, $d>::splat(7.5)), [7.5; $d]);
+            assert_eq!(<[$t; $d]>::from(Vector::<$t, $d>::ZERO), [0.0; $d]);
+            assert_eq!(<[$t; $d]>::from(Vector::<$t, $d>::ONE), [1.0; $d]);
+            assert_eq!(<[$t; $d]>::from(Vector::<$t, $d>::splat(7.5)), [7.5; $d]);
         }
     };
 }
 
-check_f32_vector_constants!(f32_vector_constants_1, 1);
-check_f32_vector_constants!(f32_vector_constants_2, 2);
-check_f32_vector_constants!(f32_vector_constants_3, 3);
-check_f32_vector_constants!(f32_vector_constants_4, 4);
+check_float_vector_constants!(f32_vector_constants_1, f32, 1);
+check_float_vector_constants!(f32_vector_constants_2, f32, 2);
+check_float_vector_constants!(f32_vector_constants_3, f32, 3);
+check_float_vector_constants!(f32_vector_constants_4, f32, 4);
+check_float_vector_constants!(f64_vector_constants_1, f64, 1);
+check_float_vector_constants!(f64_vector_constants_2, f64, 2);
+check_float_vector_constants!(f64_vector_constants_3, f64, 3);
+check_float_vector_constants!(f64_vector_constants_4, f64, 4);
 
 #[test]
 fn integer_vector_from_array_preserves_lane_order() {
@@ -105,6 +117,8 @@ macro_rules! check_all_matrix_shapes {
 
 check_all_matrix_shapes!(i32, i32_matrix);
 check_all_matrix_shapes!(u32, u32_matrix);
+check_all_matrix_shapes!(i64, i64_matrix);
+check_all_matrix_shapes!(u64, u64_matrix);
 
 #[test]
 fn integer_direction_constants_preserve_lane_order() {
