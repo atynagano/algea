@@ -712,8 +712,8 @@ pub(crate) mod inverse {
 
                 // det = dot(r0, cross(r1, r2))
                 let det = matmul1x3x1(c0, swizzle!(r0, [2, 0, 1, _]));
-                // TODO(f64-scalar-splat): without AVX an `f64x4` is two registers, so divide
-                // as a scalar and splat instead.
+                // One division: both halves of the splat divide the same numerator by the same
+                // denominator, so LLVM keeps only one of them.
                 let r_det = $vec4::splat(1.) / det;
 
                 let [r2, r0, r1] = transpose3x3([c0 * r_det, c1 * r_det, c2 * r_det]);
@@ -748,7 +748,10 @@ pub(crate) mod inverse {
                         - (swizzle!(a[0], a[2], [1, 3, 5, 7])) * (swizzle!(a[1], a[3], [0, 2, 4, 6]))
                 );
 
-                // TODO(f64-scalar-splat): measure splatting before against after, per width.
+                // The determinant ends up in every lane, but folding it by hand does not pay:
+                // LLVM already drops the redundant half where a four-lane `f64` is a pair of
+                // registers, and narrowing by hand only adds an extract and an insert where it is
+                // one register.
                 let det_a = swizzle!(det_sub, [0, 0, 0, 0]);
                 let det_b = swizzle!(det_sub, [1, 1, 1, 1]);
                 let det_c = swizzle!(det_sub, [2, 2, 2, 2]);
@@ -770,7 +773,7 @@ pub(crate) mod inverse {
 
                 let det_m = arith!(det_a * det_d + (arith!(det_b * det_c - tr)));
 
-                let r_det = $vec4::new([1., -1., -1., 1.]) / det_m;
+                let r_det = reciprocal_determinant(det_m);
 
                 let x_ = x_ * r_det;
                 let y_ = y_ * r_det;
@@ -793,6 +796,9 @@ pub(crate) mod inverse {
             *,
         };
         use wide::f32x4;
+
+        #[inline(always)]
+        fn reciprocal_determinant(det_m: f32x4) -> f32x4 { f32x4::new([1., -1., -1., 1.]) / det_m }
         impl_inverse!(f32, f32x4);
     }
     pub(crate) mod f64 {
@@ -801,6 +807,22 @@ pub(crate) mod inverse {
             *,
         };
         use wide::f64x4;
+
+        /// The halves of the numerator differ, so two 128-bit halves each need their own division.
+        /// Dividing two lanes and mirroring them keeps one of the two, at the price of moving the
+        /// halves around. Whether that price is worth paying is the question the note beside the
+        /// 2x3 layout tables in `simd.rs` answers, so the gate is the one from there.
+        #[inline(always)]
+        fn reciprocal_determinant(det_m: f64x4) -> f64x4 {
+            cfg_select! {
+                target_feature = "avx2" => f64x4::new([1., -1., -1., 1.]) / det_m,
+                _ => {
+                    let numerator = f64x4::new([1., -1., -1., 1.]);
+                    let half = swizzle!(numerator, [0, 1]) / swizzle!(det_m, [0, 1]);
+                    swizzle!(half, [0, 1, 1, 0])
+                }
+            }
+        }
         impl_inverse!(f64, f64x4);
     }
 }

@@ -858,6 +858,13 @@ call_layouts!(impl_layouts_u64(u64, u64x2, u64x4));
 // three two-lane units fit better. So a 64-bit element type takes `$vec4 x 2` on AVX2 and
 // `$vec2 x 3` without it, while a 32-bit one always takes `$vec4 x 2`.
 //
+// The gate is AVX2 even though AVX alone already holds a four-lane 64-bit value in one 256-bit
+// register. It asks what pays rather than what exists: an AVX-only part may run a 256-bit operation
+// as two 128-bit passes, and then the single register buys nothing while the wider unit still costs
+// what two narrow ones cost. Every choice in the crate that turns on whether a four-lane 64-bit
+// value counts as one register uses this gate; a choice about whether an instruction exists at all
+// still gates on the feature that introduces it.
+//
 // Every kernel that touches the shape therefore comes in an `_in_vec4` and an `_in_vec2` form, and
 // each element width re-exports the one it uses under the plain name. `RelayoutStorage` below
 // converts between the two arrangements, which is what a cast between element widths needs.
