@@ -6,6 +6,8 @@ Notable changes to this crate are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-20
+
 ### Added
 
 - The `f64`, `i64`, and `u64` element types. Each supports what the 32-bit
@@ -35,5 +37,6 @@ Notable changes to this crate are recorded here. The format follows
   dimensions and matrix row and column counts from one through four, row-major
   and column-major storage, and a backend selected for the target.
 
-[Unreleased]: https://github.com/atynagano/algea/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/atynagano/algea/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/atynagano/algea/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/atynagano/algea/releases/tag/v0.1.0
