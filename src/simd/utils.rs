@@ -1053,6 +1053,7 @@ mod _64bit_types {
         (impl $trait:ident for [$($ty:ty),+] { $f_trait:ident => $f:ident }) => {
             $(impl core::ops::$trait for $ty {
                 type Output = Self;
+                #[inline(always)]
                 fn $f_trait(self, rhs: Self) -> Self::Output { crate::utils::ArithPrimitive::$f(self, rhs) }
             })+
         };
@@ -1062,38 +1063,47 @@ mod _64bit_types {
     impl_ops!(impl Mul for [f32x2, i32x2, u32x2] { mul => mul_noexcept_ });
     impl core::ops::Div for f32x2 {
         type Output = Self;
+        #[inline(always)]
         fn div(self, rhs: Self) -> Self::Output { unsafe { Self(vdiv_f32(self.0, rhs.0)) } }
     }
     impl core::ops::BitAnd for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitand(self, rhs: Self) -> Self::Output { unsafe { Self(vand_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitAnd for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitand(self, rhs: Self) -> Self::Output { unsafe { Self(vand_u32(self.0, rhs.0)) } }
     }
     impl core::ops::BitOr for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitor(self, rhs: Self) -> Self::Output { unsafe { Self(vorr_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitOr for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitor(self, rhs: Self) -> Self::Output { unsafe { Self(vorr_u32(self.0, rhs.0)) } }
     }
     impl core::ops::BitXor for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self::Output { unsafe { Self(veor_s32(self.0, rhs.0)) } }
     }
     impl core::ops::BitXor for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self::Output { unsafe { Self(veor_u32(self.0, rhs.0)) } }
     }
     impl core::ops::Not for i32x2 {
         type Output = Self;
+        #[inline(always)]
         fn not(self) -> Self::Output { unsafe { Self(vmvn_s32(self.0)) } }
     }
     impl core::ops::Not for u32x2 {
         type Output = Self;
+        #[inline(always)]
         fn not(self) -> Self::Output { unsafe { Self(vmvn_u32(self.0)) } }
     }
     impl MaskStorage<i32x2> {
