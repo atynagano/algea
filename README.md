@@ -9,15 +9,14 @@
 Portable, SIMD-accelerated vectors and matrices.
 
 `algea` provides small fixed-size algebra types whose storage and operations
-are selected for the target. It currently supports `f32`, `i32`, and `u32`
-elements, with vector dimensions and matrix row and column counts from one
+are selected for the target. It supports `f32`, `f64`, `i32`, `i64`, `u32`, and
+`u64` elements, with vector dimensions and matrix row and column counts from one
 through four. Both [`row_major`] and [`column_major`] matrix storage are
 supported.
 
 Implementations pursue target-specific performance, so floating-point results
 are not guaranteed to be bit-for-bit identical across targets or target-feature
-sets. Other element widths, including `f64`, `i64`, and `u64`, are not currently
-supported but are planned for the future.
+sets.
 
 ## Stability
 
@@ -65,6 +64,16 @@ let b = Matrix::<f32, 2, 2>::from_columns([[5.0, 7.0], [6.0, 8.0]]);
 assert_eq!((a * b).to_columns(), [[19.0, 43.0], [22.0, 50.0]]);
 ```
 
+Elements convert between types with `cast`:
+
+```rust
+use algea::vector;
+
+let v = vector![1.5_f64, -2.5, 3.5];
+
+assert_eq!(v.cast::<i32>(), vector![1_i32, -2, 3]);
+```
+
 ## Generic code
 
 The [`Element`] family of traits expresses which element types and dimensions
@@ -88,32 +97,96 @@ where
 
 ## Arithmetic semantics
 
-Integer addition, subtraction, multiplication, and negation wrap in both debug
-and release builds. Integer division follows `std::simd::Simd`: division by zero
-panics, while `i32::MIN / -1` wraps to `i32::MIN`. SIMD padding lanes do not
-participate in public operations or panic checks.
+Operations follow `std::simd::Simd`, not the scalar operators, wherever the two
+differ. Integer addition, subtraction, multiplication, and negation therefore
+wrap in both debug and release builds; integer division by zero panics; and
+dividing the most negative value by `-1` wraps back to that value. SIMD padding
+lanes do not participate in public operations or panic checks.
+
+Casting an element follows Rust's `as` conversion, as `std::simd::Simd::cast`
+does, for every pair of supported types. That includes saturation at the
+destination's limits and `NaN` becoming zero when a floating-point value becomes
+an integer, and the sign of zero when a floating-point value changes width. The
+bit pattern of a `NaN` result is not specified.
 
 ## Comparison and alternatives
 
 `algea` focuses on portable, target-selected SIMD implementations of small
 fixed-size vectors and matrices, with explicit row-major and column-major
-storage. Depending on the application, the following crates may be a better
-fit:
+storage. Depending on the application, another crate may be a better fit.
 
-- [`glam`](https://docs.rs/glam) provides concrete vector and matrix types aimed
-  at games and graphics, including SIMD-backed types.
-- [`nalgebra`](https://www.nalgebra.rs) provides broader linear algebra support,
-  including statically and dynamically sized matrices and decompositions.
-- [`cgmath`](https://docs.rs/cgmath) provides generic mathematics for computer
-  graphics.
-- [`euclid`](https://docs.rs/euclid) provides strongly typed geometry with unit
-  markers, particularly for 2D graphics and layout.
-- [`pathfinder_geometry`](https://docs.rs/pathfinder_geometry) provides geometry
-  types used by the Pathfinder rendering ecosystem.
-- [`ultraviolet`](https://docs.rs/ultraviolet) provides graphics-oriented linear
-  algebra with scalar and SIMD-wide types.
-- [`vek`](https://docs.rs/vek) provides generic vectors, matrices, and geometric
-  transforms.
+✅ supported, ⚠️ conditional or partial, see the footnote, ❌ not supported.
+
+| Crate | x86 SIMD | ARM NEON | Wasm SIMD | Generic element | Generic size | Integer vectors | Lane-wise vector `*` | Non-square matrices | Column-major | Row-major | Same results across targets | Three-lane vector | 4x4 matrix |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- | --- |
+| `algea` | ✅ | ✅ | ✅ | ✅ | ⚠️ [^four] | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ [^algeabits] | `Vector<f32, 3>` | `Matrix<f32, 4, 4>` |
+| [`glam` 0.33](https://docs.rs/glam) | ✅ [^glam] | ✅ [^glam] | ✅ [^glam] | ❌ [^concrete] | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ [^glambits] | `Vec3`, `Vec3A` [^glam] | `Mat4` |
+| [`nalgebra` 0.35](https://www.nalgebra.rs) | ⚠️ [^simba] | ⚠️ [^simba] | ⚠️ [^simba] | ✅ | ✅ [^dynamic] | ✅ | ❌ [^nalgmul] | ✅ | ✅ | ❌ | ✅ [^scalar] | `Matrix<f32, U3, U1, ArrayStorage<f32, 3, 1>>` [^alias] | `Matrix<f32, U4, U4, ArrayStorage<f32, 4, 4>>` [^alias] |
+| [`cgmath` 0.18](https://docs.rs/cgmath) | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ [^cgmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3<f32>` | `Matrix4<f32>` |
+| [`euclid` 0.22](https://docs.rs/euclid) | ❌ | ❌ | ❌ | ✅ [^units] | ❌ | ✅ | ❌ [^euclidmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3D<f32, U>` | `Transform3D<f32, S, D>` |
+| [`ultraviolet` 0.9](https://docs.rs/ultraviolet) | ⚠️ [^wide] | ⚠️ [^wide] | ⚠️ [^wide] | ❌ [^concrete] | ❌ | ⚠️ [^uvint] | ✅ | ❌ | ✅ | ❌ | ⚠️ [^wide] | `Vec3` | `Mat4` |
+| [`vek` 0.17](https://docs.rs/vek) | ⚠️ [^nightly] | ⚠️ [^nightly] | ⚠️ [^nightly] | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ [^vek] | ✅ [^scalar] | `Vec3<f32>` | `Mat4<f32>` [^vek] |
+| [`pathfinder_geometry` 0.5](https://docs.rs/pathfinder_geometry) | ✅ | ⚠️ [^pf] | ❌ | ❌ [^concrete] | ❌ | ⚠️ [^pfint] | ✅ | ❌ | ✅ | ❌ | ❌ | `Vector3F` | `Transform4F` |
+
+[^nalgmul]: `*` is the matrix product, and a vector is a one-column matrix, so
+    `v * w` does not compile. The element-wise product is the `component_mul`
+    method.
+
+[^cgmul]: `*` multiplies by a scalar. The element-wise product is
+    `ElementWise::mul_element_wise`.
+
+[^euclidmul]: `*` multiplies by a scalar or applies a transform. The
+    element-wise product is the `component_mul` method.
+
+[^four]: Vector dimensions and matrix row and column counts are generic
+    parameters, but only one through four are implemented.
+
+[^algeabits]: `algea` picks the order of additions and whether to use fused
+    multiply-add per target, so a floating-point result can differ between
+    targets, between target-feature sets of one target, and between versions of
+    the crate. Whether the other crates hold their arithmetic fixed from one
+    version to the next is not stated here either way.
+
+[^glam]: On by default and used for `Vec3A`, `Mat4` and the other 16-byte-aligned
+    types; the `scalar-math` feature turns it off and `core-simd` swaps it for
+    `std::simd`.
+
+[^glambits]: Documented as the default, with the `fast-math` feature as the
+    opt-out that allows platform-specific optimizations.
+
+[^scalar]: Follows from having no target-specific code paths, rather than from a
+    documented guarantee.
+
+[^concrete]: Separate concrete types per element type rather than one generic
+    type.
+
+[^simba]: SIMD comes from `simba`'s SIMD element types, which put several
+    matrices in the lanes of one value rather than the lanes of one matrix. The
+    crate itself has no target-specific code paths.
+
+[^dynamic]: Also `SMatrix<f32, R, C>` for any static size, dimensions beyond
+    four, dynamically sized matrices, and decompositions.
+
+[^alias]: Usually written through the aliases `Vector3<f32>` and `Matrix4<f32>`.
+
+[^units]: Also generic over a unit marker, so lengths in different spaces do not
+    mix.
+
+[^wide]: In the wide types, `Vec3x4` and `Mat4x4` for example. Each of those
+    holds four or eight separate vectors or matrices, one per lane, and follows
+    `wide`'s per-target paths; a lone `Vec3` or `Mat4` is plain scalar code.
+
+[^uvint]: Needs the `int` feature, which is not enabled by default.
+
+[^nightly]: The `repr_simd` feature unlocks SIMD variants of the types, and needs
+    a nightly compiler.
+
+[^vek]: `Mat4<f32>` is the column-major type; the row-major one is
+    `vek::mat::repr_c::row_major::Mat4<f32>`.
+
+[^pf]: Only on a nightly compiler.
+
+[^pfint]: `Vector2I` only.
 
 ## Layout
 
@@ -124,41 +197,47 @@ fit:
 > for serialization, persistent data, FFI, or reinterpreting memory.
 
 When the SIMD backend is selected, vectors have the following layouts. Sizes and
-alignments are in bytes. In both tables, `T` is `f32`, `i32`, or `u32`.
+alignments are in bytes. In both tables, a 32-bit `T` is `f32`, `i32`, or `u32`,
+and a 64-bit `T` is `f64`, `i64`, or `u64`.
 
-| Type | Size | Alignment |
-|---|---:|---:|
-| `Vector<T, 1>` | 4 | 4 |
-| `Vector<T, 2>` | 8 | 8 |
-| `Vector<T, 3>` | 16 | 16 |
-| `Vector<T, 4>` | 16 | 16 |
+| Type | Size (32-bit) | Alignment (32-bit) | Size (64-bit) | Alignment (64-bit) |
+|---|---:|---:|---:|---:|
+| `Vector<T, 1>` | 4 | 4 | 8 | 8 |
+| `Vector<T, 2>` | 8 | 8 | 16 | 16 |
+| `Vector<T, 3>` | 16 | 16 | 32 | 32 |
+| `Vector<T, 4>` | 16 | 16 | 32 | 32 |
 
 SIMD-backed matrices have the following layouts. Each column-major matrix and
 the transposed row-major shape shown beside it use the same storage layout.
 
-| Type | Size | Alignment |
-|---|---:|---:|
-| `column_major::Matrix<T, 1, 1>` / `row_major::Matrix<T, 1, 1>` | 4 | 4 |
-| `column_major::Matrix<T, 2, 1>` / `row_major::Matrix<T, 1, 2>` | 8 | 8 |
-| `column_major::Matrix<T, 3, 1>` / `row_major::Matrix<T, 1, 3>` | 16 | 16 |
-| `column_major::Matrix<T, 4, 1>` / `row_major::Matrix<T, 1, 4>` | 16 | 16 |
-| `column_major::Matrix<T, 1, 2>` / `row_major::Matrix<T, 2, 1>` | 8 | 8 |
-| `column_major::Matrix<T, 2, 2>` / `row_major::Matrix<T, 2, 2>` | 16 | 16 |
-| `column_major::Matrix<T, 3, 2>` / `row_major::Matrix<T, 2, 3>` | 32 | 16 |
-| `column_major::Matrix<T, 4, 2>` / `row_major::Matrix<T, 2, 4>` | 32 | 16 |
-| `column_major::Matrix<T, 1, 3>` / `row_major::Matrix<T, 3, 1>` | 16 | 16 |
-| `column_major::Matrix<T, 2, 3>` / `row_major::Matrix<T, 3, 2>` | 32 | 16 |
-| `column_major::Matrix<T, 3, 3>` / `row_major::Matrix<T, 3, 3>` | 48 | 16 |
-| `column_major::Matrix<T, 4, 3>` / `row_major::Matrix<T, 3, 4>` | 48 | 16 |
-| `column_major::Matrix<T, 1, 4>` / `row_major::Matrix<T, 4, 1>` | 16 | 16 |
-| `column_major::Matrix<T, 2, 4>` / `row_major::Matrix<T, 4, 2>` | 32 | 16 |
-| `column_major::Matrix<T, 3, 4>` / `row_major::Matrix<T, 4, 3>` | 64 | 16 |
-| `column_major::Matrix<T, 4, 4>` / `row_major::Matrix<T, 4, 4>` | 64 | 16 |
+| Type | Size (32-bit) | Alignment (32-bit) | Size (64-bit) | Alignment (64-bit) |
+|---|---:|---:|---:|---:|
+| `column_major::Matrix<T, 1, 1>` / `row_major::Matrix<T, 1, 1>` | 4 | 4 | 8 | 8 |
+| `column_major::Matrix<T, 2, 1>` / `row_major::Matrix<T, 1, 2>` | 8 | 8 | 16 | 16 |
+| `column_major::Matrix<T, 3, 1>` / `row_major::Matrix<T, 1, 3>` | 16 | 16 | 32 | 32 |
+| `column_major::Matrix<T, 4, 1>` / `row_major::Matrix<T, 1, 4>` | 16 | 16 | 32 | 32 |
+| `column_major::Matrix<T, 1, 2>` / `row_major::Matrix<T, 2, 1>` | 8 | 8 | 16 | 16 |
+| `column_major::Matrix<T, 2, 2>` / `row_major::Matrix<T, 2, 2>` | 16 | 16 | 32 | 32 |
+| `column_major::Matrix<T, 3, 2>` / `row_major::Matrix<T, 2, 3>` | 32 | 16 | 64 | 32 |
+| `column_major::Matrix<T, 4, 2>` / `row_major::Matrix<T, 2, 4>` | 32 | 16 | 64 | 32 |
+| `column_major::Matrix<T, 1, 3>` / `row_major::Matrix<T, 3, 1>` | 16 | 16 | 32 | 32 |
+| `column_major::Matrix<T, 2, 3>` / `row_major::Matrix<T, 3, 2>` | 32 | 16 | 48 or 64 | 16 or 32 |
+| `column_major::Matrix<T, 3, 3>` / `row_major::Matrix<T, 3, 3>` | 48 | 16 | 96 | 32 |
+| `column_major::Matrix<T, 4, 3>` / `row_major::Matrix<T, 3, 4>` | 48 | 16 | 96 | 32 |
+| `column_major::Matrix<T, 1, 4>` / `row_major::Matrix<T, 4, 1>` | 16 | 16 | 32 | 32 |
+| `column_major::Matrix<T, 2, 4>` / `row_major::Matrix<T, 4, 2>` | 32 | 16 | 64 | 32 |
+| `column_major::Matrix<T, 3, 4>` / `row_major::Matrix<T, 4, 3>` | 64 | 16 | 128 | 32 |
+| `column_major::Matrix<T, 4, 4>` / `row_major::Matrix<T, 4, 4>` | 64 | 16 | 128 | 32 |
+
+The 2x3 shape is the one whose 64-bit storage depends on the target: three
+two-lane units, 48 bytes with alignment 16, unless a four-lane 64-bit value
+occupies one register, where it is two four-lane units, 64 bytes with
+alignment 32.
 
 When the non-SIMD backend is selected, storage uses scalar arrays instead. A
-`Vector<T, D>` then has size `4 * D` and alignment 4, and a matrix has size
-`4 * R * C` and alignment 4. The SIMD tables above therefore do not describe
-non-SIMD layouts.
+`Vector<T, D>` then has the size of `D` elements and the alignment of one, and a
+matrix has the size of `R * C` elements with the same alignment. The SIMD tables
+above therefore do not describe non-SIMD layouts.
 
 ## Platform requirements
 
