@@ -51,7 +51,10 @@ jobs:
         id: registry
         shell: bash
         run: |
+          # crates.io answers 403 to a request without an identifying user agent, which this step
+          # would then report as an unexpected status.
           status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --user-agent "algea release workflow (https://github.com/${GITHUB_REPOSITORY})" \
             "https://crates.io/api/v1/crates/${{ steps.package.outputs.name }}/${{ steps.package.outputs.version }}")"
 
           case "${status}" in
