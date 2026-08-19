@@ -837,11 +837,10 @@ pub(crate) mod determinant {
         ($scalar:ident, $vec4:ident) => {
             #[inline(always)]
             pub(crate) fn _2x2(a: $vec4) -> $scalar {
-                // TODO(codegen-optimization): review determinant codegen when FMA is unavailable.
                 let [a, b, c, d] = a.to_array();
-                // TODO(det2x2-fma): the two-lane dot product came out faster without FMA,
-                // because gathering the operands into one lane cost more than the multiply.
-                // This is a difference rather than a sum, so re-measure before assuming it.
+                // One fused multiply-add, kept for the accuracy of the fused form. A packed
+                // multiply and horizontal subtract is one instruction shorter on x86 with FMA, and
+                // two longer on NEON, where a scalar multiply addresses its lane directly.
                 arith!(a * d - b * c)
             }
 

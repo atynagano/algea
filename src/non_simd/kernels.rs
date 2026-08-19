@@ -196,7 +196,6 @@ pub(crate) mod determinant {
 
     #[inline(always)]
     pub(crate) fn _2x2<T: Float>([a, b]: [[T; 2]; 2]) -> T {
-        // TODO(codegen-optimization): review determinant codegen when FMA is unavailable.
         arith!((a[0]) * (b[1]) - (a[1]) * (b[0]))
     }
 
