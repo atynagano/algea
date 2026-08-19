@@ -129,83 +129,6 @@ and why:
 Integer results, comparisons, and casts are exact, so none of this applies to
 them.
 
-## Comparison and alternatives
-
-`algea` focuses on portable, target-selected SIMD implementations of small
-fixed-size vectors and matrices, with explicit row-major and column-major
-storage. Depending on the application, another crate may be a better fit.
-
-✅ supported, ⚠️ conditional or partial, see the footnote, ❌ not supported.
-
-| Crate | x86 SIMD | ARM NEON | Wasm SIMD | Generic element | Generic size | Integer vectors | Lane-wise vector `*` | Non-square matrices | Column-major | Row-major | Same results across targets | Three-lane vector | 4x4 matrix |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- | --- |
-| `algea` | ✅ | ✅ | ✅ | ✅ | ⚠️ [^four] | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ [^algeabits] | `Vector<f32, 3>` | `Matrix<f32, 4, 4>` |
-| [`glam` 0.33](https://docs.rs/glam) | ✅ [^glam] | ✅ [^glam] | ✅ [^glam] | ❌ [^concrete] | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ [^glambits] | `Vec3`, `Vec3A` [^glam] | `Mat4` |
-| [`nalgebra` 0.35](https://www.nalgebra.rs) | ⚠️ [^simba] | ⚠️ [^simba] | ⚠️ [^simba] | ✅ | ✅ [^dynamic] | ✅ | ❌ [^nalgmul] | ✅ | ✅ | ❌ | ✅ [^scalar] | `Matrix<f32, U3, U1, ArrayStorage<f32, 3, 1>>` [^alias] | `Matrix<f32, U4, U4, ArrayStorage<f32, 4, 4>>` [^alias] |
-| [`cgmath` 0.18](https://docs.rs/cgmath) | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ [^cgmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3<f32>` | `Matrix4<f32>` |
-| [`euclid` 0.22](https://docs.rs/euclid) | ❌ | ❌ | ❌ | ✅ [^units] | ❌ | ✅ | ❌ [^euclidmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3D<f32, U>` | `Transform3D<f32, S, D>` |
-| [`ultraviolet` 0.9](https://docs.rs/ultraviolet) | ⚠️ [^wide] | ⚠️ [^wide] | ⚠️ [^wide] | ❌ [^concrete] | ❌ | ⚠️ [^uvint] | ✅ | ❌ | ✅ | ❌ | ⚠️ [^wide] | `Vec3` | `Mat4` |
-| [`vek` 0.17](https://docs.rs/vek) | ⚠️ [^nightly] | ⚠️ [^nightly] | ⚠️ [^nightly] | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ [^vek] | ✅ [^scalar] | `Vec3<f32>` | `Mat4<f32>` [^vek] |
-| [`pathfinder_geometry` 0.5](https://docs.rs/pathfinder_geometry) | ✅ | ⚠️ [^pf] | ❌ | ❌ [^concrete] | ❌ | ⚠️ [^pfint] | ✅ | ❌ | ✅ | ❌ | ❌ | `Vector3F` | `Transform4F` |
-
-[^nalgmul]: `*` is the matrix product, and a vector is a one-column matrix, so
-    `v * w` does not compile. The element-wise product is the `component_mul`
-    method.
-
-[^cgmul]: `*` multiplies by a scalar. The element-wise product is
-    `ElementWise::mul_element_wise`.
-
-[^euclidmul]: `*` multiplies by a scalar or applies a transform. The
-    element-wise product is the `component_mul` method.
-
-[^four]: Vector dimensions and matrix row and column counts are generic
-    parameters, but only one through four are implemented.
-
-[^algeabits]: See [Floating-point reproducibility](#floating-point-reproducibility)
-    for what varies and why. Whether the other crates hold their arithmetic fixed
-    from one version to the next is not stated here either way.
-
-[^glam]: On by default and used for `Vec3A`, `Mat4` and the other 16-byte-aligned
-    types; the `scalar-math` feature turns it off and `core-simd` swaps it for
-    `std::simd`.
-
-[^glambits]: Documented as the default, with the `fast-math` feature as the
-    opt-out that allows platform-specific optimizations.
-
-[^scalar]: Follows from having no target-specific code paths, rather than from a
-    documented guarantee.
-
-[^concrete]: Separate concrete types per element type rather than one generic
-    type.
-
-[^simba]: SIMD comes from `simba`'s SIMD element types, which put several
-    matrices in the lanes of one value rather than the lanes of one matrix. The
-    crate itself has no target-specific code paths.
-
-[^dynamic]: Also `SMatrix<f32, R, C>` for any static size, dimensions beyond
-    four, dynamically sized matrices, and decompositions.
-
-[^alias]: Usually written through the aliases `Vector3<f32>` and `Matrix4<f32>`.
-
-[^units]: Also generic over a unit marker, so lengths in different spaces do not
-    mix.
-
-[^wide]: In the wide types, `Vec3x4` and `Mat4x4` for example. Each of those
-    holds four or eight separate vectors or matrices, one per lane, and follows
-    `wide`'s per-target paths; a lone `Vec3` or `Mat4` is plain scalar code.
-
-[^uvint]: Needs the `int` feature, which is not enabled by default.
-
-[^nightly]: The `repr_simd` feature unlocks SIMD variants of the types, and needs
-    a nightly compiler.
-
-[^vek]: `Mat4<f32>` is the column-major type; the row-major one is
-    `vek::mat::repr_c::row_major::Mat4<f32>`.
-
-[^pf]: Only on a nightly compiler.
-
-[^pfint]: `Vector2I` only.
-
 ## Layout
 
 > **Note:** The layouts documented below describe the current implementation
@@ -257,10 +180,85 @@ When the non-SIMD backend is selected, storage uses scalar arrays instead. A
 matrix has the size of `R * C` elements with the same alignment. The SIMD tables
 above therefore do not describe non-SIMD layouts.
 
-## Platform requirements
+## Comparison and alternatives
 
-The current prototype depends on the `wide` SIMD backend and the Rust standard
-library. It is not a `no_std` crate.
+`algea` focuses on portable, target-selected SIMD implementations of small
+fixed-size vectors and matrices, with explicit row-major and column-major
+storage. Depending on the application, another crate may be a better fit.
+
+✅ supported, ⚠️ conditional or partial, see the footnote, ❌ not supported.
+
+| Crate | x86 SIMD | ARM NEON | Wasm SIMD | `no_std` | Generic element | Generic size | Integer vectors | Lane-wise vector `*` | Non-square matrices | Column-major | Row-major | Same results across targets | Three-lane vector | 4x4 matrix |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- | --- |
+| `algea` | ✅ | ✅ | ✅ | ❌ | ✅ | ⚠️ [^four] | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ [^algeabits] | `Vector<f32, 3>` | `Matrix<f32, 4, 4>` |
+| [`glam` 0.33](https://docs.rs/glam) | ✅ [^glam] | ✅ [^glam] | ✅ [^glam] | ✅ [^nostd] | ❌ [^concrete] | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ [^glambits] | `Vec3`, `Vec3A` [^glam] | `Mat4` |
+| [`nalgebra` 0.35](https://www.nalgebra.rs) | ⚠️ [^simba] | ⚠️ [^simba] | ⚠️ [^simba] | ✅ [^nostd] | ✅ | ✅ [^dynamic] | ✅ | ❌ [^nalgmul] | ✅ | ✅ | ❌ | ✅ [^scalar] | `Matrix<f32, U3, U1, ArrayStorage<f32, 3, 1>>` [^alias] | `Matrix<f32, U4, U4, ArrayStorage<f32, 4, 4>>` [^alias] |
+| [`cgmath` 0.18](https://docs.rs/cgmath) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ [^cgmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3<f32>` | `Matrix4<f32>` |
+| [`euclid` 0.22](https://docs.rs/euclid) | ❌ | ❌ | ❌ | ✅ | ✅ [^units] | ❌ | ✅ | ❌ [^euclidmul] | ❌ | ✅ | ❌ | ✅ [^scalar] | `Vector3D<f32, U>` | `Transform3D<f32, S, D>` |
+| [`ultraviolet` 0.9](https://docs.rs/ultraviolet) | ⚠️ [^wide] | ⚠️ [^wide] | ⚠️ [^wide] | ❌ | ❌ [^concrete] | ❌ | ⚠️ [^uvint] | ✅ | ❌ | ✅ | ❌ | ⚠️ [^wide] | `Vec3` | `Mat4` |
+| [`vek` 0.17](https://docs.rs/vek) | ⚠️ [^nightly] | ⚠️ [^nightly] | ⚠️ [^nightly] | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ [^vek] | ✅ [^scalar] | `Vec3<f32>` | `Mat4<f32>` [^vek] |
+| [`pathfinder_geometry` 0.5](https://docs.rs/pathfinder_geometry) | ✅ | ⚠️ [^pf] | ❌ | ❌ | ❌ [^concrete] | ❌ | ⚠️ [^pfint] | ✅ | ❌ | ✅ | ❌ | ❌ | `Vector3F` | `Transform4F` |
+
+[^nalgmul]: `*` is the matrix product, and a vector is a one-column matrix, so
+    `v * w` does not compile. The element-wise product is the `component_mul`
+    method.
+
+[^cgmul]: `*` multiplies by a scalar. The element-wise product is
+    `ElementWise::mul_element_wise`.
+
+[^euclidmul]: `*` multiplies by a scalar or applies a transform. The
+    element-wise product is the `component_mul` method.
+
+[^nostd]: With `default-features = false`, and a `libm` feature for the
+    floating-point functions.
+
+[^four]: Vector dimensions and matrix row and column counts are generic
+    parameters, but only one through four are implemented.
+
+[^algeabits]: See [Floating-point reproducibility](#floating-point-reproducibility)
+    for what varies and why. Whether the other crates hold their arithmetic fixed
+    from one version to the next is not stated here either way.
+
+[^glam]: On by default and used for `Vec3A`, `Mat4` and the other 16-byte-aligned
+    types; the `scalar-math` feature turns it off and `core-simd` swaps it for
+    `std::simd`.
+
+[^glambits]: Documented as the default, with the `fast-math` feature as the
+    opt-out that allows platform-specific optimizations.
+
+[^scalar]: Follows from having no target-specific code paths, rather than from a
+    documented guarantee.
+
+[^concrete]: Separate concrete types per element type rather than one generic
+    type.
+
+[^simba]: SIMD comes from `simba`'s SIMD element types, which put several
+    matrices in the lanes of one value rather than the lanes of one matrix. The
+    crate itself has no target-specific code paths.
+
+[^dynamic]: Also `SMatrix<f32, R, C>` for any static size, dimensions beyond
+    four, dynamically sized matrices, and decompositions.
+
+[^alias]: Usually written through the aliases `Vector3<f32>` and `Matrix4<f32>`.
+
+[^units]: Also generic over a unit marker, so lengths in different spaces do not
+    mix.
+
+[^wide]: In the wide types, `Vec3x4` and `Mat4x4` for example. Each of those
+    holds four or eight separate vectors or matrices, one per lane, and follows
+    `wide`'s per-target paths; a lone `Vec3` or `Mat4` is plain scalar code.
+
+[^uvint]: Needs the `int` feature, which is not enabled by default.
+
+[^nightly]: The `repr_simd` feature unlocks SIMD variants of the types, and needs
+    a nightly compiler.
+
+[^vek]: `Mat4<f32>` is the column-major type; the row-major one is
+    `vek::mat::repr_c::row_major::Mat4<f32>`.
+
+[^pf]: Only on a nightly compiler.
+
+[^pfint]: `Vector2I` only.
 
 ## License
 
