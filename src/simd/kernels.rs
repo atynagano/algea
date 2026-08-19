@@ -882,7 +882,7 @@ pub(crate) mod determinant {
 
                 let d_adj_c = mat2_adj_mul(d00, c00);
                 let a_adj_b = mat2_adj_mul(a00, b00);
-                // TODO(f64-scalar-splat): as above.
+                // Folding this by hand does not pay either; see the note in `inverse::_4x4`.
                 let det_a = swizzle!(det_sub, [0, 0, 0, 0]);
                 let det_b = swizzle!(det_sub, [1, 1, 1, 1]);
                 let det_c = swizzle!(det_sub, [2, 2, 2, 2]);
