@@ -914,13 +914,17 @@ pub(crate) mod private {
             unimplemented!()
         }
 
-        fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage;
-        fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage;
+        // Defaulted like the other lane-wise operations: `src/api.rs` exposes these on `Vector`
+        // alone, so the backends implement them for a one-column shape only.
+        fn each_max(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
+        fn each_min(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
         fn each_clamp<F: Fmt>(
-            a: Self::Storage,
-            min: Self::Storage,
-            max: Self::Storage,
-        ) -> Self::Storage;
+            _a: Self::Storage,
+            _min: Self::Storage,
+            _max: Self::Storage,
+        ) -> Self::Storage {
+            unimplemented!()
+        }
         fn eq(a: Self::Storage, b: Self::Storage) -> bool;
         fn ne(a: Self::Storage, b: Self::Storage) -> bool;
         fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage;
