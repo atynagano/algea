@@ -475,7 +475,7 @@ pub mod support {
 pub(crate) mod private {
     use crate::{
         marker::{Float, Lane, StoredVerbatim},
-        utils::MaskStorage,
+        utils::{Load, MaskStorage, Store},
     };
 
     pub(crate) trait Fmt {
@@ -604,7 +604,8 @@ pub(crate) mod private {
 
     // M, N describe the row and column dimensions of the private column-major storage.
     pub(crate) trait SealedElement<const M: usize, const N: usize>: Sealed {
-        type Storage: Copy;
+        type Storage: Copy
+            + Load<Output: crate::utils::ArithPrimitive<Scalar = Self> + Store<Self::Storage>>;
 
         const ZERO: Self::Storage;
         const ONE: Self::Storage;
@@ -641,7 +642,13 @@ pub(crate) mod private {
         fn from_vecs(array: [crate::Vector<Self, M>; N]) -> <Self as SealedElement<M, N>>::Storage
         where
             Self: crate::Element<M>;
-        fn filled(value: Self) -> Self::Storage;
+        #[inline(always)]
+        fn filled(value: Self) -> Self::Storage {
+            // Named rather than inferred: `filled_` takes only the scalar, so nothing else
+            // pins which type produces the storage.
+            <<Self::Storage as Load>::Output as crate::utils::ArithPrimitive>::filled_(value)
+                .store()
+        }
         fn substantiate_f32(_a: Self::Storage) -> <f32 as SealedElement<M, N>>::Storage
         where
             f32: SealedElement<M, N>,
@@ -916,8 +923,14 @@ pub(crate) mod private {
 
         // Defaulted like the other lane-wise operations: `src/api.rs` exposes these on `Vector`
         // alone, so the backends implement them for a one-column shape only.
-        fn each_max(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn each_min(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
+        #[inline(always)]
+        fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::max_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::min_(a.load(), b.load()).store()
+        }
         fn each_clamp<F: Fmt>(
             _a: Self::Storage,
             _min: Self::Storage,
@@ -927,12 +940,35 @@ pub(crate) mod private {
         }
         fn eq(a: Self::Storage, b: Self::Storage) -> bool;
         fn ne(a: Self::Storage, b: Self::Storage) -> bool;
-        fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage;
-        fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage;
-        fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage;
+        // The lane-wise operations below have one body for every backend and every shape: the
+        // unit's operation applied to each unit, which `ArithPrimitive for [T; N]` in `utils.rs`
+        // expresses once. They stay named here rather than moving to the call sites so that the
+        // arithmetic family reads as one -- `div` and `rem` still need bodies of their own for the
+        // zero check -- and so that a shape or a backend can override one without the operation
+        // having to move back onto the trait first.
+        //
+        // `#[inline(always)]` is load-bearing, not decoration. A matrix multiplied by a scalar has
+        // to fold the scalar broadcast into the multiply, and the two-lane widths are eight-byte
+        // aggregates that Rust passes in a general-purpose register: leaving a call boundary in
+        // between costs the broadcast its `vbroadcastss`.
+        #[inline(always)]
+        fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::add_noexcept_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::sub_noexcept_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::mul_noexcept_(a.load(), b.load()).store()
+        }
         fn div(_a: Self::Storage, _b: Self::Storage) -> Self::Storage;
         // TODO(integer-vector): separate sqrt and isqrt semantics in public traits.
-        fn sqrt(_a: Self::Storage) -> Self::Storage { unimplemented!() }
+        #[inline(always)]
+        fn sqrt(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::sqrt_(a.load()).store()
+        }
         fn transpose(
             a: <Self as SealedElement<M, N>>::Storage,
         ) -> <Self as SealedElement<N, M>>::Storage
@@ -952,24 +988,69 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
-        fn floor(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn ceil(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn round(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn round_ties_even(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn trunc(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn fract(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn neg(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn abs(_a: Self::Storage) -> Self::Storage { unimplemented!() }
+        #[inline(always)]
+        fn floor(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::floor_(a.load()).store()
+        }
+        #[inline(always)]
+        fn ceil(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::ceil_(a.load()).store()
+        }
+        #[inline(always)]
+        fn round(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::round_(a.load()).store()
+        }
+        #[inline(always)]
+        fn round_ties_even(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::round_ties_even_(a.load()).store()
+        }
+        #[inline(always)]
+        fn trunc(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::trunc_(a.load()).store()
+        }
+        #[inline(always)]
+        fn fract(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::fract_(a.load()).store()
+        }
+        #[inline(always)]
+        fn neg(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::neg_noexcept_(a.load()).store()
+        }
+        #[inline(always)]
+        fn abs(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::abs_noexcept_(a.load()).store()
+        }
+        // No public operation reaches this yet; the vocabulary is here for when one does.
         #[expect(dead_code)]
-        fn signum(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-
+        #[inline(always)]
+        fn signum(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::signum_(a.load()).store()
+        }
         fn rem(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn not(_a: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn bitand(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn bitor(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn bitxor(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn shl(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
-        fn shr(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
+        #[inline(always)]
+        fn not(a: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::not_(a.load()).store()
+        }
+        #[inline(always)]
+        fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::bitand_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::bitor_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::bitxor_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::shl_noexcept_(a.load(), b.load()).store()
+        }
+        #[inline(always)]
+        fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            crate::utils::ArithPrimitive::shr_noexcept_(a.load(), b.load()).store()
+        }
 
         fn reduce_sum(_a: Self::Storage) -> Self { unimplemented!() }
         #[inline(always)]
