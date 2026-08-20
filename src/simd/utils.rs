@@ -1672,150 +1672,59 @@ impl MaskStorage<i64x4> {
     pub(crate) fn unpack(self) -> Self { self }
 }
 
-// FINDING (kept for future reference — do not "fix" this without re-reading it):
+// One impl per index list, and nothing else.
 //
-// A source of shape `SealedElement<M, 1>` stores exactly `M` meaningful lanes; reading index `M`
-// or beyond means reading a padding lane with no defined value. So the constraint we actually
-// want is "`IndicesN<I0, ...>` must not contain a value >= M" for whichever `M` a given
-// `SwizzleDispatch<T, M, N>` impl targets — but that constraint cannot be derived from (or
-// even expressed compatibly with) `Dimension<D>: __internal::AtLeast<b>`, the constraint that
-// picks which `Vector<T, D>` swizzle accessors exist (`src/swizzle.rs`). Those accessors are
-// generic over `D` — one function body serves every `D` satisfying `AtLeast<b>` — and calls
-// `SealedElement::swizzle2`/`3`/`4` with `M == D` still generic at that point. Both narrowing
-// `SwizzleDispatchAny<N>`'s bound to be `M`-specific and simply not implementing out-of-range
-// `SwizzleDispatch<T, M, N>` impls were tried and fail to compile for that reason: a
-// `D`-generic call site cannot resolve a bound that depends on a concrete `M`, and
-// `SwizzleDispatchAny<N>` must keep bundling *all* `M` in {2, 3, 4} unconditionally so the
-// `D`-generic accessors type-check regardless of which concrete `M` eventually gets used.
+// The index list has to be enumerated: `_mm_shuffle_ps` and its counterparts take their control
+// byte as a const-generic argument computed from the indices, and stable Rust cannot pass a
+// computed const-generic argument, so the indices must still be literals where `swizzle!` is
+// expanded. The element type and the source width are a different matter — `dispatch` mentions
+// neither, it loads whatever compute vector the storage holds and stores the result back — so they
+// are generic here. That is 336 impls rather than 336 x 3 widths x 6 element types.
 //
-// A real fix would mean generating dimension-*concrete* swizzle accessors instead (dropping the
-// `AtLeast`-based, `D`-generic accessor design in `src/swizzle.rs`/`build.rs`), which is a larger,
-// out-of-scope redesign. So instead, every index combination is implemented (to satisfy
-// `SwizzleDispatchAny<N>`), but out-of-range combinations get `unimplemented!()` bodies below
-// instead of performing a swizzle. `build.rs`'s `AtLeast`/`required_index` machinery guarantees
-// these bodies are never reached from public API: an out-of-range index for a given `M` is never
-// generated as a call against that `M`.
-// The actual swizzle, for an index combination already known to stay in range for `$m`.
-macro_rules! impl_swizzle_dispatch_valid {
-    ($t:ty, $m:tt, $n:tt, Indices2[$i0:tt, $i1:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices2<$i0, $i1> {
-            #[inline(always)]
-            fn dispatch(
-                v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                swizzle!(v.load(), [$i0, $i1]).store()
-            }
-        }
-    };
-    ($t:ty, $m:tt, $n:tt, Indices3[$i0:tt, $i1:tt, $i2:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices3<$i0, $i1, $i2> {
-            #[inline(always)]
-            fn dispatch(
-                v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                swizzle!(v.load(), [$i0, $i1, $i2]).store()
-            }
-        }
-    };
-    ($t:ty, $m:tt, $n:tt, Indices4[$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices4<$i0, $i1, $i2, $i3> {
-            #[inline(always)]
-            fn dispatch(
-                v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                swizzle!(v.load(), [$i0, $i1, $i2, $i3]).store()
-            }
-        }
-    };
-}
-
-// Walks the index list looking for one that reads a padding lane for `$m` (see the FINDING
-// comment above): index 2 or 3 for `$m == 2`, index 3 for `$m == 3`. `$m == 4` has no padding
-// lane, so no arm ever matches it and the scan always reaches the end. `[$($orig),*]` is carried
-// through unchanged so the final dispatch (real or unimplemented) still has the full index list.
-macro_rules! impl_swizzle_dispatch_one {
-    ($t:ty, $m:tt, $n:tt, $kind:ident[$($i:tt),*]) => {
-        impl_swizzle_dispatch_one!(@scan $t, $m, $n, $kind[$($i),*]; [$($i),*]);
-    };
-    (@scan $t:ty, 2, $n:tt, $kind:ident[$($orig:tt),*]; [2 $(, $rest:tt)*]) => {
-        impl_swizzle_dispatch_unimplemented!($t, 2, $n, $kind[$($orig),*]);
-    };
-    (@scan $t:ty, 2, $n:tt, $kind:ident[$($orig:tt),*]; [3 $(, $rest:tt)*]) => {
-        impl_swizzle_dispatch_unimplemented!($t, 2, $n, $kind[$($orig),*]);
-    };
-    (@scan $t:ty, 3, $n:tt, $kind:ident[$($orig:tt),*]; [3 $(, $rest:tt)*]) => {
-        impl_swizzle_dispatch_unimplemented!($t, 3, $n, $kind[$($orig),*]);
-    };
-    (@scan $t:ty, $m:tt, $n:tt, $kind:ident[$($orig:tt),*]; [$i:tt $(, $rest:tt)*]) => {
-        impl_swizzle_dispatch_one!(@scan $t, $m, $n, $kind[$($orig),*]; [$($rest),*]);
-    };
-    (@scan $t:ty, $m:tt, $n:tt, $kind:ident[$($orig:tt),*]; []) => {
-        impl_swizzle_dispatch_valid!($t, $m, $n, $kind[$($orig),*]);
-    };
-}
-
-// Emits a `dispatch` that panics: `$i0`/etc. select a lane that is padding (undefined) for a
-// source of shape `M`. Unreachable through the public API (see the FINDING comment above), so no
-// message is attached.
-macro_rules! impl_swizzle_dispatch_unimplemented {
-    ($t:ty, $m:tt, $n:tt, Indices2[$i0:tt, $i1:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices2<$i0, $i1> {
-            #[inline(always)]
-            fn dispatch(
-                _v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                unimplemented!()
-            }
-        }
-    };
-    ($t:ty, $m:tt, $n:tt, Indices3[$i0:tt, $i1:tt, $i2:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices3<$i0, $i1, $i2> {
-            #[inline(always)]
-            fn dispatch(
-                _v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                unimplemented!()
-            }
-        }
-    };
-    ($t:ty, $m:tt, $n:tt, Indices4[$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
-        impl private::SwizzleDispatch<$t, $m, $n> for private::Indices4<$i0, $i1, $i2, $i3> {
-            #[inline(always)]
-            fn dispatch(
-                _v: <$t as private::SealedElement<$m, 1>>::Storage,
-            ) -> <$t as private::SealedElement<$n, 1>>::Storage {
-                unimplemented!()
-            }
-        }
-    };
-}
-
-// `f32`, `i32`, and `u32` share the exact same dispatch body, so every index combination is
-// implemented for all three element types through this one macro.
+// The bounds are the ones the body needs and they are discharged where `SealedElement::swizzle2`,
+// `swizzle3` and `swizzle4` call this, with the element type and the source width both concrete.
+// None of them reaches the element trait itself, which is what keeps the SIMD storage traits out
+// of the backend-independent API.
+//
+// An index list that names a lane a source of width `M` does not have needs no special case: this
+// impl is only instantiated when it is called, and `build.rs` pairs each accessor with the smallest
+// `M` that has every lane it reads, so such a call is never generated. The previous shape needed
+// `unimplemented!()` bodies here because it named `M` in the impl header and so had to write one
+// out for every combination whether it could be called or not.
 macro_rules! impl_swizzle_dispatch {
-    ($m:tt, $n:tt, $kind:ident[$($i:tt),*]) => {
-        impl_swizzle_dispatch_one!(f32, $m, $n, $kind[$($i),*]);
-        impl_swizzle_dispatch_one!(f64, $m, $n, $kind[$($i),*]);
-        impl_swizzle_dispatch_one!(i32, $m, $n, $kind[$($i),*]);
-        impl_swizzle_dispatch_one!(i64, $m, $n, $kind[$($i),*]);
-        impl_swizzle_dispatch_one!(u32, $m, $n, $kind[$($i),*]);
-        impl_swizzle_dispatch_one!(u64, $m, $n, $kind[$($i),*]);
+    (Indices2[$i0:tt, $i1:tt]) => {
+        impl_swizzle_dispatch!(@impl 2, Indices2[$i0, $i1], Vector2, [$i0, $i1]);
+    };
+    (Indices3[$i0:tt, $i1:tt, $i2:tt]) => {
+        impl_swizzle_dispatch!(@impl 3, Indices3[$i0, $i1, $i2], Vector4, [$i0, $i1, $i2]);
+    };
+    (Indices4[$i0:tt, $i1:tt, $i2:tt, $i3:tt]) => {
+        impl_swizzle_dispatch!(@impl 4, Indices4[$i0, $i1, $i2, $i3], Vector4, [$i0, $i1, $i2, $i3]);
+    };
+    (@impl $n:tt, $kind:ident[$($parameter:tt),+], $result:ident, [$($index:tt),+]) => {
+        impl<T, const M: usize> private::SwizzleDispatch<T, M, $n> for private::$kind<$($parameter),+>
+        where
+            T: private::SealedElement<M, 1> + private::SealedElement<$n, 1>,
+            <T as private::SealedElement<M, 1>>::Storage: Load,
+            <<T as private::SealedElement<M, 1>>::Storage as Load>::Output: Swizzle,
+            <<<T as private::SealedElement<M, 1>>::Storage as Load>::Output as ComputeVector>::$result:
+                Store<<T as private::SealedElement<$n, 1>>::Storage>,
+        {
+            #[inline(always)]
+            fn dispatch(
+                v: <T as private::SealedElement<M, 1>>::Storage,
+            ) -> <T as private::SealedElement<$n, 1>>::Storage {
+                swizzle!(v.load(), [$($index),+]).store()
+            }
+        }
     };
 }
 
 macro_rules! impl_swizzle2_for_i0 {
-    ($i0:tt; $($i1:tt),*) => {$(
-        impl_swizzle_dispatch!(2, 2, Indices2[$i0, $i1]);
-        impl_swizzle_dispatch!(3, 2, Indices2[$i0, $i1]);
-        impl_swizzle_dispatch!(4, 2, Indices2[$i0, $i1]);
-    )*};
+    ($i0:tt; $($i1:tt),*) => {$(impl_swizzle_dispatch!(Indices2[$i0, $i1]);)*};
 }
 macro_rules! impl_swizzle3_for_i0_i1 {
-    ($i0:tt, $i1:tt; $($i2:tt),*) => {$(
-        impl_swizzle_dispatch!(2, 3, Indices3[$i0, $i1, $i2]);
-        impl_swizzle_dispatch!(3, 3, Indices3[$i0, $i1, $i2]);
-        impl_swizzle_dispatch!(4, 3, Indices3[$i0, $i1, $i2]);
-    )*};
+    ($i0:tt, $i1:tt; $($i2:tt),*) => {$(impl_swizzle_dispatch!(Indices3[$i0, $i1, $i2]);)*};
 }
 macro_rules! impl_swizzle3_for_i0 {
     ($i0:tt; $($i1:tt),*) => {
@@ -1823,11 +1732,9 @@ macro_rules! impl_swizzle3_for_i0 {
     };
 }
 macro_rules! impl_swizzle4_for_i0_i1_i2 {
-    ($i0:tt, $i1:tt, $i2:tt; $($i3:tt),*) => {$(
-        impl_swizzle_dispatch!(2, 4, Indices4[$i0, $i1, $i2, $i3]);
-        impl_swizzle_dispatch!(3, 4, Indices4[$i0, $i1, $i2, $i3]);
-        impl_swizzle_dispatch!(4, 4, Indices4[$i0, $i1, $i2, $i3]);
-    )*};
+    ($i0:tt, $i1:tt, $i2:tt; $($i3:tt),*) => {
+        $(impl_swizzle_dispatch!(Indices4[$i0, $i1, $i2, $i3]);)*
+    };
 }
 macro_rules! impl_swizzle4_for_i0_i1 {
     ($i0:tt, $i1:tt; $($i2:tt),*) => {
