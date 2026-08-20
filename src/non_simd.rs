@@ -166,8 +166,6 @@ macro_rules! impl_layout {
                 )
             }
             #[inline(always)]
-            fn filled(a: Self) -> Self::Storage { [[a; $m]; $n] }
-            #[inline(always)]
             fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
                 map1(a, Self::cast_from_f32_::<1>)
             }
@@ -259,14 +257,6 @@ macro_rules! impl_layout {
                 }
 
                 #[inline(always)]
-                fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, Self::max_)
-                }
-                #[inline(always)]
-                fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, Self::min_)
-                }
-                #[inline(always)]
                 fn each_clamp<F: private::Fmt>(
                     a: Self::Storage,
                     min: Self::Storage,
@@ -293,13 +283,6 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<$n, $m>>::Storage {
                 kernels::transpose(a)
             }
-            #[inline(always)]
-            fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, Self::add_noexcept_) }
-            #[inline(always)]
-            fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, Self::sub_noexcept_) }
-            #[inline(always)]
-            fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, Self::mul_noexcept_) }
-
             if_! { $signed $int == signed int {
                 #[inline(always)]
                 fn all(mask: MaskStorage<Self::Storage>) -> bool {
@@ -370,33 +353,11 @@ macro_rules! impl_layout {
                         );
                         <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
                     }
-                    #[inline(always)]
-                    fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        map2(a, b, core::ops::BitAnd::bitand)
-                    }
-                    #[inline(always)]
-                    fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        map2(a, b, core::ops::BitOr::bitor)
-                    }
-                    #[inline(always)]
-                    fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        map2(a, b, core::ops::BitXor::bitxor)
-                    }
-                    #[inline(always)]
-                    fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        map2(a, b, ArithPrimitive::shl_noexcept_)
-                    }
-                    #[inline(always)]
-                    fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        map2(a, b, ArithPrimitive::shr_noexcept_)
-                    }
                 }}
             }}
             if_! { $float == not_float {
                 // `Not` is implemented for `Vector` and `Mask` only.
                 if_! { $n == 1 {
-                    #[inline(always)]
-                    fn not(a: Self::Storage) -> Self::Storage { map1(a, core::ops::Not::not) }
                 }}
             }}
             if_! { $float == float {
@@ -422,32 +383,11 @@ macro_rules! impl_layout {
                     fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Rem::rem) }
                 }}
                 #[inline(always)]
-                fn sqrt(a: Self::Storage) -> Self::Storage { map1(a, Self::sqrt) }
-
-                #[inline(always)]
-                fn floor(a: Self::Storage) -> Self::Storage { map1(a, Self::floor) }
-                #[inline(always)]
-                fn ceil(a: Self::Storage) -> Self::Storage { map1(a, Self::ceil) }
-                #[inline(always)]
-                fn round(a: Self::Storage) -> Self::Storage { map1(a, Self::round) }
-                #[inline(always)]
-                fn round_ties_even(a: Self::Storage) -> Self::Storage { map1(a, Self::round_ties_even) }
-                #[inline(always)]
-                fn trunc(a: Self::Storage) -> Self::Storage { map1(a, Self::trunc) }
-                #[inline(always)]
-                fn fract(a: Self::Storage) -> Self::Storage { map1(a, Self::fract) }
-                #[inline(always)]
                 fn is_nan(a: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                     map1_mask(a, Self::is_nan_)
                 }
             }}
             if_! { $signed == signed {
-                #[inline(always)]
-                fn neg(a: Self::Storage) -> Self::Storage { map1(a, ArithPrimitive::neg_noexcept_) }
-                #[inline(always)]
-                fn abs(a: Self::Storage) -> Self::Storage { map1(a, ArithPrimitive::abs_noexcept_) }
-                #[inline(always)]
-                fn signum(a: Self::Storage) -> Self::Storage { map1(a, ArithPrimitive::signum_) }
             }}
             if_! { $n == 1 and $m != 1 {
                 #[inline(always)]

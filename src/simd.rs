@@ -169,8 +169,6 @@ macro_rules! impl_layout {
             #[inline(always)]
             fn from_vecs(a: [Vector<Self, $m>; $n]) -> Self::Storage { paste::paste!(kernels::from_vecs::$self_ty:: [<_ $m x $n>])(a) }
             #[inline(always)]
-            fn filled(a: Self) -> Self::Storage { unpack_array!([($primitive::filled_(a)); $len]) }
-            #[inline(always)]
             fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithPrimitive::cast_from_f32_; [$($valid),+]])
@@ -266,15 +264,6 @@ macro_rules! impl_layout {
                 fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                     unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ge_; $len]).store()
                 }
-
-                #[inline(always)]
-                fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::max_; $len]).store()
-                }
-                #[inline(always)]
-                fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::min_; $len]).store()
-                }
                 #[inline(always)]
                 fn each_clamp<F: private::Fmt>(a: Self::Storage, min: Self::Storage, max: Self::Storage) -> Self::Storage {
                     let a = a.load();
@@ -308,19 +297,6 @@ macro_rules! impl_layout {
             ) -> <Self as private::SealedElement<$n, $m>>::Storage {
                 paste::paste!(crate::kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
             }
-            #[inline(always)]
-            fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::add_noexcept_; $len]).store()
-            }
-            #[inline(always)]
-            fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::sub_noexcept_; $len]).store()
-            }
-            #[inline(always)]
-            fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::mul_noexcept_; $len]).store()
-            }
-
             if_! { $signed $int == signed int {
                 #[inline(always)]
                 fn all(mask: MaskStorage<Self::Storage>) -> bool {
@@ -392,33 +368,11 @@ macro_rules! impl_layout {
                         );
                         <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
                     }
-                    #[inline(always)]
-                    fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitAnd::bitand; $len]).store()
-                    }
-                    #[inline(always)]
-                    fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitOr::bitor; $len]).store()
-                    }
-                    #[inline(always)]
-                    fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitXor::bitxor; $len]).store()
-                    }
-                    #[inline(always)]
-                    fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shl_noexcept_; $len]).store()
-                    }
-                    #[inline(always)]
-                    fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                        unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shr_noexcept_; $len]).store()
-                    }
                 }}
             }}
             if_! { $float == not_float {
                 // `Not` is implemented for `Vector` and `Mask` only.
                 if_! { $n == 1 {
-                    #[inline(always)]
-                    fn not(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) core::ops::Not::not; $len]).store() }
                 }}
             }}
             if_! { $float == float {
@@ -449,32 +403,11 @@ macro_rules! impl_layout {
                     }
                 }}
                 #[inline(always)]
-                fn sqrt(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).sqrt(); $len]).store() }
-
-                #[inline(always)]
-                fn floor(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).floor(); $len]).store() }
-                #[inline(always)]
-                fn ceil(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).ceil(); $len]).store() }
-                #[inline(always)]
-                fn round(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).round(); $len]).store() }
-                #[inline(always)]
-                fn round_ties_even(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) ArithPrimitive::round_ties_even_; $len]).store() }
-                #[inline(always)]
-                fn trunc(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).trunc(); $len]).store() }
-                #[inline(always)]
-                fn fract(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).fract(); $len]).store() }
-                #[inline(always)]
                 fn is_nan(a: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                     unpack_array!([(a=a.load()).is_nan_(); $len]).store()
                 }
             }}
             if_! { $signed == signed {
-                #[inline(always)]
-                fn neg(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) ArithPrimitive::neg_noexcept_; $len]).store() }
-                #[inline(always)]
-                fn abs(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) ArithPrimitive::abs_noexcept_; $len]).store() }
-                #[inline(always)]
-                fn signum(a: Self::Storage) -> Self::Storage { unpack_array!([(a) ArithPrimitive::signum_; $len]) }
             }}
             if_! { $n == 1 and $m != 1 {
                 #[inline(always)]

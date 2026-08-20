@@ -98,7 +98,14 @@ pub(crate) trait ArithPrimitive: Copy {
     fn abs_noexcept_(self) -> Self { unimplemented!() }
     fn signum_(self) -> Self { unimplemented!() }
 
-    // Floating-point operations.
+    // Floating-point operations. An integer type inherits the `unimplemented!()` body: no public
+    // operation reaches a rounding or a square root on one.
+    fn sqrt_(self) -> Self { unimplemented!() }
+    fn floor_(self) -> Self { unimplemented!() }
+    fn ceil_(self) -> Self { unimplemented!() }
+    fn round_(self) -> Self { unimplemented!() }
+    fn trunc_(self) -> Self { unimplemented!() }
+    fn fract_(self) -> Self { unimplemented!() }
     #[allow(dead_code)]
     fn round_ties_even_(self) -> Self { unimplemented!() }
     fn is_nan_(self) -> MaskStorage<Self::Mask> { unimplemented!() }
@@ -108,7 +115,12 @@ pub(crate) trait ArithPrimitive: Copy {
     fn mul_sub_(_a: Self, _b: Self, _c: Self) -> Self { unimplemented!() }
     /// -a * b + c
     fn neg_mul_add_(_a: Self, _b: Self, _c: Self) -> Self { unimplemented!() }
-    // Integer operations.
+    // Integer operations. These behave the same on a scalar and on a compute vector; they are here
+    // so that the element traits can name one body instead of one per shape.
+    fn bitand_(self, _rhs: Self) -> Self { unimplemented!() }
+    fn bitor_(self, _rhs: Self) -> Self { unimplemented!() }
+    fn bitxor_(self, _rhs: Self) -> Self { unimplemented!() }
+    fn not_(self) -> Self { unimplemented!() }
     fn shl_noexcept_(self, _rhs: Self) -> Self { unimplemented!() }
     fn shr_noexcept_(self, _rhs: Self) -> Self { unimplemented!() }
     // LLVM already folds the `filled` implementation to `psrld`, so the scalar variant is unused.
@@ -185,6 +197,14 @@ macro_rules! impl_arith_primitive_int {
                 fn mul_noexcept_(self, rhs: Self) -> Self { self.wrapping_mul(rhs) }
 
                 #[inline(always)]
+                fn bitand_(self, rhs: Self) -> Self { core::ops::BitAnd::bitand(self, rhs) }
+                #[inline(always)]
+                fn bitor_(self, rhs: Self) -> Self { core::ops::BitOr::bitor(self, rhs) }
+                #[inline(always)]
+                fn bitxor_(self, rhs: Self) -> Self { core::ops::BitXor::bitxor(self, rhs) }
+                #[inline(always)]
+                fn not_(self) -> Self { core::ops::Not::not(self) }
+                #[inline(always)]
                 fn shl_noexcept_(self, rhs: Self) -> Self { self.wrapping_shl(rhs as u32) }
                 #[inline(always)]
                 fn shr_noexcept_(self, rhs: Self) -> Self { self.wrapping_shr(rhs as u32) }
@@ -223,6 +243,18 @@ macro_rules! impl_arith_primitive_all {
                 fn abs_noexcept_(self) -> Self { self.abs() }
                 #[inline(always)]
                 fn signum_(self) -> Self { self.signum() }
+                #[inline(always)]
+                fn sqrt_(self) -> Self { self.sqrt() }
+                #[inline(always)]
+                fn floor_(self) -> Self { self.floor() }
+                #[inline(always)]
+                fn ceil_(self) -> Self { self.ceil() }
+                #[inline(always)]
+                fn round_(self) -> Self { self.round() }
+                #[inline(always)]
+                fn trunc_(self) -> Self { self.trunc() }
+                #[inline(always)]
+                fn fract_(self) -> Self { self.fract() }
                 #[inline(always)]
                 fn round_ties_even_(self) -> Self { self.round_ties_even() }
                 #[inline(always)]
@@ -280,6 +312,123 @@ macro_rules! impl_arith_primitive_all {
 
 impl_arith_primitive_all!(f32, i32, u32);
 impl_arith_primitive_all!(f64, i64, u64);
+
+// A storage value is an array of units -- compute vectors on the SIMD backend, scalars on the other
+// -- so the lane-wise operations on it are the unit's operations applied elementwise. Both backends
+// reach this through `SealedElement::Storage: Load<Output: ArithPrimitive>`.
+impl<T: ArithPrimitive, const N: usize> ArithPrimitive for [T; N] {
+    // The leaf scalar, as every other implementation reports: `f32` for `f32`, for `f32x4` and for
+    // `[f32x4; N]` alike. That is what makes `filled_` reach the whole storage in one step.
+    type Scalar = T::Scalar;
+    type F32 = [T::F32; N];
+    type F64 = [T::F64; N];
+    type I32 = [T::I32; N];
+    type I64 = [T::I64; N];
+    type U32 = [T::U32; N];
+    type U64 = [T::U64; N];
+    // Never read. A mask only exists for a vector, and a vector's storage is one unit -- `f32`,
+    // `f32x2`, `f32x4` and their integer counterparts on the SIMD backend, `[[T; M]; 1]` on the
+    // other -- so an array of units is never the storage a mask is taken from. The associated type
+    // has to name something, and this is the shape that would be right if it ever were read.
+    type Mask = [T::Mask; N];
+
+    // TODO: これあるならSealedElementのZEROも不要
+    const ZERO_: Self = [T::ZERO_; N];
+    const ONE_: Self = [T::ONE_; N];
+
+    #[inline(always)]
+    fn filled_(a: Self::Scalar) -> Self { [T::filled_(a); N] }
+    // The lanes of an array of units are not contiguous in the unit's scalar; nothing asks an array
+    // for them. `reduce::sum` and `map2` in `simd.rs` ask a unit.
+    #[inline(always)]
+    fn as_array_(&self) -> &[Self::Scalar] { unimplemented!() }
+    #[inline(always)]
+    fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { unimplemented!() }
+
+    #[inline(always)]
+    fn max_(self, rhs: Self) -> Self { zip(self, rhs, T::max_) }
+    #[inline(always)]
+    fn min_(self, rhs: Self) -> Self { zip(self, rhs, T::min_) }
+    #[inline(always)]
+    fn add_noexcept_(self, rhs: Self) -> Self { zip(self, rhs, T::add_noexcept_) }
+    #[inline(always)]
+    fn sub_noexcept_(self, rhs: Self) -> Self { zip(self, rhs, T::sub_noexcept_) }
+    #[inline(always)]
+    fn mul_noexcept_(self, rhs: Self) -> Self { zip(self, rhs, T::mul_noexcept_) }
+    #[inline(always)]
+    fn shl_noexcept_(self, rhs: Self) -> Self { zip(self, rhs, T::shl_noexcept_) }
+    #[inline(always)]
+    fn shr_noexcept_(self, rhs: Self) -> Self { zip(self, rhs, T::shr_noexcept_) }
+
+    #[inline(always)]
+    fn neg_noexcept_(self) -> Self { map(self, T::neg_noexcept_) }
+    #[inline(always)]
+    fn abs_noexcept_(self) -> Self { map(self, T::abs_noexcept_) }
+    #[inline(always)]
+    fn signum_(self) -> Self { map(self, T::signum_) }
+    #[inline(always)]
+    fn round_ties_even_(self) -> Self { map(self, T::round_ties_even_) }
+    #[inline(always)]
+    fn sqrt_(self) -> Self { map(self, T::sqrt_) }
+    #[inline(always)]
+    fn floor_(self) -> Self { map(self, T::floor_) }
+    #[inline(always)]
+    fn ceil_(self) -> Self { map(self, T::ceil_) }
+    #[inline(always)]
+    fn round_(self) -> Self { map(self, T::round_) }
+    #[inline(always)]
+    fn trunc_(self) -> Self { map(self, T::trunc_) }
+    #[inline(always)]
+    fn fract_(self) -> Self { map(self, T::fract_) }
+    #[inline(always)]
+    fn not_(self) -> Self { map(self, T::not_) }
+    #[inline(always)]
+    fn bitand_(self, rhs: Self) -> Self { zip(self, rhs, T::bitand_) }
+    #[inline(always)]
+    fn bitor_(self, rhs: Self) -> Self { zip(self, rhs, T::bitor_) }
+    #[inline(always)]
+    fn bitxor_(self, rhs: Self) -> Self { zip(self, rhs, T::bitxor_) }
+
+    #[inline(always)]
+    fn mul_add_(a: Self, b: Self, c: Self) -> Self { zip3(a, b, c, T::mul_add_) }
+    #[inline(always)]
+    fn mul_sub_(a: Self, b: Self, c: Self) -> Self { zip3(a, b, c, T::mul_sub_) }
+    #[inline(always)]
+    fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self { zip3(a, b, c, T::neg_mul_add_) }
+    #[inline(always)]
+    fn clamp_noexcept_(self, min: Self, max: Self) -> Self {
+        zip3(self, min, max, T::clamp_noexcept_)
+    }
+}
+
+#[inline(always)]
+fn map<T: Copy, const N: usize>(a: [T; N], mut f: impl FnMut(T) -> T) -> [T; N] {
+    core::array::from_fn(
+        #[inline(always)]
+        |i| f(a[i]),
+    )
+}
+
+#[inline(always)]
+fn zip<T: Copy, const N: usize>(a: [T; N], b: [T; N], mut f: impl FnMut(T, T) -> T) -> [T; N] {
+    core::array::from_fn(
+        #[inline(always)]
+        |i| f(a[i], b[i]),
+    )
+}
+
+#[inline(always)]
+fn zip3<T: Copy, const N: usize>(
+    a: [T; N],
+    b: [T; N],
+    c: [T; N],
+    mut f: impl FnMut(T, T, T) -> T,
+) -> [T; N] {
+    core::array::from_fn(
+        #[inline(always)]
+        |i| f(a[i], b[i], c[i]),
+    )
+}
 
 pub(super) trait Load {
     type Output;

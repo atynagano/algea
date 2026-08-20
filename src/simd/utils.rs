@@ -565,19 +565,6 @@ mod _64bit_types {
         }
         #[inline(always)]
         pub(crate) fn to_bits(self) -> u32x2 { unsafe { u32x2(vreinterpret_u32_f32(self.0)) } }
-
-        #[inline(always)]
-        pub(crate) fn sqrt(self) -> Self { unsafe { Self(vsqrt_f32(self.0)) } }
-        #[inline(always)]
-        pub(crate) fn floor(self) -> Self { unsafe { Self(vrndm_f32(self.0)) } }
-        #[inline(always)]
-        pub(crate) fn ceil(self) -> Self { unsafe { Self(vrndp_f32(self.0)) } }
-        #[inline(always)]
-        pub(crate) fn round(self) -> Self { unsafe { Self(vrnda_f32(self.0)) } }
-        #[inline(always)]
-        pub(crate) fn trunc(self) -> Self { unsafe { Self(vrnd_f32(self.0)) } }
-        #[inline(always)]
-        pub(crate) fn fract(self) -> Self { unsafe { Self(vsub_f32(self.0, vrnd_f32(self.0))) } }
     }
     impl i32x2 {
         #[inline(always)]
@@ -779,6 +766,18 @@ mod _64bit_types {
         #[inline(always)]
         fn round_ties_even_(self) -> Self { unsafe { Self(vrndx_f32(self.0)) } }
         #[inline(always)]
+        fn sqrt_(self) -> Self { unsafe { Self(vsqrt_f32(self.0)) } }
+        #[inline(always)]
+        fn floor_(self) -> Self { unsafe { Self(vrndm_f32(self.0)) } }
+        #[inline(always)]
+        fn ceil_(self) -> Self { unsafe { Self(vrndp_f32(self.0)) } }
+        #[inline(always)]
+        fn round_(self) -> Self { unsafe { Self(vrnda_f32(self.0)) } }
+        #[inline(always)]
+        fn trunc_(self) -> Self { unsafe { Self(vrnd_f32(self.0)) } }
+        #[inline(always)]
+        fn fract_(self) -> Self { unsafe { Self(vsub_f32(self.0, vrnd_f32(self.0))) } }
+        #[inline(always)]
         fn is_nan_(self) -> MaskStorage<Self::Mask> {
             // SAFETY: `vceq_f32(self, self)` is all-zero exactly where `self` is NaN (and
             // all-one elsewhere); `vmvn_u32` complements it to all-one where NaN, and
@@ -898,6 +897,14 @@ mod _64bit_types {
         fn neg_noexcept_(self) -> Self { unsafe { Self(vneg_s32(self.0)) } }
         #[inline(always)]
         fn abs_noexcept_(self) -> Self { unsafe { Self(vabs_s32(self.0)) } }
+        #[inline(always)]
+        fn bitand_(self, rhs: Self) -> Self { core::ops::BitAnd::bitand(self, rhs) }
+        #[inline(always)]
+        fn bitor_(self, rhs: Self) -> Self { core::ops::BitOr::bitor(self, rhs) }
+        #[inline(always)]
+        fn bitxor_(self, rhs: Self) -> Self { core::ops::BitXor::bitxor(self, rhs) }
+        #[inline(always)]
+        fn not_(self) -> Self { core::ops::Not::not(self) }
         #[inline(always)]
         fn shl_noexcept_(self, rhs: Self) -> Self {
             // `SSHL`/`USHL` treat a shift magnitude >= the 32-bit lane width as a special
@@ -1022,6 +1029,14 @@ mod _64bit_types {
                 ))
             }
         }
+        #[inline(always)]
+        fn bitand_(self, rhs: Self) -> Self { core::ops::BitAnd::bitand(self, rhs) }
+        #[inline(always)]
+        fn bitor_(self, rhs: Self) -> Self { core::ops::BitOr::bitor(self, rhs) }
+        #[inline(always)]
+        fn bitxor_(self, rhs: Self) -> Self { core::ops::BitXor::bitxor(self, rhs) }
+        #[inline(always)]
+        fn not_(self) -> Self { core::ops::Not::not(self) }
         #[inline(always)]
         fn shl_noexcept_(self, rhs: Self) -> Self {
             // See the `i32x2` shift impls above: the shift amount is masked to `0..=31` so
@@ -1255,6 +1270,14 @@ macro_rules! impl_arith_primitive_int {
         impl_arith_primitive! {
             $self_ty, scalar=$scalar, mask=$int, [$($t),+] $(, $N)? {
                 #[inline(always)]
+                fn bitand_(self, rhs: Self) -> Self { core::ops::BitAnd::bitand(self, rhs) }
+                #[inline(always)]
+                fn bitor_(self, rhs: Self) -> Self { core::ops::BitOr::bitor(self, rhs) }
+                #[inline(always)]
+                fn bitxor_(self, rhs: Self) -> Self { core::ops::BitXor::bitxor(self, rhs) }
+                #[inline(always)]
+                fn not_(self) -> Self { core::ops::Not::not(self) }
+                #[inline(always)]
                 fn shl_noexcept_(self, rhs: Self) -> Self { self << rhs }
                 #[inline(always)]
                 fn shr_noexcept_(self, rhs: Self) -> Self { self >> rhs }
@@ -1338,6 +1361,18 @@ macro_rules! impl_arith_primitive_all {
                 fn signum_(self) -> Self { self.signum() }
                 #[inline(always)]
                 fn round_ties_even_(self) -> Self { paste::paste!(kernels::round::[<$float _round_ties_even>](self)) }
+                #[inline(always)]
+                fn sqrt_(self) -> Self { self.sqrt() }
+                #[inline(always)]
+                fn floor_(self) -> Self { self.floor() }
+                #[inline(always)]
+                fn ceil_(self) -> Self { self.ceil() }
+                #[inline(always)]
+                fn round_(self) -> Self { self.round() }
+                #[inline(always)]
+                fn trunc_(self) -> Self { self.trunc() }
+                #[inline(always)]
+                fn fract_(self) -> Self { self.fract() }
                 #[inline(always)]
                 fn is_nan_(self) -> MaskStorage<Self::Mask> {
                     unsafe {
