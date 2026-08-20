@@ -232,51 +232,57 @@ macro_rules! impl_layout {
             fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                 map2_mask(a, b, Self::eq_)
             }
-            #[inline(always)]
-            fn each_ne(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::ne_)
-            }
-            #[inline(always)]
-            fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::lt_)
-            }
-            #[inline(always)]
-            fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::le_)
-            }
-            #[inline(always)]
-            fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::gt_)
-            }
-            #[inline(always)]
-            fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::ge_)
-            }
+            // Lane-wise comparisons and the clamp. `src/api.rs` exposes these on `Vector` alone, so a
+            // matrix shape would carry a body nothing can call. `each_eq` above is the exception: the
+            // integer `div` uses it to find a zero divisor, and a matrix divided by a scalar reaches
+            // `div`.
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn each_ne(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    map2_mask(a, b, Self::ne_)
+                }
+                #[inline(always)]
+                fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    map2_mask(a, b, Self::lt_)
+                }
+                #[inline(always)]
+                fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    map2_mask(a, b, Self::le_)
+                }
+                #[inline(always)]
+                fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    map2_mask(a, b, Self::gt_)
+                }
+                #[inline(always)]
+                fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    map2_mask(a, b, Self::ge_)
+                }
 
-            #[inline(always)]
-            fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                map2(a, b, Self::max_)
-            }
-            #[inline(always)]
-            fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                map2(a, b, Self::min_)
-            }
-            #[inline(always)]
-            fn each_clamp<F: private::Fmt>(
-                a: Self::Storage,
-                min: Self::Storage,
-                max: Self::Storage,
-            ) -> Self::Storage {
-                let valid = <Self as private::SealedElement<$m, $n>>::each_le(min, max);
-                assert!(
-                    <<Self as Lane>::Mask as private::SealedElement<$m, $n>>::all(valid),
-                    "each element in `min` must be less than or equal to the corresponding element in `max`. \
-                    min = {min:?}, max = {max:?}",
-                    min = F::fmt::<Self, $m, $n>(min),
-                    max = F::fmt::<Self, $m, $n>(max),
-                );
-                map3(a, min, max, Self::clamp_noexcept_)
-            }
+                #[inline(always)]
+                fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    map2(a, b, Self::max_)
+                }
+                #[inline(always)]
+                fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    map2(a, b, Self::min_)
+                }
+                #[inline(always)]
+                fn each_clamp<F: private::Fmt>(
+                    a: Self::Storage,
+                    min: Self::Storage,
+                    max: Self::Storage,
+                ) -> Self::Storage {
+                    let valid = <Self as private::SealedElement<$m, $n>>::each_le(min, max);
+                    assert!(
+                        <<Self as Lane>::Mask as private::SealedElement<$m, $n>>::all(valid),
+                        "each element in `min` must be less than or equal to the corresponding element in `max`. \
+                        min = {min:?}, max = {max:?}",
+                        min = F::fmt::<Self, $m, $n>(min),
+                        max = F::fmt::<Self, $m, $n>(max),
+                    );
+                    map3(a, min, max, Self::clamp_noexcept_)
+                }
+            }}
             #[inline(always)]
             fn eq(a: Self::Storage, b: Self::Storage) -> bool { a.as_flattened().iter().zip(b.as_flattened()).all(|(a, b)| a == b) }
             #[inline(always)]
@@ -352,40 +358,46 @@ macro_rules! impl_layout {
                     );
                     <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_div(y))
                 }
-                #[inline(always)]
-                fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    let zero = <Self as private::SealedElement<$m, $n>>::ZERO;
-                    let mask = <Self as private::SealedElement<$m, $n>>::each_eq(b, zero);
-                    assert!(
-                        !<<Self as Lane>::Mask as private::SealedElement::<$m, $n>>::any(mask),
-                        "attempt to calculate the remainder with a divisor of zero",
-                    );
-                    <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
-                }
-                #[inline(always)]
-                fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, core::ops::BitAnd::bitand)
-                }
-                #[inline(always)]
-                fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, core::ops::BitOr::bitor)
-                }
-                #[inline(always)]
-                fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, core::ops::BitXor::bitxor)
-                }
-                #[inline(always)]
-                fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, ArithPrimitive::shl_noexcept_)
-                }
-                #[inline(always)]
-                fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    map2(a, b, ArithPrimitive::shr_noexcept_)
-                }
+                // `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and `Shr` are generated for vectors only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        let zero = <Self as private::SealedElement<$m, $n>>::ZERO;
+                        let mask = <Self as private::SealedElement<$m, $n>>::each_eq(b, zero);
+                        assert!(
+                            !<<Self as Lane>::Mask as private::SealedElement::<$m, $n>>::any(mask),
+                            "attempt to calculate the remainder with a divisor of zero",
+                        );
+                        <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
+                    }
+                    #[inline(always)]
+                    fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        map2(a, b, core::ops::BitAnd::bitand)
+                    }
+                    #[inline(always)]
+                    fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        map2(a, b, core::ops::BitOr::bitor)
+                    }
+                    #[inline(always)]
+                    fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        map2(a, b, core::ops::BitXor::bitxor)
+                    }
+                    #[inline(always)]
+                    fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        map2(a, b, ArithPrimitive::shl_noexcept_)
+                    }
+                    #[inline(always)]
+                    fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        map2(a, b, ArithPrimitive::shr_noexcept_)
+                    }
+                }}
             }}
             if_! { $float == not_float {
-                #[inline(always)]
-                fn not(a: Self::Storage) -> Self::Storage { map1(a, core::ops::Not::not) }
+                // `Not` is implemented for `Vector` and `Mask` only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn not(a: Self::Storage) -> Self::Storage { map1(a, core::ops::Not::not) }
+                }}
             }}
             if_! { $float == float {
                 #[inline(always)]
@@ -404,8 +416,11 @@ macro_rules! impl_layout {
                 // TODO(integer-vector): split div/sqrt requirements for integer and float element traits.
                 #[inline(always)]
                 fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Div::div) }
-                #[inline(always)]
-                fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Rem::rem) }
+                // `Rem` is generated for vectors only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Rem::rem) }
+                }}
                 #[inline(always)]
                 fn sqrt(a: Self::Storage) -> Self::Storage { map1(a, Self::sqrt) }
 

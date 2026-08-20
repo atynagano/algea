@@ -241,51 +241,57 @@ macro_rules! impl_layout {
             fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
                 unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::eq_; $len]).store()
             }
-            #[inline(always)]
-            fn each_ne(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ne_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::lt_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::le_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::gt_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ge_; $len]).store()
-            }
+            // Lane-wise comparisons and the clamp. `src/api.rs` exposes these on `Vector` alone, so a
+            // matrix shape would carry a body nothing can call. `each_eq` above is the exception: the
+            // integer `div` uses it to find a zero divisor, and a matrix divided by a scalar reaches
+            // `div`.
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn each_ne(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ne_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::lt_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::le_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::gt_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::ge_; $len]).store()
+                }
 
-            #[inline(always)]
-            fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::max_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::min_; $len]).store()
-            }
-            #[inline(always)]
-            fn each_clamp<F: private::Fmt>(a: Self::Storage, min: Self::Storage, max: Self::Storage) -> Self::Storage {
-                let a = a.load();
-                let min = min.load();
-                let max = max.load();
-                let valid = unpack_array!([(min, max) ArithPrimitive::le_; $len]);
-                let valid_all = paste::paste!([<mask $bits x $m x $n _all>])(valid.into());
-                assert!(
-                    valid_all,
-                    "each element in `min` must be less than or equal to the corresponding element in `max`. \
-                    min = {min:?}, max = {max:?}",
-                    min = F::fmt::<Self, $m, $n>(min),
-                    max = F::fmt::<Self, $m, $n>(max),
-                );
-                unpack_array!([(a, min, max) ArithPrimitive::clamp_noexcept_; $len]).store()
-            }
+                #[inline(always)]
+                fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::max_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::min_; $len]).store()
+                }
+                #[inline(always)]
+                fn each_clamp<F: private::Fmt>(a: Self::Storage, min: Self::Storage, max: Self::Storage) -> Self::Storage {
+                    let a = a.load();
+                    let min = min.load();
+                    let max = max.load();
+                    let valid = unpack_array!([(min, max) ArithPrimitive::le_; $len]);
+                    let valid_all = paste::paste!([<mask $bits x $m x $n _all>])(valid.into());
+                    assert!(
+                        valid_all,
+                        "each element in `min` must be less than or equal to the corresponding element in `max`. \
+                        min = {min:?}, max = {max:?}",
+                        min = F::fmt::<Self, $m, $n>(min),
+                        max = F::fmt::<Self, $m, $n>(max),
+                    );
+                    unpack_array!([(a, min, max) ArithPrimitive::clamp_noexcept_; $len]).store()
+                }
+            }}
             #[inline(always)]
             fn eq(a: Self::Storage, b: Self::Storage) -> bool {
                 let mask = unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::eq_; $len]);
@@ -374,40 +380,46 @@ macro_rules! impl_layout {
                     );
                     <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_div(y))
                 }
-                #[inline(always)]
-                fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    let zero = <Self as private::SealedElement<$m, $n>>::ZERO;
-                    let mask = <Self as private::SealedElement<$m, $n>>::each_eq(b, zero);
-                    assert!(
-                        !<<Self as Lane>::Mask as private::SealedElement::<$m, $n>>::any(mask),
-                        "attempt to calculate the remainder with a divisor of zero",
-                    );
-                    <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
-                }
-                #[inline(always)]
-                fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) core::ops::BitAnd::bitand; $len]).store()
-                }
-                #[inline(always)]
-                fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) core::ops::BitOr::bitor; $len]).store()
-                }
-                #[inline(always)]
-                fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) core::ops::BitXor::bitxor; $len]).store()
-                }
-                #[inline(always)]
-                fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shl_noexcept_; $len]).store()
-                }
-                #[inline(always)]
-                fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shr_noexcept_; $len]).store()
-                }
+                // `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and `Shr` are generated for vectors only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        let zero = <Self as private::SealedElement<$m, $n>>::ZERO;
+                        let mask = <Self as private::SealedElement<$m, $n>>::each_eq(b, zero);
+                        assert!(
+                            !<<Self as Lane>::Mask as private::SealedElement::<$m, $n>>::any(mask),
+                            "attempt to calculate the remainder with a divisor of zero",
+                        );
+                        <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
+                    }
+                    #[inline(always)]
+                    fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitAnd::bitand; $len]).store()
+                    }
+                    #[inline(always)]
+                    fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitOr::bitor; $len]).store()
+                    }
+                    #[inline(always)]
+                    fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        unpack_array!([(a=a.load(), b=b.load()) core::ops::BitXor::bitxor; $len]).store()
+                    }
+                    #[inline(always)]
+                    fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shl_noexcept_; $len]).store()
+                    }
+                    #[inline(always)]
+                    fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        unpack_array!([(a=a.load(), b=b.load()) ArithPrimitive::shr_noexcept_; $len]).store()
+                    }
+                }}
             }}
             if_! { $float == not_float {
-                #[inline(always)]
-                fn not(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) core::ops::Not::not; $len]).store() }
+                // `Not` is implemented for `Vector` and `Mask` only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn not(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()) core::ops::Not::not; $len]).store() }
+                }}
             }}
             if_! { $float == float {
                 #[inline(always)]
@@ -426,13 +438,16 @@ macro_rules! impl_layout {
                 // TODO(integer-vector): split div/sqrt requirements for integer and float element traits.
                 #[inline(always)]
                 fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load(), b=b.load()) core::ops::Div::div; $len]).store() }
-                #[inline(always)]
-                fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-                    // TODO(codegen-optimization): Vectorize `fmodf` only with exact special-value
-                    // and error-bound tests; `std::simd::Simd<f32, N>` delegates to Windows UCRT
-                    // scalar `fmodf` calls on x86-64, while libm provides a possible implementation.
-                    <Self as private::SealedElement<$m, $n>>::map2(a, b, core::ops::Rem::rem)
-                }
+                // `Rem` is generated for vectors only.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                        // TODO(codegen-optimization): Vectorize `fmodf` only with exact special-value
+                        // and error-bound tests; `std::simd::Simd<f32, N>` delegates to Windows UCRT
+                        // scalar `fmodf` calls on x86-64, while libm provides a possible implementation.
+                        <Self as private::SealedElement<$m, $n>>::map2(a, b, core::ops::Rem::rem)
+                    }
+                }}
                 #[inline(always)]
                 fn sqrt(a: Self::Storage) -> Self::Storage { unpack_array!([(a=a.load()).sqrt(); $len]).store() }
 
