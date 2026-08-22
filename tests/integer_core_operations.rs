@@ -189,6 +189,27 @@ fn integer_division_panics_for_zero_in_an_active_lane() {
 }
 
 #[test]
+fn integer_division_reads_the_divisor_for_its_zero_check() {
+    assert_eq!(<[i32; 1]>::from(Vector::from([0]) / Vector::<i32, 1>::ONE), [0]);
+    assert_eq!(<[i32; 2]>::from(Vector::from([0, 6]) / Vector::from([1, 2])), [0, 3]);
+    assert_eq!(<[i32; 3]>::from(Vector::from([4, 0, 8]) / Vector::from([2, 1, 4])), [2, 0, 2]);
+    assert_eq!(<[i32; 4]>::from(Vector::from([4, 6, 0, 9]) / Vector::from([2, 2, 1, 3])), [
+        2, 3, 0, 3
+    ]);
+    assert_eq!(<[u32; 4]>::from(Vector::from([4, 6, 0, 9]) / Vector::from([2, 2, 1, 3])), [
+        2, 3, 0, 3
+    ]);
+    assert_eq!(<[i64; 4]>::from(Vector::from([4, 6, 0, 9]) / Vector::from([2, 2, 1, 3])), [
+        2, 3, 0, 3
+    ]);
+    assert_eq!(<[u64; 4]>::from(Vector::from([4, 6, 0, 9]) / Vector::from([2, 2, 1, 3])), [
+        2, 3, 0, 3
+    ]);
+    // A matrix divided by a scalar reaches the same check with the scalar broadcast.
+    assert_eq!(<[[i32; 2]; 2]>::from(Matrix::from([[0, 4], [6, 0]]) / 2), [[0, 2], [3, 0]]);
+}
+
+#[test]
 fn integer_division_ignores_padding_and_wraps_signed_overflow() {
     assert_eq!(<[i32; 1]>::from(Vector::from([i32::MIN]) / Vector::from([-1])), [i32::MIN]);
     assert_eq!(<[i32; 2]>::from(Vector::from([i32::MIN, 6]) / Vector::from([-1, 2])), [

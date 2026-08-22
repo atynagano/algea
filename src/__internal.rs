@@ -154,7 +154,7 @@ where
     type __Output = Vector<T, 2>;
     #[inline]
     fn __concat(a: Vector<T, 1>, b: Vector<T, 1>) -> Self::__Output {
-        Vector { storage: vector::call!(<T, 2>::vector_concat_1_1(a.storage, b.storage)) }
+        Vector { storage: vector::call!(<T, 1>::vector_concat_1_1(a.storage, b.storage)) }
     }
 }
 
@@ -165,7 +165,7 @@ where
     type __Output = Vector<T, 3>;
     #[inline]
     fn __concat(a: Vector<T, 1>, b: Vector<T, 2>) -> Self::__Output {
-        Vector { storage: vector::call!(<T, 3>::vector_concat_1_2(a.storage, b.storage)) }
+        Vector { storage: vector::call!(<T, 1>::vector_concat_1_2(a.storage, b.storage)) }
     }
 }
 
@@ -189,7 +189,7 @@ where
     type __Output = Vector<T, 3>;
     #[inline]
     fn __concat(a: Vector<T, 2>, b: Vector<T, 1>) -> Self::__Output {
-        Vector { storage: vector::call!(<T, 2>::vector_concat_2_1(a.storage, b.storage)) }
+        Vector { storage: vector::call!(<T, 1>::vector_concat_2_1(a.storage, b.storage)) }
     }
 }
 

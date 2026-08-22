@@ -210,7 +210,7 @@ fn mask_storage_validation_not_and_pack_unpack_preserve_canonical_lanes() {
     let second = canonical(i32x4::new([F, T, F, T]));
     assert_canonical_lanes(!first, [F, T, F, T]);
 
-    let packed: MaskStorage<[i32x4; 2]> = [first, second].into();
+    let packed: MaskStorage<[i32x4; 2]> = MaskStorage::store_packed([first, second]);
     assert!(packed.into_inner().is_valid());
     let unpacked = packed.unpack();
     assert_canonical_lanes(unpacked[0], [T, F, T, F]);
