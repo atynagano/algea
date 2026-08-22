@@ -304,111 +304,167 @@ mod _64bit_types {
     unsafe impl wide::bytemuck::Pod for i32x2 {}
     unsafe impl wide::bytemuck::Pod for u32x2 {}
 
-    unsafe impl crate::utils::MaskPrimitive for i32x2 {
-        fn is_valid(self) -> bool {
-            self.to_array().into_iter().all(crate::utils::MaskPrimitive::is_valid)
+    // SAFETY: `is_valid` accepts a value only when every lane is canonical. The operations are
+    // unreachable and hold vacuously: this type is a storage width alone, and `MaskLoad` below
+    // widens it to `i32x4` before anything operates on it.
+    unsafe impl MaskPrimitive for i32x2 {
+        fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
+        fn canonical_not(self) -> Self { unimplemented!() }
+        fn canonical_bitand(self, _rhs: Self) -> Self { unimplemented!() }
+        fn canonical_bitor(self, _rhs: Self) -> Self { unimplemented!() }
+        fn canonical_bitxor(self, _rhs: Self) -> Self { unimplemented!() }
+        fn canonical_select(self, _true_values: Self, _false_values: Self) -> Self {
+            unimplemented!()
         }
-        fn not(self) -> Self { unimplemented!() }
-        fn bitand(self, _rhs: Self) -> Self { unimplemented!() }
-        fn bitor(self, _rhs: Self) -> Self { unimplemented!() }
-        fn bitxor(self, _rhs: Self) -> Self { unimplemented!() }
-        fn select(self, _true_values: Self, _false_values: Self) -> Self { unimplemented!() }
         fn any<const N: usize>(self) -> bool { unimplemented!() }
         fn all<const N: usize>(self) -> bool { unimplemented!() }
     }
-    impl crate::utils::ArithPrimitive for f32x2 {
-        type Scalar = f32;
-        type F32 = f32x2;
-        type F64 = f64x2;
-        type I32 = i32x2;
-        type I64 = i64x2;
-        type U32 = u32x2;
-        type U64 = u64x2;
-        type Mask = i32x2;
-        const ZERO_: Self = Self::new([0.; 2]);
-        const ONE_: Self = Self::new([1.; 2]);
-        #[inline(always)]
-        fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
-        #[inline(always)]
-        fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
-        #[inline(always)]
-        fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
+    // SAFETY: `__load` zeroes the two lanes it adds and copies the other two, and `__store` drops
+    // those two again, so a canonical value maps to a canonical value in either direction.
+    unsafe impl crate::utils::MaskLoad for i32x2 {
+        type Primitive = i32x4;
 
         #[inline(always)]
-        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { a }
+        fn is_valid_storage(self) -> bool {
+            self.to_array().into_iter().all(MaskPrimitive::is_valid)
+        }
         #[inline(always)]
-        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::f32x2_from_f64(a) }
+        fn __load(self) -> Self::Primitive { i32x4::new([self.0[0], self.0[1], 0, 0]) }
         #[inline(always)]
-        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::f32x2_from_i32(a) }
-        #[inline(always)]
-        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::f32x2_from_i64(a) }
-        #[inline(always)]
-        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::f32x2_from_u32(a) }
-        #[inline(always)]
-        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::f32x2_from_u64(a) }
+        fn __store(v: Self::Primitive) -> Self {
+            let [a, b, ..] = v.to_array();
+            i32x2([a, b])
+        }
     }
-    impl crate::utils::ArithPrimitive for i32x2 {
-        type Scalar = i32;
-        type F32 = f32x2;
-        type F64 = f64x2;
-        type I32 = i32x2;
-        type I64 = i64x2;
-        type U32 = u32x2;
-        type U64 = u64x2;
-        type Mask = i32x2;
-        const ZERO_: Self = Self::new([0; 2]);
-        const ONE_: Self = Self::new([1; 2]);
-        #[inline(always)]
-        fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
-        #[inline(always)]
-        fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
-        #[inline(always)]
-        fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
 
-        #[inline(always)]
-        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::i32x2_from_f32(a) }
-        #[inline(always)]
-        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::i32x2_from_f64(a) }
-        #[inline(always)]
-        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { a }
-        #[inline(always)]
-        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::i32x2_from_i64(a) }
-        #[inline(always)]
-        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { kernels::cast::i32x2_from_u32(a) }
-        #[inline(always)]
-        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::i32x2_from_u64(a) }
+    mod cast {
+        pub(super) use super::kernels::cast::*;
+        pub(crate) use core::convert::{
+            identity as f32x2_from_f32,
+            identity as i32x2_from_i32,
+            identity as u32x2_from_u32,
+        };
     }
-    impl crate::utils::ArithPrimitive for u32x2 {
-        type Scalar = u32;
-        type F32 = f32x2;
-        type F64 = f64x2;
-        type I32 = i32x2;
-        type I64 = i64x2;
-        type U32 = u32x2;
-        type U64 = u64x2;
-        type Mask = i32x2;
-        const ZERO_: Self = Self::new([0; 2]);
-        const ONE_: Self = Self::new([1; 2]);
-        #[inline(always)]
-        fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
-        #[inline(always)]
-        fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
-        #[inline(always)]
-        fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
 
-        #[inline(always)]
-        fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { kernels::cast::u32x2_from_f32(a) }
-        #[inline(always)]
-        fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { kernels::cast::u32x2_from_f64(a) }
-        #[inline(always)]
-        fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { kernels::cast::u32x2_from_i32(a) }
-        #[inline(always)]
-        fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { kernels::cast::u32x2_from_i64(a) }
-        #[inline(always)]
-        fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { a }
-        #[inline(always)]
-        fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { kernels::cast::u32x2_from_u64(a) }
+    macro_rules! impl_arith_primitive {
+        ($scalar:ty, $vec2:ty) => {
+            impl ArithPrimitive for $vec2 {
+                type Scalar = $scalar;
+                type F32 = f32x2;
+                type F64 = f64x2;
+                type I32 = i32x2;
+                type I64 = i64x2;
+                type U32 = u32x2;
+                type U64 = u64x2;
+                type Mask = i32x2;
+                const ZERO_: Self = Self::new([0 as _; 2]);
+                const ONE_: Self = Self::new([1 as _; 2]);
+
+                #[inline(always)]
+                fn filled_(a: Self::Scalar) -> Self { Self::new([a; 2]) }
+                #[inline(always)]
+                fn as_array_(&self) -> &[Self::Scalar] { &self.0 }
+                #[inline(always)]
+                fn as_mut_array_(&mut self) -> &mut [Self::Scalar] { &mut self.0 }
+
+                #[inline(always)]
+                fn cast_from_f32_<const N: usize>(a: Self::F32) -> Self { paste::paste!(cast::[<$scalar x2_from_f32>] (a)) }
+                #[inline(always)]
+                fn cast_from_f64_<const N: usize>(a: Self::F64) -> Self { paste::paste!(cast::[<$scalar x2_from_f64>] (a)) }
+                #[inline(always)]
+                fn cast_from_i32_<const N: usize>(a: Self::I32) -> Self { paste::paste!(cast::[<$scalar x2_from_i32>] (a)) }
+                #[inline(always)]
+                fn cast_from_i64_<const N: usize>(a: Self::I64) -> Self { paste::paste!(cast::[<$scalar x2_from_i64>] (a)) }
+                #[inline(always)]
+                fn cast_from_u32_<const N: usize>(a: Self::U32) -> Self { paste::paste!(cast::[<$scalar x2_from_u32>] (a)) }
+                #[inline(always)]
+                fn cast_from_u64_<const N: usize>(a: Self::U64) -> Self { paste::paste!(cast::[<$scalar x2_from_u64>] (a)) }
+
+                #[inline(always)]
+                fn max_(self, other: Self) -> Self { self.load().max_(other.load()).store() }
+                #[inline(always)]
+                fn min_(self, other: Self) -> Self { self.load().min_(other.load()).store() }
+                #[inline(always)]
+                fn clamp_noexcept_(self, min: Self, max: Self) -> Self { self.load().clamp_noexcept_(min.load(), max.load()).store() }
+                #[inline(always)]
+                fn add_noexcept_(self, rhs: Self) -> Self { self.load().add_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn sub_noexcept_(self, rhs: Self) -> Self { self.load().sub_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn mul_noexcept_(self, rhs: Self) -> Self { self.load().mul_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn div_(self, rhs: Self) -> Self { self.load().div_(rhs.load()).store() }
+
+                #[inline(always)]
+                fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().eq_(other.load())) }
+                #[inline(always)]
+                fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().ne_(other.load())) }
+                #[inline(always)]
+                fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().gt_(other.load())) }
+                #[inline(always)]
+                fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().lt_(other.load())) }
+                #[inline(always)]
+                fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().ge_(other.load())) }
+                #[inline(always)]
+                fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().le_(other.load())) }
+                #[inline(always)]
+                fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+                    ArithPrimitive::select_(mask.load_mask(), true_values.load(), false_values.load()).store()
+                }
+
+                #[inline(always)]
+                fn neg_noexcept_(self) -> Self { self.load().neg_noexcept_().store() }
+                #[inline(always)]
+                fn abs_noexcept_(self) -> Self { self.load().abs_noexcept_().store() }
+                #[inline(always)]
+                fn signum_(self) -> Self { self.load().signum_().store() }
+
+                #[inline(always)]
+                fn sqrt_(self) -> Self { self.load().sqrt_().store() }
+                #[inline(always)]
+                fn floor_(self) -> Self { self.load().floor_().store() }
+                #[inline(always)]
+                fn ceil_(self) -> Self { self.load().ceil_().store() }
+                #[inline(always)]
+                fn round_(self) -> Self { self.load().round_().store() }
+                #[inline(always)]
+                fn trunc_(self) -> Self { self.load().trunc_().store() }
+                #[inline(always)]
+                fn fract_(self) -> Self { self.load().fract_().store() }
+                #[inline(always)]
+                fn round_ties_even_(self) -> Self { self.load().round_ties_even_().store() }
+                #[inline(always)]
+                fn is_nan_(self) -> MaskStorage<Self::Mask> { MaskStorage::store_mask(self.load().is_nan_()) }
+                #[inline(always)]
+                fn mul_add_(a: Self, b: Self, c: Self) -> Self { ArithPrimitive::mul_add_(a.load(), b.load(), c.load()).store() }
+                #[inline(always)]
+                fn mul_sub_(a: Self, b: Self, c: Self) -> Self { ArithPrimitive::mul_sub_(a.load(), b.load(), c.load()).store() }
+                #[inline(always)]
+                fn neg_mul_add_(a: Self, b: Self, c: Self) -> Self { ArithPrimitive::neg_mul_add_(a.load(), b.load(), c.load()).store() }
+
+                #[inline(always)]
+                fn bitand_(self, rhs: Self) -> Self { self.load().bitand_(rhs.load()).store() }
+                #[inline(always)]
+                fn bitor_(self, rhs: Self) -> Self { self.load().bitor_(rhs.load()).store() }
+                #[inline(always)]
+                fn bitxor_(self, rhs: Self) -> Self { self.load().bitxor_(rhs.load()).store() }
+                #[inline(always)]
+                fn not_(self) -> Self { self.load().not_().store() }
+                #[inline(always)]
+                fn shl_noexcept_(self, rhs: Self) -> Self { self.load().shl_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn shr_noexcept_(self, rhs: Self) -> Self { self.load().shr_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.load().shl_scalar_noexcept_(rhs.load()).store() }
+                #[inline(always)]
+                fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self.load().shr_scalar_noexcept_(rhs.load()).store() }
+            }
+        };
     }
+
+    impl_arith_primitive!(f32, f32x2);
+    impl_arith_primitive!(i32, i32x2);
+    impl_arith_primitive!(u32, u32x2);
 
     // TODO(module-naming): what follows has nothing to do with 64-bit types; rename the
     // module around it.
@@ -435,7 +491,7 @@ mod _64bit_types {
     impl Load for i32x2 {
         type Output = i32x4;
         #[inline(always)]
-        fn load(self) -> Self::Output { i32x4::new([self.0[0], self.0[1], 0, 0]) }
+        fn load(self) -> Self::Output { crate::utils::MaskLoad::__load(self) }
     }
     impl Load for u32x2 {
         type Output = u32x4;
@@ -451,10 +507,7 @@ mod _64bit_types {
     }
     impl Store<i32x2> for i32x4 {
         #[inline(always)]
-        fn store(self) -> i32x2 {
-            let [a, b, ..] = self.to_array();
-            i32x2([a, b])
-        }
+        fn store(self) -> i32x2 { crate::utils::MaskLoad::__store(self) }
     }
     impl Store<u32x2> for u32x4 {
         #[inline(always)]
@@ -463,38 +516,13 @@ mod _64bit_types {
             u32x2([a, b])
         }
     }
-    impl Load for MaskStorage<i32x2> {
-        type Output = MaskStorage<i32x4>;
-        #[inline(always)]
-        fn load(self) -> Self::Output {
-            let inner = self.into_inner().load();
-            unsafe {
-                // SAFETY: padding lanes are zeroed, so this is safe
-                MaskStorage::new_unchecked(inner)
-            }
-        }
-    }
-    impl Store<MaskStorage<i32x2>> for MaskStorage<i32x4> {
-        #[inline(always)]
-        fn store(self) -> MaskStorage<i32x2> {
-            let inner = self.into_inner().store();
-            unsafe {
-                // SAFETY: just dropping the padding lanes, so this is safe
-                MaskStorage::new_unchecked(inner)
-            }
-        }
-    }
-    impl<T: MaskPrimitive, const N: usize> Load for MaskStorage<[T; N]> {
-        type Output = Self;
-        #[inline(always)]
-        fn load(self) -> Self::Output { self }
-    }
     impl<T: Load<Output = T>, const N: usize> Load for [T; N] {
         type Output = Self;
         #[inline(always)]
         fn load(self) -> Self::Output { self }
     }
 
+    use crate::utils::ArithPrimitive;
     pub(crate) use wide::{f32x4 as compute_f32x2, i32x4 as compute_i32x2, u32x4 as compute_u32x2};
 }
 
@@ -621,20 +649,21 @@ mod _64bit_types {
     unsafe impl wide::bytemuck::Pod for i32x2 {}
     unsafe impl wide::bytemuck::Pod for u32x2 {}
 
-    // SAFETY: validation and `not` operate lane-wise. With a canonical selector,
-    // `select` copies each complete physical lane from one of the canonical inputs.
+    // SAFETY: validation and the canonical operations act lane-wise, so a canonical input cannot
+    // produce a mixed lane. With a canonical selector, `vbsl_s32` copies each complete physical
+    // lane from one of the canonical inputs.
     unsafe impl MaskPrimitive for i32x2 {
         fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
         #[inline(always)]
-        fn not(self) -> Self { unsafe { Self(vmvn_s32(self.0)) } }
+        fn canonical_not(self) -> Self { unsafe { Self(vmvn_s32(self.0)) } }
         #[inline(always)]
-        fn bitand(self, rhs: Self) -> Self { unsafe { Self(vand_s32(self.0, rhs.0)) } }
+        fn canonical_bitand(self, rhs: Self) -> Self { unsafe { Self(vand_s32(self.0, rhs.0)) } }
         #[inline(always)]
-        fn bitor(self, rhs: Self) -> Self { unsafe { Self(vorr_s32(self.0, rhs.0)) } }
+        fn canonical_bitor(self, rhs: Self) -> Self { unsafe { Self(vorr_s32(self.0, rhs.0)) } }
         #[inline(always)]
-        fn bitxor(self, rhs: Self) -> Self { unsafe { Self(veor_s32(self.0, rhs.0)) } }
+        fn canonical_bitxor(self, rhs: Self) -> Self { unsafe { Self(veor_s32(self.0, rhs.0)) } }
         #[inline(always)]
-        fn select(self, true_values: Self, false_values: Self) -> Self {
+        fn canonical_select(self, true_values: Self, false_values: Self) -> Self {
             unsafe { Self(vbsl_s32(vreinterpret_u32_s32(self.0), true_values.0, false_values.0)) }
         }
         #[inline(always)]
@@ -648,6 +677,9 @@ mod _64bit_types {
             unsafe { vmaxv_s32(self.into()) < 0 }
         }
     }
+    // Unlike x86's eight-byte pair, this is a NEON register that the comparison and bit
+    // instructions take as they are, so storage and primitive are the same type.
+    crate::utils::impl_mask_load!(i32x2);
 
     impl ArithPrimitive for f32x2 {
         type Scalar = f32;
@@ -698,6 +730,8 @@ mod _64bit_types {
         fn sub_noexcept_(self, rhs: Self) -> Self { unsafe { Self(vsub_f32(self.0, rhs.0)) } }
         #[inline(always)]
         fn mul_noexcept_(self, rhs: Self) -> Self { unsafe { Self(vmul_f32(self.0, rhs.0)) } }
+        #[inline(always)]
+        fn div_(self, rhs: Self) -> Self { unsafe { Self(vdiv_f32(self.0, rhs.0)) } }
         #[inline(always)]
         fn eq_(self, other: Self) -> MaskStorage<Self::Mask> {
             // SAFETY: `vceq_f32` produces an all-zero or all-one bit pattern in every lane,
@@ -852,6 +886,17 @@ mod _64bit_types {
             }
         }
         #[inline(always)]
+        fn ne_(self, other: Self) -> MaskStorage<Self::Mask> {
+            // SAFETY: `vceq_s32` produces an all-zero or all-one bit pattern in every lane,
+            // `vmvn_u32` complements it (still all-zero or all-one), and `vreinterpret_s32_u32`
+            // preserves those bits.
+            unsafe {
+                MaskStorage::new_unchecked(i32x2(vreinterpret_s32_u32(vmvn_u32(vceq_s32(
+                    self.0, other.0,
+                )))))
+            }
+        }
+        #[inline(always)]
         fn gt_(self, other: Self) -> MaskStorage<Self::Mask> {
             // SAFETY: `vcgt_s32` produces an all-zero or all-one bit pattern in every lane,
             // and `vreinterpret_s32_u32` preserves those bits.
@@ -985,6 +1030,17 @@ mod _64bit_types {
             // and `vreinterpret_s32_u32` preserves those bits.
             unsafe {
                 MaskStorage::new_unchecked(i32x2(vreinterpret_s32_u32(vceq_u32(self.0, other.0))))
+            }
+        }
+        #[inline(always)]
+        fn ne_(self, other: Self) -> MaskStorage<Self::Mask> {
+            // SAFETY: `vceq_u32` produces an all-zero or all-one bit pattern in every lane,
+            // `vmvn_u32` complements it (still all-zero or all-one), and `vreinterpret_s32_u32`
+            // preserves those bits.
+            unsafe {
+                MaskStorage::new_unchecked(i32x2(vreinterpret_s32_u32(vmvn_u32(vceq_u32(
+                    self.0, other.0,
+                )))))
             }
         }
         #[inline(always)]
@@ -1138,19 +1194,6 @@ use crate::{
 #[allow(unused_imports)]
 pub(crate) use _64bit_types::{compute_f32x2, compute_i32x2, compute_u32x2, f32x2, i32x2, u32x2};
 
-impl<const N: usize> Store<MaskStorage<[i32x4; N]>> for [MaskStorage<i32x4>; N] {
-    #[inline(always)]
-    fn store(self) -> MaskStorage<[i32x4; N]> { self.into() }
-}
-impl<const N: usize> Store<MaskStorage<[i64x4; N]>> for [MaskStorage<i64x4>; N] {
-    #[inline(always)]
-    fn store(self) -> MaskStorage<[i64x4; N]> { self.into() }
-}
-impl<const N: usize> Store<MaskStorage<[i64x2; N]>> for [MaskStorage<i64x2>; N] {
-    #[inline(always)]
-    fn store(self) -> MaskStorage<[i64x2; N]> { self.into() }
-}
-
 macro_rules! impl_from {
     ($($tx2:ty:$t:ty),*) => {
         $(
@@ -1285,6 +1328,12 @@ macro_rules! impl_arith_primitive_int {
                 fn shl_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self << rhs }
                 #[inline(always)]
                 fn shr_scalar_noexcept_(self, rhs: Self::Scalar) -> Self { self >> rhs }
+                #[inline(always)]
+                fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { !self.eq_(other) }
+                #[inline(always)]
+                fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { !self.lt_(other) }
+                #[inline(always)]
+                fn le_(self, other: Self) -> MaskStorage<Self::Mask> { !self.gt_(other) }
                 $($item)*
             }
         }
@@ -1347,6 +1396,8 @@ macro_rules! impl_arith_primitive_all {
                     Self::from_bits(mask.into_inner().cast_unsigned()).select(true_values, false_values)
                 }
 
+                #[inline(always)]
+                fn div_(self, rhs: Self) -> Self { core::ops::Div::div(self, rhs) }
                 #[inline(always)]
                 fn clamp_noexcept_(mut self, min: Self, max: Self) -> Self {
                     self = self.simd_lt(min).select(min, self);
@@ -1493,20 +1544,24 @@ impl_arith_primitive_all!(f32:f32x4, i32:i32x4, u32:u32x4, [f32x4, f64x4, i32x4,
 impl_arith_primitive_all!(f64:f64x4, i64:i64x4, u64:u64x4, [f32x4, f64x4, i32x4, i64x4, u32x4, u64x4], N);
 impl_arith_primitive_all!(f64:f64x2, i64:i64x2, u64:u64x2, [f32x2, f64x2, i32x2, i64x2, u32x2, u64x2]);
 
-// SAFETY: validation and `!` operate lane-wise. With a canonical selector,
-// `select` copies each complete physical lane from one of the canonical inputs.
+// A vector mask is stored and operated on at the same width, so `MaskLoad` is the identity for
+// every one of these. The two-lane x86 types are the exception, and implement it themselves.
+crate::utils::impl_mask_load!(i32x4, i64x2, i64x4);
+
+// SAFETY: validation and the relevant `ArithPrimitive` operations act lane-wise. Selection copies
+// each complete physical lane from one of the canonical inputs.
 unsafe impl MaskPrimitive for i32x4 {
     fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
     #[inline(always)]
-    fn not(self) -> Self { !self }
+    fn canonical_not(self) -> Self { !self }
     #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn canonical_bitand(self, rhs: Self) -> Self { self & rhs }
     #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn canonical_bitor(self, rhs: Self) -> Self { self | rhs }
     #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn canonical_bitxor(self, rhs: Self) -> Self { self ^ rhs }
     #[inline(always)]
-    fn select(self, true_values: Self, false_values: Self) -> Self {
+    fn canonical_select(self, true_values: Self, false_values: Self) -> Self {
         i32x4::select(self, true_values, false_values)
     }
     #[inline(always)]
@@ -1562,15 +1617,15 @@ unsafe impl MaskPrimitive for i32x4 {
 unsafe impl MaskPrimitive for i64x2 {
     fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
     #[inline(always)]
-    fn not(self) -> Self { !self }
+    fn canonical_not(self) -> Self { !self }
     #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn canonical_bitand(self, rhs: Self) -> Self { self & rhs }
     #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn canonical_bitor(self, rhs: Self) -> Self { self | rhs }
     #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn canonical_bitxor(self, rhs: Self) -> Self { self ^ rhs }
     #[inline(always)]
-    fn select(self, true_values: Self, false_values: Self) -> Self {
+    fn canonical_select(self, true_values: Self, false_values: Self) -> Self {
         i64x2::select(self, true_values, false_values)
     }
     #[inline(always)]
@@ -1602,20 +1657,20 @@ unsafe impl MaskPrimitive for i64x2 {
         }
     }
 }
-// SAFETY: validation and `not` operate lane-wise. With a canonical selector,
-// `select` copies each complete physical lane from one of the canonical inputs.
+// SAFETY: validation and the relevant `ArithPrimitive` operations act lane-wise. Selection copies
+// each complete physical lane from one of the canonical inputs.
 unsafe impl MaskPrimitive for i64x4 {
     fn is_valid(self) -> bool { self.to_array().into_iter().all(MaskPrimitive::is_valid) }
     #[inline(always)]
-    fn not(self) -> Self { !self }
+    fn canonical_not(self) -> Self { !self }
     #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn canonical_bitand(self, rhs: Self) -> Self { self & rhs }
     #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn canonical_bitor(self, rhs: Self) -> Self { self | rhs }
     #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn canonical_bitxor(self, rhs: Self) -> Self { self ^ rhs }
     #[inline(always)]
-    fn select(self, true_values: Self, false_values: Self) -> Self {
+    fn canonical_select(self, true_values: Self, false_values: Self) -> Self {
         i64x4::select(self, true_values, false_values)
     }
     #[inline(always)]

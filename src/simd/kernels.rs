@@ -39,7 +39,7 @@ pub(crate) mod reduce {
 pub(crate) mod mask {
     use crate::{
         simd::utils::{Simd2Ext, Simd4Ext, compute_i32x2, i32x2, swizzle},
-        utils::{Load, MaskStorage, Store},
+        utils::MaskStorage,
     };
     use wide::{bytemuck::cast, i32x4, i64x2, i64x4};
 
@@ -65,7 +65,7 @@ pub(crate) mod mask {
     impl MaskStorage<i32x2> {
         #[inline(always)]
         pub(crate) fn cast_i64(self) -> MaskStorage<i64x2> {
-            let duplicated = swizzle!(self.load().into_inner(), [0, 0, 1, 1]);
+            let duplicated = swizzle!(self.load_mask().into_inner(), [0, 0, 1, 1]);
             // SAFETY: every 32-bit lane read by the shuffle is canonical, so each pair of them
             // forms an all-zero or all-one 64-bit lane.
             unsafe { MaskStorage::new_unchecked(cast::<i32x4, i64x2>(duplicated)) }
@@ -114,7 +114,9 @@ pub(crate) mod mask {
             unsafe { MaskStorage::new_unchecked(swizzle!(halves, [0, 2])) }
         }
         #[inline(always)]
-        pub(crate) fn cast_i32(self) -> MaskStorage<i32x2> { self.narrow_i32().store() }
+        pub(crate) fn cast_i32(self) -> MaskStorage<i32x2> {
+            MaskStorage::store_mask(self.narrow_i32())
+        }
     }
     impl MaskStorage<i64x4> {
         #[inline(always)]
@@ -180,7 +182,7 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_3x2([a, b]: [[bool; 3]; 2]) -> MaskStorage<[$vec4; 2]> {
-                [from_array_3(a), from_array_3(b)].into()
+                MaskStorage::store_packed([from_array_3(a), from_array_3(b)])
             }
             #[inline(always)]
             pub(crate) fn to_array_3x2(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 3]; 2] {
@@ -189,7 +191,7 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_4x2([a, b]: [[bool; 4]; 2]) -> MaskStorage<[$vec4; 2]> {
-                [from_array_4(a), from_array_4(b)].into()
+                MaskStorage::store_packed([from_array_4(a), from_array_4(b)])
             }
             #[inline(always)]
             pub(crate) fn to_array_4x2(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 4]; 2] {
@@ -211,7 +213,10 @@ pub(crate) mod mask {
             #[inline(always)]
             pub(crate) fn from_array_2x3_in_vec4(array: [[bool; 2]; 3]) -> MaskStorage<[$vec4; 2]> {
                 let [[a, b], [c, d], [e, f]] = array;
-                [from_array_4([a, b, c, d]), from_array_2([e, f]).widen()].into()
+                MaskStorage::store_packed([
+                    from_array_4([a, b, c, d]),
+                    from_array_2([e, f]).widen(),
+                ])
             }
             #[allow(dead_code)]
             #[inline(always)]
@@ -224,7 +229,7 @@ pub(crate) mod mask {
             #[allow(dead_code)]
             #[inline(always)]
             pub(crate) fn from_array_2x3_in_vec2(array: [[bool; 2]; 3]) -> MaskStorage<[$vec2; 3]> {
-                array.map(from_array_2).into()
+                MaskStorage::store_packed(array.map(from_array_2))
             }
             #[allow(dead_code)]
             #[inline(always)]
@@ -233,7 +238,7 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_3x3([a, b, c]: [[bool; 3]; 3]) -> MaskStorage<[$vec4; 3]> {
-                [from_array_3(a), from_array_3(b), from_array_3(c)].into()
+                MaskStorage::store_packed([from_array_3(a), from_array_3(b), from_array_3(c)])
             }
             #[inline(always)]
             pub(crate) fn to_array_3x3(mask: MaskStorage<[$vec4; 3]>) -> [[bool; 3]; 3] {
@@ -242,7 +247,7 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_4x3([a, b, c]: [[bool; 4]; 3]) -> MaskStorage<[$vec4; 3]> {
-                [from_array_4(a), from_array_4(b), from_array_4(c)].into()
+                MaskStorage::store_packed([from_array_4(a), from_array_4(b), from_array_4(c)])
             }
             #[inline(always)]
             pub(crate) fn to_array_4x3(mask: MaskStorage<[$vec4; 3]>) -> [[bool; 4]; 3] {
@@ -264,7 +269,7 @@ pub(crate) mod mask {
             #[inline(always)]
             pub(crate) fn from_array_2x4(array: [[bool; 2]; 4]) -> MaskStorage<[$vec4; 2]> {
                 let [[a, b], [c, d], [e, f], [g, h]] = array;
-                [from_array_4([a, b, c, d]), from_array_4([e, f, g, h])].into()
+                MaskStorage::store_packed([from_array_4([a, b, c, d]), from_array_4([e, f, g, h])])
             }
             #[inline(always)]
             pub(crate) fn to_array_2x4(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 2]; 4] {
@@ -275,7 +280,12 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_3x4([a, b, c, d]: [[bool; 3]; 4]) -> MaskStorage<[$vec4; 4]> {
-                [from_array_3(a), from_array_3(b), from_array_3(c), from_array_3(d)].into()
+                MaskStorage::store_packed([
+                    from_array_3(a),
+                    from_array_3(b),
+                    from_array_3(c),
+                    from_array_3(d),
+                ])
             }
             #[inline(always)]
             pub(crate) fn to_array_3x4(mask: MaskStorage<[$vec4; 4]>) -> [[bool; 3]; 4] {
@@ -284,7 +294,12 @@ pub(crate) mod mask {
             }
             #[inline(always)]
             pub(crate) fn from_array_4x4([a, b, c, d]: [[bool; 4]; 4]) -> MaskStorage<[$vec4; 4]> {
-                [from_array_4(a), from_array_4(b), from_array_4(c), from_array_4(d)].into()
+                MaskStorage::store_packed([
+                    from_array_4(a),
+                    from_array_4(b),
+                    from_array_4(c),
+                    from_array_4(d),
+                ])
             }
             #[inline(always)]
             pub(crate) fn to_array_4x4(mask: MaskStorage<[$vec4; 4]>) -> [[bool; 4]; 4] {
@@ -446,7 +461,8 @@ pub(crate) mod mask {
         fn from_array_1([x]: [bool; 1]) -> MaskStorage<i64> { MaskStorage::<i64>::new(x) }
         #[inline(always)]
         fn from_array_2(array: [bool; 2]) -> MaskStorage<i64x2> {
-            let narrow: MaskStorage<i32x2> = super::i32::from_array_2(array).store();
+            let narrow: MaskStorage<i32x2> =
+                MaskStorage::store_mask(super::i32::from_array_2(array));
             narrow.cast_i64()
         }
         #[inline(always)]
@@ -1513,12 +1529,11 @@ pub(crate) mod cast {
     pub(crate) fn i64x4_from_i64<const N: usize>(v: i64x4) -> i64x4 { v }
     #[inline(always)]
     pub(crate) fn u64x4_from_u64<const N: usize>(v: u64x4) -> u64x4 { v }
-    #[inline(always)]
-    pub(crate) fn f64x2_from_f64(v: f64x2) -> f64x2 { v }
-    #[inline(always)]
-    pub(crate) fn i64x2_from_i64(v: i64x2) -> i64x2 { v }
-    #[inline(always)]
-    pub(crate) fn u64x2_from_u64(v: u64x2) -> u64x2 { v }
+    pub(crate) use core::convert::{
+        identity as f64x2_from_f64,
+        identity as i64x2_from_i64,
+        identity as u64x2_from_u64,
+    };
 
     #[inline(always)]
     pub(crate) fn f32x4_from_f64<const N: usize>(v: f64x4) -> f32x4 {

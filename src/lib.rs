@@ -66,7 +66,7 @@ pub struct Vector<T: Element<D>, const D: usize> {
 /// ```
 pub struct Mask<T: MaskElement<D>, const D: usize> {
     // Mask lanes use the width of `T` and contain either all one bits or all zero bits.
-    pub(crate) storage: utils::MaskStorage<<T as private::SealedElement<D, 1>>::Storage>,
+    pub(crate) storage: utils::MaskStorage2<T, D>,
 }
 
 /// Constructs a vector by concatenating scalar and vector expressions.
@@ -475,12 +475,12 @@ pub mod support {
 pub(crate) mod private {
     use crate::{
         marker::{Float, Lane, StoredVerbatim},
-        utils::{Load, MaskStorage, Store},
+        utils::{self, MaskStorage, MaskStorage2},
     };
 
     pub(crate) trait Fmt {
         fn fmt<T: SealedElement<M, N> + core::fmt::Debug, const M: usize, const N: usize>(
-            storage: impl crate::utils::Store<T::Storage>,
+            storage: impl utils::Store<T::Storage>,
         ) -> impl core::fmt::Debug;
     }
 
@@ -544,7 +544,7 @@ pub(crate) mod private {
     impl Fmt for VectorFmt {
         #[inline(never)]
         fn fmt<T: SealedElement<M, N> + core::fmt::Debug, const M: usize, const N: usize>(
-            storage: impl crate::utils::Store<T::Storage>,
+            storage: impl utils::Store<T::Storage>,
         ) -> impl core::fmt::Debug {
             let array = T::to_array(storage.store());
             assert_eq!(array.len(), 1);
@@ -604,8 +604,12 @@ pub(crate) mod private {
 
     // M, N describe the row and column dimensions of the private column-major storage.
     pub(crate) trait SealedElement<const M: usize, const N: usize>: Sealed {
-        type Storage: Copy
-            + Load<Output: crate::utils::ArithPrimitive<Scalar = Self> + Store<Self::Storage>>;
+        // The storage answers for its own arithmetic. Naming `Load` here instead -- so that the
+        // defaults below could read `op(a.load(), b.load()).store()` -- would put the width
+        // conversion in this trait's bounds and in every default's body. Where storage and compute
+        // widths differ, which on x86 is the two-lane shapes alone, the storage type's own
+        // `ArithPrimitive` performs the conversion and nothing else has to know.
+        type Storage: Copy + utils::ArithPrimitive<Scalar = Self>;
 
         const ZERO: Self::Storage;
         const ONE: Self::Storage;
@@ -646,8 +650,7 @@ pub(crate) mod private {
         fn filled(value: Self) -> Self::Storage {
             // Named rather than inferred: `filled_` takes only the scalar, so nothing else
             // pins which type produces the storage.
-            <<Self::Storage as Load>::Output as crate::utils::ArithPrimitive>::filled_(value)
-                .store()
+            utils::ArithPrimitive::filled_(value)
         }
         fn substantiate_f32(_a: Self::Storage) -> <f32 as SealedElement<M, N>>::Storage
         where
@@ -769,8 +772,24 @@ pub(crate) mod private {
             unimplemented!()
         }
 
+        /// Reinterprets a mask produced at `Self`'s width as one belonging to `Self::Mask`.
+        ///
+        /// Both sides are the same concrete type -- `f32` at `(4, 1)` and its mask element `i32`
+        /// both mask with `i32x4` -- but only an implementation, where the element type is
+        /// concrete, can see that. The comparison defaults below leave this one step to the
+        /// backend and keep the comparison itself in one body.
+        fn substantiate_mask(_mask: MaskStorage2<Self, M, N>) -> MaskStorage2<Self::Mask, M, N>
+        where
+            Self: Lane<Mask: SealedElement<M, N>>,
+        {
+            unimplemented!()
+        }
+        /// Unwraps a mask into the vector storage of the same element type, for `Mask::to_vector`.
+        ///
+        /// Implemented for the mask element types alone, where the two are the same type.
+        fn from_mask(_mask: MaskStorage2<Self, M, N>) -> Self::Storage { unimplemented!() }
         fn select_mask(
-            _mask: MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>,
+            _mask: MaskStorage2<Self::Mask, M, N>,
             _true_values: <Self as SealedElement<M, N>>::Storage,
             _false_values: <Self as SealedElement<M, N>>::Storage,
         ) -> <Self as SealedElement<M, N>>::Storage
@@ -780,7 +799,7 @@ pub(crate) mod private {
             unimplemented!()
         }
         fn select_any_mask<Mask>(
-            _mask: MaskStorage<<Mask as SealedElement<M, N>>::Storage>,
+            _mask: MaskStorage2<Mask, M, N>,
             _true_values: <Self as SealedElement<M, N>>::Storage,
             _false_values: <Self as SealedElement<M, N>>::Storage,
         ) -> <Self as SealedElement<M, N>>::Storage
@@ -798,17 +817,13 @@ pub(crate) mod private {
             unimplemented!()
         }
 
-        fn cast_i32(
-            _a: MaskStorage<Self::Storage>,
-        ) -> MaskStorage<<i32 as SealedElement<M, N>>::Storage>
+        fn cast_i32(_mask: MaskStorage2<Self, M, N>) -> MaskStorage2<i32, M, N>
         where
             i32: SealedElement<M, N>,
         {
             unimplemented!()
         }
-        fn cast_i64(
-            _a: MaskStorage<Self::Storage>,
-        ) -> MaskStorage<<i64 as SealedElement<M, N>>::Storage>
+        fn cast_i64(_mask: MaskStorage2<Self, M, N>) -> MaskStorage2<i64, M, N>
         where
             i64: SealedElement<M, N>,
         {
@@ -816,120 +831,108 @@ pub(crate) mod private {
         }
 
         #[allow(clippy::wrong_self_convention)]
-        fn to_bool_array(_a: MaskStorage<Self::Storage>) -> [[bool; M]; N] { unimplemented!() }
-        fn from_bool_array(_array: [[bool; M]; N]) -> MaskStorage<Self::Storage> {
-            unimplemented!()
-        }
-        fn all(_mask: MaskStorage<Self::Storage>) -> bool { unimplemented!() }
-        fn any(_mask: MaskStorage<Self::Storage>) -> bool { unimplemented!() }
+        fn to_bool_array(_mask: MaskStorage2<Self, M, N>) -> [[bool; M]; N] { unimplemented!() }
+        fn from_bool_array(_array: [[bool; M]; N]) -> MaskStorage2<Self, M, N> { unimplemented!() }
+        fn all(_mask: MaskStorage2<Self, M, N>) -> bool { unimplemented!() }
+        fn any(_mask: MaskStorage2<Self, M, N>) -> bool { unimplemented!() }
         #[allow(clippy::wrong_self_convention)]
         #[expect(dead_code)]
-        fn to_bitmask(_mask: MaskStorage<Self::Storage>) -> u64 { unimplemented!() }
+        fn to_bitmask(_mask: MaskStorage2<Self, M, N>) -> u64 { unimplemented!() }
 
-        fn canonical_not(_a: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> {
-            unimplemented!()
+        // The four operations below take a mask and return a mask of the same element type, so
+        // widening and narrowing both happen here and the backends need no hook. The comparisons
+        // further down cannot do the same: they take `Self` and return `Self::Mask`, and nothing
+        // at this level relates the two storage types, which is what `substantiate_mask` is for.
+        #[inline(always)]
+        fn canonical_not(mask: MaskStorage2<Self, M, N>) -> MaskStorage2<Self, M, N> {
+            MaskStorage::store_mask(!mask.load_mask())
         }
+        #[inline(always)]
         fn canonical_bitand(
-            _a: MaskStorage<Self::Storage>,
-            _b: MaskStorage<Self::Storage>,
-        ) -> MaskStorage<Self::Storage> {
-            unimplemented!()
+            a: MaskStorage2<Self, M, N>,
+            b: MaskStorage2<Self, M, N>,
+        ) -> MaskStorage2<Self, M, N> {
+            MaskStorage::store_mask(a.load_mask() & b.load_mask())
         }
+        #[inline(always)]
         fn canonical_bitor(
-            _a: MaskStorage<Self::Storage>,
-            _b: MaskStorage<Self::Storage>,
-        ) -> MaskStorage<Self::Storage> {
-            unimplemented!()
+            a: MaskStorage2<Self, M, N>,
+            b: MaskStorage2<Self, M, N>,
+        ) -> MaskStorage2<Self, M, N> {
+            MaskStorage::store_mask(a.load_mask() | b.load_mask())
         }
+        #[inline(always)]
         fn canonical_bitxor(
-            _a: MaskStorage<Self::Storage>,
-            _b: MaskStorage<Self::Storage>,
-        ) -> MaskStorage<Self::Storage> {
-            unimplemented!()
+            a: MaskStorage2<Self, M, N>,
+            b: MaskStorage2<Self, M, N>,
+        ) -> MaskStorage2<Self, M, N> {
+            MaskStorage::store_mask(a.load_mask() ^ b.load_mask())
         }
         fn canonical_select_any_mask<Mask>(
-            _mask: MaskStorage<<Mask as SealedElement<M, N>>::Storage>,
-            _true_values: MaskStorage<<Self as SealedElement<M, N>>::Storage>,
-            _false_values: MaskStorage<<Self as SealedElement<M, N>>::Storage>,
-        ) -> MaskStorage<<Self as SealedElement<M, N>>::Storage>
+            _mask: MaskStorage2<Mask, M, N>,
+            _true_values: MaskStorage2<Self, M, N>,
+            _false_values: MaskStorage2<Self, M, N>,
+        ) -> MaskStorage2<Self, M, N>
         where
             Mask: SealedElement<M, N>,
         {
             unimplemented!()
         }
 
-        fn each_eq(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::eq_(a, b))
         }
-        fn each_ne(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_ne(_a: Self::Storage, _b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::ne_(_a, _b))
         }
-        fn each_lt(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::lt_(a, b))
         }
-        fn each_le(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::le_(a, b))
         }
-        fn each_gt(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::gt_(a, b))
         }
-        fn each_ge(
-            _a: Self::Storage,
-            _b: Self::Storage,
-        ) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::ge_(a, b))
         }
 
         #[expect(dead_code)]
-        fn is_nan(_a: Self::Storage) -> MaskStorage<<Self::Mask as SealedElement<M, N>>::Storage>
+        fn is_nan(_a: Self::Storage) -> MaskStorage2<Self::Mask, M, N>
         where
             Self: Lane<Mask: SealedElement<M, N>>,
         {
-            unimplemented!()
+            Self::substantiate_mask(utils::ArithPrimitive::is_nan_(_a))
         }
 
         // Defaulted like the other lane-wise operations: `src/api.rs` exposes these on `Vector`
         // alone, so the backends implement them for a one-column shape only.
         #[inline(always)]
         fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::max_(a.load(), b.load()).store()
+            utils::ArithPrimitive::max_(a, b)
         }
         #[inline(always)]
         fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::min_(a.load(), b.load()).store()
+            utils::ArithPrimitive::min_(a, b)
         }
         fn each_clamp<F: Fmt>(
             _a: Self::Storage,
@@ -953,22 +956,24 @@ pub(crate) mod private {
         // between costs the broadcast its `vbroadcastss`.
         #[inline(always)]
         fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::add_noexcept_(a.load(), b.load()).store()
+            utils::ArithPrimitive::add_noexcept_(a, b)
         }
         #[inline(always)]
         fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::sub_noexcept_(a.load(), b.load()).store()
+            utils::ArithPrimitive::sub_noexcept_(a, b)
         }
         #[inline(always)]
         fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::mul_noexcept_(a.load(), b.load()).store()
+            utils::ArithPrimitive::mul_noexcept_(a, b)
         }
-        fn div(_a: Self::Storage, _b: Self::Storage) -> Self::Storage;
+        // Integer division overrides this to reject a zero divisor first.
+        #[inline(always)]
+        fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+            utils::ArithPrimitive::div_(a, b)
+        }
         // TODO(integer-vector): separate sqrt and isqrt semantics in public traits.
         #[inline(always)]
-        fn sqrt(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::sqrt_(a.load()).store()
-        }
+        fn sqrt(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::sqrt_(a) }
         fn transpose(
             a: <Self as SealedElement<M, N>>::Storage,
         ) -> <Self as SealedElement<N, M>>::Storage
@@ -989,67 +994,49 @@ pub(crate) mod private {
             unimplemented!()
         }
         #[inline(always)]
-        fn floor(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::floor_(a.load()).store()
-        }
+        fn floor(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::floor_(a) }
         #[inline(always)]
-        fn ceil(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::ceil_(a.load()).store()
-        }
+        fn ceil(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::ceil_(a) }
         #[inline(always)]
-        fn round(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::round_(a.load()).store()
-        }
+        fn round(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::round_(a) }
         #[inline(always)]
         fn round_ties_even(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::round_ties_even_(a.load()).store()
+            utils::ArithPrimitive::round_ties_even_(a)
         }
         #[inline(always)]
-        fn trunc(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::trunc_(a.load()).store()
-        }
+        fn trunc(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::trunc_(a) }
         #[inline(always)]
-        fn fract(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::fract_(a.load()).store()
-        }
+        fn fract(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::fract_(a) }
         #[inline(always)]
-        fn neg(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::neg_noexcept_(a.load()).store()
-        }
+        fn neg(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::neg_noexcept_(a) }
         #[inline(always)]
-        fn abs(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::abs_noexcept_(a.load()).store()
-        }
+        fn abs(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::abs_noexcept_(a) }
         // No public operation reaches this yet; the vocabulary is here for when one does.
         #[expect(dead_code)]
         #[inline(always)]
-        fn signum(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::signum_(a.load()).store()
-        }
+        fn signum(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::signum_(a) }
         fn rem(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
         #[inline(always)]
-        fn not(a: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::not_(a.load()).store()
-        }
+        fn not(a: Self::Storage) -> Self::Storage { utils::ArithPrimitive::not_(a) }
         #[inline(always)]
         fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::bitand_(a.load(), b.load()).store()
+            utils::ArithPrimitive::bitand_(a, b)
         }
         #[inline(always)]
         fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::bitor_(a.load(), b.load()).store()
+            utils::ArithPrimitive::bitor_(a, b)
         }
         #[inline(always)]
         fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::bitxor_(a.load(), b.load()).store()
+            utils::ArithPrimitive::bitxor_(a, b)
         }
         #[inline(always)]
         fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::shl_noexcept_(a.load(), b.load()).store()
+            utils::ArithPrimitive::shl_noexcept_(a, b)
         }
         #[inline(always)]
         fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            crate::utils::ArithPrimitive::shr_noexcept_(a.load(), b.load()).store()
+            utils::ArithPrimitive::shr_noexcept_(a, b)
         }
 
         fn reduce_sum(_a: Self::Storage) -> Self { unimplemented!() }

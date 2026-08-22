@@ -6,7 +6,14 @@ use super::{
     marker::{Float, Int, Lane},
     private,
 };
-use crate::utils::{ArithPrimitive, MaskPrimitive, MaskStorage, if_, impl_default_load};
+use crate::utils::{
+    ArithPrimitive,
+    MaskPrimitive,
+    MaskStorage,
+    MaskStorage2,
+    if_,
+    impl_default_load,
+};
 
 impl_default_load!();
 
@@ -52,23 +59,6 @@ fn map3<U, T0: Copy, T1: Copy, T2: Copy, const M: usize, const N: usize>(
             )
         },
     )
-}
-
-#[inline(always)]
-fn map1_mask<U: MaskPrimitive, T: Copy, const M: usize, const N: usize>(
-    a: [[T; M]; N],
-    f: impl FnMut(T) -> MaskStorage<U>,
-) -> MaskStorage<[[U; M]; N]> {
-    map1(a, f).map(Into::into).into()
-}
-
-#[inline(always)]
-fn map2_mask<U: MaskPrimitive, T0: Copy, T1: Copy, const M: usize, const N: usize>(
-    a: [[T0; M]; N],
-    b: [[T1; M]; N],
-    f: impl FnMut(T0, T1) -> MaskStorage<U>,
-) -> MaskStorage<[[U; M]; N]> {
-    map2(a, b, f).map(Into::into).into()
 }
 
 #[inline(always)]
@@ -150,10 +140,14 @@ macro_rules! impl_layout {
                     |vec| vec.get_mut(i)
                 )
             }
-            #[inline(always)]
-            fn as_array_first(a: &Self::Storage) -> &[Self; $m] { &a[0] }
-            #[inline(always)]
-            fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { &mut a[0] }
+            // `Vector::as_array` and `Vector::as_mut_array` are the only callers, and both
+            // name a one-column shape.
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn as_array_first(a: &Self::Storage) -> &[Self; $m] { &a[0] }
+                #[inline(always)]
+                fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { &mut a[0] }
+            }}
             #[inline(always)]
             fn to_array(a: Self::Storage) -> [[Self; $m]; $n] { a }
             #[inline(always)]
@@ -213,7 +207,7 @@ macro_rules! impl_layout {
             }
             #[inline(always)]
             fn select_any_mask<Mask>(
-                mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                mask: MaskStorage2<Mask, $m, $n>,
                 true_values: <Self as private::SealedElement<$m, $n>>::Storage,
                 false_values: <Self as private::SealedElement<$m, $n>>::Storage,
             ) -> <Self as private::SealedElement<$m, $n>>::Storage
@@ -226,36 +220,24 @@ macro_rules! impl_layout {
                     false_values,
                 )
             }
+            // A mask is stored at the width of the element it selects, which without vector
+            // instructions means one `i32` or `i64` per lane in the same shape as the storage.
+            // That is the same type the shared comparison bodies produce, so this is the identity
+            // and they need nothing else from this backend.
             #[inline(always)]
-            fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                map2_mask(a, b, Self::eq_)
+            fn substantiate_mask(
+                mask: MaskStorage2<Self, $m, $n>,
+            ) -> MaskStorage2<<Self as Lane>::Mask, $m, $n>
+            where
+                Self: Lane<Mask: private::SealedElement<$m, $n>>,
+            {
+                mask
             }
             // Lane-wise comparisons and the clamp. `src/api.rs` exposes these on `Vector` alone, so a
             // matrix shape would carry a body nothing can call. `each_eq` above is the exception: the
             // integer `div` uses it to find a zero divisor, and a matrix divided by a scalar reaches
             // `div`.
             if_! { $n == 1 {
-                #[inline(always)]
-                fn each_ne(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map2_mask(a, b, Self::ne_)
-                }
-                #[inline(always)]
-                fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map2_mask(a, b, Self::lt_)
-                }
-                #[inline(always)]
-                fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map2_mask(a, b, Self::le_)
-                }
-                #[inline(always)]
-                fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map2_mask(a, b, Self::gt_)
-                }
-                #[inline(always)]
-                fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map2_mask(a, b, Self::ge_)
-                }
-
                 #[inline(always)]
                 fn each_clamp<F: private::Fmt>(
                     a: Self::Storage,
@@ -285,6 +267,8 @@ macro_rules! impl_layout {
             }
             if_! { $signed $int == signed int {
                 #[inline(always)]
+                fn from_mask(mask: MaskStorage2<Self, $m, $n>) -> Self::Storage { mask.into_inner() }
+                #[inline(always)]
                 fn all(mask: MaskStorage<Self::Storage>) -> bool {
                     mask.into_inner().as_flattened().iter().copied().all(Self::is_negative)
                 }
@@ -309,26 +293,33 @@ macro_rules! impl_layout {
                 }
                 #[inline(always)]
                 fn from_bool_array(a: [[bool; $m]; $n]) -> MaskStorage<Self::Storage> {
-                    a.map({
+                    MaskStorage::store_packed(a.map(
                         #[inline(always)]
-                        |column| column.map(MaskStorage::<Self>::new).into()
-                    })
-                    .into()
+                        |column| MaskStorage::store_packed(column.map(MaskStorage::<Self>::new)),
+                    ))
                 }
-                #[inline(always)]
-                fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage { a }
-                #[inline(always)]
-                fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage {
-                    map1(a, Self::cast_unsigned)
-                }
+                // `Vector::cast_signed`, `Vector::cast_unsigned` and `Vector::abs_diff`
+                // are the only callers, and all name a one-column shape.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage { a }
+                    #[inline(always)]
+                    fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage {
+                        map1(a, Self::cast_unsigned)
+                    }
+                }}
             }}
             if_! { $signed $int == unsigned int {
-                #[inline(always)]
-                fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage {
-                    map1(a, Self::cast_signed)
-                }
-                #[inline(always)]
-                fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage { a }
+                // `Vector::cast_signed`, `Vector::cast_unsigned` and `Vector::abs_diff`
+                // are the only callers, and all name a one-column shape.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage {
+                        map1(a, Self::cast_signed)
+                    }
+                    #[inline(always)]
+                    fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage { a }
+                }}
             }}
             if_! { $int == int {
                 #[inline(always)]
@@ -361,31 +352,29 @@ macro_rules! impl_layout {
                 }}
             }}
             if_! { $float == float {
-                #[inline(always)]
-                fn from_bits(
-                    a: <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage,
-                ) -> Self::Storage {
-                    map1(a, Self::from_bits)
-                }
-                #[allow(clippy::wrong_self_convention)]
-                #[inline(always)]
-                fn to_bits(
-                    a: Self::Storage,
-                ) -> <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage {
-                    map1(a, Self::to_bits)
-                }
+                // `Vector::from_bits` and `Vector::to_bits` are the only callers, and
+                // both name a one-column shape.
+                if_! { $n == 1 {
+                    #[inline(always)]
+                    fn from_bits(
+                        a: <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage,
+                    ) -> Self::Storage {
+                        map1(a, Self::from_bits)
+                    }
+                    #[allow(clippy::wrong_self_convention)]
+                    #[inline(always)]
+                    fn to_bits(
+                        a: Self::Storage,
+                    ) -> <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage {
+                        map1(a, Self::to_bits)
+                    }
+                }}
                 // TODO(integer-vector): split div/sqrt requirements for integer and float element traits.
-                #[inline(always)]
-                fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Div::div) }
                 // `Rem` is generated for vectors only.
                 if_! { $n == 1 {
                     #[inline(always)]
                     fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage { map2(a, b, core::ops::Rem::rem) }
                 }}
-                #[inline(always)]
-                fn is_nan(a: Self::Storage) -> MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage> {
-                    map1_mask(a, Self::is_nan_)
-                }
             }}
             if_! { $signed == signed {
             }}
@@ -590,7 +579,7 @@ macro_rules! impl_layouts_i32 {
                 fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a.cast_i64() }
                 #[inline(always)]
                 fn canonical_select_any_mask<Mask>(
-                    mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                    mask: MaskStorage2<Mask, $m, $n>,
                     true_values: MaskStorage<Self::Storage>,
                     false_values: MaskStorage<Self::Storage>,
                 ) -> MaskStorage<Self::Storage>
@@ -622,7 +611,7 @@ macro_rules! impl_layouts_i64 {
                 fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a }
                 #[inline(always)]
                 fn canonical_select_any_mask<Mask>(
-                    mask: MaskStorage<<Mask as private::SealedElement<$m, $n>>::Storage>,
+                    mask: MaskStorage2<Mask, $m, $n>,
                     true_values: MaskStorage<Self::Storage>,
                     false_values: MaskStorage<Self::Storage>,
                 ) -> MaskStorage<Self::Storage>

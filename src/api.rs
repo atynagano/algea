@@ -728,7 +728,7 @@ impl<T: MaskElement<D>, const D: usize> core::ops::Not for Mask<T, D> {
 }
 
 macro_rules! impl_mask_binop {
-    (@a $scalar:tt, [$([$trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt, $f:tt],)+]) => {
+    ([$([$trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt, $f:tt],)+]) => {
         $(
             impl<T: MaskElement<D>, const D: usize> core::ops::$trait for Mask<T, D> {
                 type Output = Self;
@@ -745,13 +745,9 @@ macro_rules! impl_mask_binop {
             }
         )+
     };
-    ([$($scalar:tt),+], $remaining:tt) => {
-        $(impl_mask_binop!(@a $scalar, $remaining);)+
-    };
 }
 
 impl_mask_binop! {
-    [i32],
     [
         [BitAnd::bitand, BitAndAssign::bitand_assign, canonical_bitand],
         [BitOr::bitor, BitOrAssign::bitor_assign, canonical_bitor],
@@ -766,10 +762,11 @@ impl<T: row_major::MatrixProduct<N, N, N>, const N: usize> core::iter::Product
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc * x
-            })
+                |acc, x| acc * x,
+            )
         } else {
             Self::IDENTITY
         }
@@ -782,10 +779,11 @@ impl<T: column_major::MatrixProduct<N, N, N>, const N: usize> core::iter::Produc
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc * x
-            })
+                |acc, x| acc * x,
+            )
         } else {
             Self::IDENTITY
         }
@@ -798,10 +796,11 @@ impl<T: Element<D> + core::ops::Mul<Output = T>, const D: usize> core::iter::Pro
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc * x
-            })
+                |acc, x| acc * x,
+            )
         } else {
             Self::ONE
         }
@@ -815,10 +814,11 @@ impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usi
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc + x
-            })
+                |acc, x| acc + x,
+            )
         } else {
             Self::ZERO
         }
@@ -831,10 +831,11 @@ impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usi
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc + x
-            })
+                |acc, x| acc + x,
+            )
         } else {
             Self::ZERO
         }
@@ -845,10 +846,11 @@ impl<T: Element<D> + core::ops::Add<Output = T>, const D: usize> core::iter::Sum
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
         if let Some(first) = iter.next() {
-            iter.fold(first, {
+            iter.fold(
+                first,
                 #[inline(always)]
-                |acc, x| acc + x
-            })
+                |acc, x| acc + x,
+            )
         } else {
             Self::ZERO
         }
@@ -1250,7 +1252,9 @@ impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
     ///
     /// True lanes contain all one bits and false lanes contain zero.
     #[inline]
-    pub fn to_vector(self) -> Vector<T, D> { Vector { storage: self.storage.into_inner() } }
+    pub fn to_vector(self) -> Vector<T, D> {
+        vector::call!(Vector(<T, D>::from_mask(self.storage)))
+    }
     /// Returns `true` if every lane is true.
     #[inline]
     pub fn all(self) -> bool { vector::call!(<T, D>::all(self.storage)) }
