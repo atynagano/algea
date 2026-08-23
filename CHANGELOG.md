@@ -6,6 +6,22 @@ Notable changes to this crate are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-23
+
+### Changed
+
+- The crate compiles substantially faster and produces a smaller debug artifact.
+  `cargo build --lib` spends 2.45 s in rustc rather than 8.43 s, and the debug
+  rlib is 14,300 KiB rather than 48,117 KiB.
+- Nothing in the public API or in the documented behaviour, and next to nothing
+  in the generated code. Release assembly was compared for 1,614 public entry
+  points -- every swizzle accessor, the matrix kernels, the lane-wise and
+  comparison operations, masks and selection, integer and floating-point
+  division, the casts and the array accessors -- on x86-64 SSE2, AVX2 and
+  AVX-512. Of the 4,842 resulting functions, 4,776 are byte-identical to 0.2.0,
+  60 are the same instructions in a different schedule, and 6 are one
+  instruction shorter. None is longer.
+
 ## [0.2.0] - 2026-08-20
 
 ### Added
@@ -37,6 +53,7 @@ Notable changes to this crate are recorded here. The format follows
   dimensions and matrix row and column counts from one through four, row-major
   and column-major storage, and a backend selected for the target.
 
-[Unreleased]: https://github.com/atynagano/algea/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/atynagano/algea/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/atynagano/algea/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atynagano/algea/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/atynagano/algea/releases/tag/v0.1.0
