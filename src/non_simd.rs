@@ -6,14 +6,7 @@ use super::{
     marker::{Float, Int, Lane},
     private,
 };
-use crate::utils::{
-    ArithPrimitive,
-    MaskPrimitive,
-    MaskStorage,
-    MaskStorage2,
-    if_,
-    impl_default_load,
-};
+use crate::utils::{ArithOps, CanonicalMask, MaskOps, MaskStorage, if_, impl_default_load};
 
 impl_default_load!();
 
@@ -62,15 +55,15 @@ fn map3<U, T0: Copy, T1: Copy, T2: Copy, const M: usize, const N: usize>(
 }
 
 #[inline(always)]
-fn map3_with_mask<U, T0: MaskPrimitive, T1: Copy, T2: Copy, const M: usize, const N: usize>(
-    mask: MaskStorage<[[T0; M]; N]>,
+fn map3_with_mask<U, T0: MaskOps, T1: Copy, T2: Copy, const M: usize, const N: usize>(
+    mask: CanonicalMask<[[T0; M]; N]>,
     b: [[T1; M]; N],
     c: [[T2; M]; N],
-    mut f: impl FnMut(MaskStorage<T0>, T1, T2) -> U,
+    mut f: impl FnMut(CanonicalMask<T0>, T1, T2) -> U,
 ) -> [[U; M]; N] {
-    let mask = mask.unpack().map(
+    let mask = mask.into_parts().map(
         #[inline(always)]
-        |column| column.unpack(),
+        |column| column.into_parts(),
     );
     core::array::from_fn(
         #[inline(always)]
@@ -83,19 +76,19 @@ fn map3_with_mask<U, T0: MaskPrimitive, T1: Copy, T2: Copy, const M: usize, cons
     )
 }
 
-impl<const M: usize, const N: usize> MaskStorage<[[i32; M]; N]> {
+impl<const M: usize, const N: usize> CanonicalMask<[[i32; M]; N]> {
     #[inline(always)]
-    pub(crate) fn cast_i64(self) -> MaskStorage<[[i64; M]; N]> {
+    pub(crate) fn cast_i64(self) -> CanonicalMask<[[i64; M]; N]> {
         // SAFETY: sign extension maps `0` to `0` and `-1` to `-1`.
-        unsafe { MaskStorage::new_unchecked(map1(self.into_inner(), i64::from)) }
+        unsafe { CanonicalMask::new_unchecked(map1(self.into_inner(), i64::from)) }
     }
 }
-impl<const M: usize, const N: usize> MaskStorage<[[i64; M]; N]> {
+impl<const M: usize, const N: usize> CanonicalMask<[[i64; M]; N]> {
     #[inline(always)]
-    pub(crate) fn cast_i32(self) -> MaskStorage<[[i32; M]; N]> {
+    pub(crate) fn cast_i32(self) -> CanonicalMask<[[i32; M]; N]> {
         // SAFETY: truncation keeps the low bits, mapping `0` to `0` and `-1` to `-1`.
         unsafe {
-            MaskStorage::new_unchecked(map1(
+            CanonicalMask::new_unchecked(map1(
                 self.into_inner(),
                 #[inline(always)]
                 |x| x as i32,
@@ -199,7 +192,7 @@ macro_rules! impl_layout {
 
             #[inline(always)]
             fn select_mask(
-                mask: MaskStorage<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage>,
+                mask: CanonicalMask<<<Self as Lane>::Mask as private::SealedElement<$m, $n>>::Storage>,
                 true_values: <Self as private::SealedElement<$m, $n>>::Storage,
                 false_values: <Self as private::SealedElement<$m, $n>>::Storage,
             ) -> <Self as private::SealedElement<$m, $n>>::Storage {
@@ -207,7 +200,7 @@ macro_rules! impl_layout {
             }
             #[inline(always)]
             fn select_any_mask<Mask>(
-                mask: MaskStorage2<Mask, $m, $n>,
+                mask: MaskStorage<Mask, $m, $n>,
                 true_values: <Self as private::SealedElement<$m, $n>>::Storage,
                 false_values: <Self as private::SealedElement<$m, $n>>::Storage,
             ) -> <Self as private::SealedElement<$m, $n>>::Storage
@@ -226,8 +219,8 @@ macro_rules! impl_layout {
             // and they need nothing else from this backend.
             #[inline(always)]
             fn substantiate_mask(
-                mask: MaskStorage2<Self, $m, $n>,
-            ) -> MaskStorage2<<Self as Lane>::Mask, $m, $n>
+                mask: MaskStorage<Self, $m, $n>,
+            ) -> MaskStorage<<Self as Lane>::Mask, $m, $n>
             where
                 Self: Lane<Mask: private::SealedElement<$m, $n>>,
             {
@@ -267,35 +260,35 @@ macro_rules! impl_layout {
             }
             if_! { $signed $int == signed int {
                 #[inline(always)]
-                fn from_mask(mask: MaskStorage2<Self, $m, $n>) -> Self::Storage { mask.into_inner() }
+                fn from_mask(mask: MaskStorage<Self, $m, $n>) -> Self::Storage { mask.into_inner() }
                 #[inline(always)]
-                fn all(mask: MaskStorage<Self::Storage>) -> bool {
+                fn all(mask: CanonicalMask<Self::Storage>) -> bool {
                     mask.into_inner().as_flattened().iter().copied().all(Self::is_negative)
                 }
                 #[inline(always)]
-                fn any(mask: MaskStorage<Self::Storage>) -> bool {
+                fn any(mask: CanonicalMask<Self::Storage>) -> bool {
                     mask.into_inner().as_flattened().iter().copied().any(Self::is_negative)
                 }
                 #[inline(always)]
-                fn canonical_not(a: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> { !a }
+                fn mask_not(a: CanonicalMask<Self::Storage>) -> CanonicalMask<Self::Storage> { !a }
                 #[inline(always)]
-                fn canonical_bitand(a: MaskStorage<Self::Storage>, b: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> { a & b }
+                fn mask_bitand(a: CanonicalMask<Self::Storage>, b: CanonicalMask<Self::Storage>) -> CanonicalMask<Self::Storage> { a & b }
                 #[inline(always)]
-                fn canonical_bitor(a: MaskStorage<Self::Storage>, b: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> { a | b }
+                fn mask_bitor(a: CanonicalMask<Self::Storage>, b: CanonicalMask<Self::Storage>) -> CanonicalMask<Self::Storage> { a | b }
                 #[inline(always)]
-                fn canonical_bitxor(a: MaskStorage<Self::Storage>, b: MaskStorage<Self::Storage>) -> MaskStorage<Self::Storage> { a ^ b }
+                fn mask_bitxor(a: CanonicalMask<Self::Storage>, b: CanonicalMask<Self::Storage>) -> CanonicalMask<Self::Storage> { a ^ b }
                 #[inline(always)]
-                fn to_bool_array(a: MaskStorage<Self::Storage>) -> [[bool; $m]; $n] {
+                fn to_bool_array(a: CanonicalMask<Self::Storage>) -> [[bool; $m]; $n] {
                     a.into_inner().map(
                         #[inline(always)]
                         |column| column.map(Self::is_negative)
                     )
                 }
                 #[inline(always)]
-                fn from_bool_array(a: [[bool; $m]; $n]) -> MaskStorage<Self::Storage> {
-                    MaskStorage::store_packed(a.map(
+                fn from_bool_array(a: [[bool; $m]; $n]) -> CanonicalMask<Self::Storage> {
+                    CanonicalMask::from_parts(a.map(
                         #[inline(always)]
-                        |column| MaskStorage::store_packed(column.map(MaskStorage::<Self>::new)),
+                        |column| CanonicalMask::from_parts(column.map(CanonicalMask::<Self>::new)),
                     ))
                 }
                 // `Vector::cast_signed`, `Vector::cast_unsigned` and `Vector::abs_diff`
@@ -412,7 +405,7 @@ macro_rules! impl_layout {
             if_! { $m == 1 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
+                    fn to_bitmask(mask: CanonicalMask<Self::Storage>) -> u64 {
                         u64::from(mask.into_inner()[0][0] < 0)
                     }
                 }}
@@ -420,7 +413,7 @@ macro_rules! impl_layout {
             if_! { $m == 2 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
+                    fn to_bitmask(mask: CanonicalMask<Self::Storage>) -> u64 {
                         let mask = mask.into_inner()[0];
                         u64::from(mask[0] < 0) | u64::from(mask[1] < 0) << 1
                     }
@@ -435,7 +428,7 @@ macro_rules! impl_layout {
             if_! { $m == 3 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
+                    fn to_bitmask(mask: CanonicalMask<Self::Storage>) -> u64 {
                         let mask = mask.into_inner()[0];
                         u64::from(mask[0] < 0) | u64::from(mask[1] < 0) << 1 | u64::from(mask[2] < 0) << 2
                     }
@@ -452,7 +445,7 @@ macro_rules! impl_layout {
             if_! { $m == 4 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self::Storage>) -> u64 {
+                    fn to_bitmask(mask: CanonicalMask<Self::Storage>) -> u64 {
                         let mask = mask.into_inner()[0];
                         u64::from(mask[0] < 0) | u64::from(mask[1] < 0) << 1 | u64::from(mask[2] < 0) << 2 | u64::from(mask[3] < 0) << 3
                     }
@@ -574,15 +567,15 @@ macro_rules! impl_layouts_i32 {
 
             if_! { $n == 1 {
                 #[inline(always)]
-                fn cast_i32(a: MaskStorage<Self::Storage>) -> MaskStorage<<i32 as private::SealedElement<$m, $n>>::Storage> { a }
+                fn cast_i32(a: CanonicalMask<Self::Storage>) -> CanonicalMask<<i32 as private::SealedElement<$m, $n>>::Storage> { a }
                 #[inline(always)]
-                fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a.cast_i64() }
+                fn cast_i64(a: CanonicalMask<Self::Storage>) -> CanonicalMask<<i64 as private::SealedElement<$m, $n>>::Storage> { a.cast_i64() }
                 #[inline(always)]
-                fn canonical_select_any_mask<Mask>(
-                    mask: MaskStorage2<Mask, $m, $n>,
-                    true_values: MaskStorage<Self::Storage>,
-                    false_values: MaskStorage<Self::Storage>,
-                ) -> MaskStorage<Self::Storage>
+                fn mask_select_any<Mask>(
+                    mask: MaskStorage<Mask, $m, $n>,
+                    true_values: CanonicalMask<Self::Storage>,
+                    false_values: CanonicalMask<Self::Storage>,
+                ) -> CanonicalMask<Self::Storage>
                 where
                     Mask: private::SealedElement<$m, $n>,
                 {
@@ -606,15 +599,15 @@ macro_rules! impl_layouts_i64 {
 
             if_! { $n == 1 {
                 #[inline(always)]
-                fn cast_i32(a: MaskStorage<Self::Storage>) -> MaskStorage<<i32 as private::SealedElement<$m, $n>>::Storage> { a.cast_i32() }
+                fn cast_i32(a: CanonicalMask<Self::Storage>) -> CanonicalMask<<i32 as private::SealedElement<$m, $n>>::Storage> { a.cast_i32() }
                 #[inline(always)]
-                fn cast_i64(a: MaskStorage<Self::Storage>) -> MaskStorage<<i64 as private::SealedElement<$m, $n>>::Storage> { a }
+                fn cast_i64(a: CanonicalMask<Self::Storage>) -> CanonicalMask<<i64 as private::SealedElement<$m, $n>>::Storage> { a }
                 #[inline(always)]
-                fn canonical_select_any_mask<Mask>(
-                    mask: MaskStorage2<Mask, $m, $n>,
-                    true_values: MaskStorage<Self::Storage>,
-                    false_values: MaskStorage<Self::Storage>,
-                ) -> MaskStorage<Self::Storage>
+                fn mask_select_any<Mask>(
+                    mask: MaskStorage<Mask, $m, $n>,
+                    true_values: CanonicalMask<Self::Storage>,
+                    false_values: CanonicalMask<Self::Storage>,
+                ) -> CanonicalMask<Self::Storage>
                 where
                     Mask: private::SealedElement<$m, $n>,
                 {

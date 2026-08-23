@@ -2,7 +2,7 @@ use super::mask::i32::*;
 use crate::{
     private,
     simd::utils::{compute_i32x2, f32x2, i32x2, u32x2},
-    utils::{ArithPrimitive, MaskPrimitive, MaskStorage, Store},
+    utils::{ArithOps, CanonicalMask, MaskOps, Store},
 };
 use wide::{f32x4, i32x4, u32x4};
 
@@ -19,15 +19,15 @@ fn compact2(values: [i32; 2]) -> compute_i32x2 {
     }
 }
 
-fn canonical<T: MaskPrimitive>(value: T) -> MaskStorage<T> {
-    assert!(value.is_valid());
-    // SAFETY: `is_valid` verified that every physical lane is either 0 or -1.
-    unsafe { MaskStorage::new_unchecked(value) }
+fn canonical<T: MaskOps>(value: T) -> CanonicalMask<T> {
+    assert!(value.is_canonical());
+    // SAFETY: `is_canonical` verified that every physical lane is either 0 or -1.
+    unsafe { CanonicalMask::new_unchecked(value) }
 }
 
-fn assert_canonical_lanes(mask: MaskStorage<i32x4>, expected: [i32; 4]) {
+fn assert_canonical_lanes(mask: CanonicalMask<i32x4>, expected: [i32; 4]) {
     let storage = mask.into_inner();
-    assert!(storage.is_valid());
+    assert!(storage.is_canonical());
     assert_eq!(storage.to_array(), expected);
 }
 
@@ -195,26 +195,26 @@ fn mask_array_conversion_covers_all_16_storage_shapes() {
 }
 
 #[test]
-fn mask_storage_validation_not_and_pack_unpack_preserve_canonical_lanes() {
-    assert!(F.is_valid());
-    assert!(T.is_valid());
-    assert!(!1_i32.is_valid());
-    assert!(!(-2_i32).is_valid());
+fn mask_storage_validation_not_and_parts_round_trip_preserve_canonical_lanes() {
+    assert!(F.is_canonical());
+    assert!(T.is_canonical());
+    assert!(!1_i32.is_canonical());
+    assert!(!(-2_i32).is_canonical());
 
-    assert!(i32x4::new([T, F, T, F]).is_valid());
-    assert!(!i32x4::new([T, F, 1, F]).is_valid());
-    assert!([i32x4::new([T, F, T, F]), i32x4::splat(F)].is_valid());
-    assert!(![i32x4::new([T, F, T, F]), i32x4::new([F, -2, F, F])].is_valid());
+    assert!(i32x4::new([T, F, T, F]).is_canonical());
+    assert!(!i32x4::new([T, F, 1, F]).is_canonical());
+    assert!([i32x4::new([T, F, T, F]), i32x4::splat(F)].is_canonical());
+    assert!(![i32x4::new([T, F, T, F]), i32x4::new([F, -2, F, F])].is_canonical());
 
     let first = canonical(i32x4::new([T, F, T, F]));
     let second = canonical(i32x4::new([F, T, F, T]));
     assert_canonical_lanes(!first, [F, T, F, T]);
 
-    let packed: MaskStorage<[i32x4; 2]> = MaskStorage::store_packed([first, second]);
-    assert!(packed.into_inner().is_valid());
-    let unpacked = packed.unpack();
-    assert_canonical_lanes(unpacked[0], [T, F, T, F]);
-    assert_canonical_lanes(unpacked[1], [F, T, F, T]);
+    let combined: CanonicalMask<[i32x4; 2]> = CanonicalMask::from_parts([first, second]);
+    assert!(combined.into_inner().is_canonical());
+    let parts = combined.into_parts();
+    assert_canonical_lanes(parts[0], [T, F, T, F]);
+    assert_canonical_lanes(parts[1], [F, T, F, T]);
 }
 
 #[test]
@@ -222,13 +222,13 @@ fn f32x4_comparisons_produce_canonical_lanes() {
     let a = f32x4::new([1.0, 2.0, f32::NAN, -0.0]);
     let b = f32x4::new([1.0, 3.0, f32::INFINITY, 0.0]);
 
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::eq_(a, b), [T, F, F, T]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::ne_(a, b), [F, T, T, F]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::lt_(a, b), [F, T, F, F]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::le_(a, b), [T, T, F, T]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::gt_(a, b), [F, F, F, F]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::ge_(a, b), [T, F, F, T]);
-    assert_canonical_lanes(<f32x4 as ArithPrimitive>::is_nan_(a), [F, F, T, F]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::eq_(a, b), [T, F, F, T]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::ne_(a, b), [F, T, T, F]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::lt_(a, b), [F, T, F, F]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::le_(a, b), [T, T, F, T]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::gt_(a, b), [F, F, F, F]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::ge_(a, b), [T, F, F, T]);
+    assert_canonical_lanes(<f32x4 as ArithOps>::is_nan_(a), [F, F, T, F]);
 }
 
 #[test]
@@ -236,12 +236,12 @@ fn i32x4_comparisons_produce_canonical_lanes() {
     let a = i32x4::new([-2, 5, 7, i32::MAX]);
     let b = i32x4::new([-1, 5, 3, i32::MIN]);
 
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::eq_(a, b), [F, T, F, F]);
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::ne_(a, b), [T, F, T, T]);
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::lt_(a, b), [T, F, F, F]);
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::le_(a, b), [T, T, F, F]);
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::gt_(a, b), [F, F, T, T]);
-    assert_canonical_lanes(<i32x4 as ArithPrimitive>::ge_(a, b), [F, T, T, T]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::eq_(a, b), [F, T, F, F]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::ne_(a, b), [T, F, T, T]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::lt_(a, b), [T, F, F, F]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::le_(a, b), [T, T, F, F]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::gt_(a, b), [F, F, T, T]);
+    assert_canonical_lanes(<i32x4 as ArithOps>::ge_(a, b), [F, T, T, T]);
 }
 
 #[test]
@@ -249,10 +249,10 @@ fn u32x4_comparisons_produce_canonical_lanes() {
     let a = u32x4::new([0, 5, u32::MAX, 1]);
     let b = u32x4::new([1, 5, 0, 2]);
 
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::eq_(a, b), [F, T, F, F]);
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::ne_(a, b), [T, F, T, T]);
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::lt_(a, b), [T, F, F, T]);
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::le_(a, b), [T, T, F, T]);
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::gt_(a, b), [F, F, T, F]);
-    assert_canonical_lanes(<u32x4 as ArithPrimitive>::ge_(a, b), [F, T, T, F]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::eq_(a, b), [F, T, F, F]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::ne_(a, b), [T, F, T, T]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::lt_(a, b), [T, F, F, T]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::le_(a, b), [T, T, F, T]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::gt_(a, b), [F, F, T, F]);
+    assert_canonical_lanes(<u32x4 as ArithOps>::ge_(a, b), [F, T, T, F]);
 }
