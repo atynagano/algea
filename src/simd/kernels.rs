@@ -2,14 +2,14 @@
 mod tests;
 
 pub(crate) mod reduce {
-    use crate::utils::ArithPrimitive;
+    use crate::utils::ArithOps;
     use std::ops::Add;
 
     // TODO(reduce-operations): only `sum` has a reduction; product, min and max do not.
 
     // TODO(reduce-sum-codegen): confirm which reduction shape wins per lane count and target.
     #[inline(always)]
-    pub(crate) fn sum<T: ArithPrimitive<Scalar: Copy + Add<Output = T::Scalar>>, const N: usize>(
+    pub(crate) fn sum<T: ArithOps<Scalar: Copy + Add<Output = T::Scalar>>, const N: usize>(
         v: T,
     ) -> T::Scalar {
         match N {
@@ -39,7 +39,7 @@ pub(crate) mod reduce {
 pub(crate) mod mask {
     use crate::{
         simd::utils::{Simd2Ext, Simd4Ext, compute_i32x2, i32x2, swizzle},
-        utils::MaskStorage,
+        utils::CanonicalMask,
     };
     use wide::{bytemuck::cast, i32x4, i64x2, i64x4};
 
@@ -55,25 +55,25 @@ pub(crate) mod mask {
     // Narrowing is the mirror image: the low half of a canonical 64-bit lane already is the
     // canonical 32-bit lane, so it is a single gather of the even 32-bit lanes.
 
-    impl MaskStorage<i32> {
+    impl CanonicalMask<i32> {
         #[inline(always)]
-        pub(crate) fn cast_i64(self) -> MaskStorage<i64> {
+        pub(crate) fn cast_i64(self) -> CanonicalMask<i64> {
             // SAFETY: sign extension maps `0` to `0` and `-1` to `-1`.
-            unsafe { MaskStorage::new_unchecked(i64::from(self.into_inner())) }
+            unsafe { CanonicalMask::new_unchecked(i64::from(self.into_inner())) }
         }
     }
-    impl MaskStorage<i32x2> {
+    impl CanonicalMask<i32x2> {
         #[inline(always)]
-        pub(crate) fn cast_i64(self) -> MaskStorage<i64x2> {
+        pub(crate) fn cast_i64(self) -> CanonicalMask<i64x2> {
             let duplicated = swizzle!(self.load_mask().into_inner(), [0, 0, 1, 1]);
             // SAFETY: every 32-bit lane read by the shuffle is canonical, so each pair of them
             // forms an all-zero or all-one 64-bit lane.
-            unsafe { MaskStorage::new_unchecked(cast::<i32x4, i64x2>(duplicated)) }
+            unsafe { CanonicalMask::new_unchecked(cast::<i32x4, i64x2>(duplicated)) }
         }
     }
-    impl MaskStorage<i32x4> {
+    impl CanonicalMask<i32x4> {
         #[inline(always)]
-        pub(crate) fn cast_i64(self) -> MaskStorage<i64x4> {
+        pub(crate) fn cast_i64(self) -> CanonicalMask<i64x4> {
             let inner = self.into_inner();
             #[rustfmt::skip]
             let widened = cfg_select! {
@@ -90,197 +90,203 @@ pub(crate) mod mask {
                     cast::<[i32x4; 2], i64x4>(halves)
                 }},
             };
-            // SAFETY: see `MaskStorage::<i32x2>::cast_i64`.
-            unsafe { MaskStorage::new_unchecked(widened) }
+            // SAFETY: see `CanonicalMask::<i32x2>::cast_i64`.
+            unsafe { CanonicalMask::new_unchecked(widened) }
         }
     }
-    impl MaskStorage<i64> {
+    impl CanonicalMask<i64> {
         #[inline(always)]
-        pub(crate) fn cast_i32(self) -> MaskStorage<i32> {
+        pub(crate) fn cast_i32(self) -> CanonicalMask<i32> {
             // SAFETY: truncation keeps the low bits, mapping `0` to `0` and `-1` to `-1`.
-            unsafe { MaskStorage::new_unchecked(self.into_inner() as i32) }
+            unsafe { CanonicalMask::new_unchecked(self.into_inner() as i32) }
         }
     }
-    impl MaskStorage<i64x2> {
+    impl CanonicalMask<i64x2> {
         /// The narrowed lanes before they are packed into the two-lane storage type.
         ///
         /// Callers that go straight on to another compute-width operation should use this rather
         /// than `cast_i32`, whose `store` would otherwise be undone by an immediate `load`.
         #[inline(always)]
-        fn narrow_i32(self) -> MaskStorage<compute_i32x2> {
+        fn narrow_i32(self) -> CanonicalMask<compute_i32x2> {
             let halves = cast::<i64x2, i32x4>(self.into_inner());
             // SAFETY: the low half of a canonical 64-bit lane is canonical on its own, and the
             // padding lanes repeat those same halves.
-            unsafe { MaskStorage::new_unchecked(swizzle!(halves, [0, 2])) }
+            unsafe { CanonicalMask::new_unchecked(swizzle!(halves, [0, 2])) }
         }
         #[inline(always)]
-        pub(crate) fn cast_i32(self) -> MaskStorage<i32x2> {
-            MaskStorage::store_mask(self.narrow_i32())
+        pub(crate) fn cast_i32(self) -> CanonicalMask<i32x2> {
+            CanonicalMask::store_mask(self.narrow_i32())
         }
     }
-    impl MaskStorage<i64x4> {
+    impl CanonicalMask<i64x4> {
         #[inline(always)]
-        pub(crate) fn cast_i32(self) -> MaskStorage<i32x4> {
+        pub(crate) fn cast_i32(self) -> CanonicalMask<i32x4> {
             let [low, high] = cast::<i64x4, [i32x4; 2]>(self.into_inner());
-            // SAFETY: see `MaskStorage::<i64x2>::cast_i32`.
-            unsafe { MaskStorage::new_unchecked(swizzle!(low, high, [0, 2, 4, 6])) }
+            // SAFETY: see `CanonicalMask::<i64x2>::cast_i32`.
+            unsafe { CanonicalMask::new_unchecked(swizzle!(low, high, [0, 2, 4, 6])) }
         }
     }
 
     macro_rules! impl_matrix_conversion {
         ($scalar:ty, $vec2:ty, $vec4:ty) => {
             #[inline(always)]
-            pub(crate) fn from_array_1x1([a]: [[bool; 1]; 1]) -> MaskStorage<$scalar> {
+            pub(crate) fn from_array_1x1([a]: [[bool; 1]; 1]) -> CanonicalMask<$scalar> {
                 from_array_1(a)
             }
             #[inline(always)]
-            pub(crate) fn to_array_1x1(mask: MaskStorage<$scalar>) -> [[bool; 1]; 1] {
+            pub(crate) fn to_array_1x1(mask: CanonicalMask<$scalar>) -> [[bool; 1]; 1] {
                 [to_array_1(mask)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_2x1([a]: [[bool; 2]; 1]) -> MaskStorage<$vec2> {
+            pub(crate) fn from_array_2x1([a]: [[bool; 2]; 1]) -> CanonicalMask<$vec2> {
                 from_array_2(a)
             }
             #[inline(always)]
-            pub(crate) fn to_array_2x1(mask: MaskStorage<$vec2>) -> [[bool; 2]; 1] {
+            pub(crate) fn to_array_2x1(mask: CanonicalMask<$vec2>) -> [[bool; 2]; 1] {
                 [to_array_2(mask)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_3x1([a]: [[bool; 3]; 1]) -> MaskStorage<$vec4> {
+            pub(crate) fn from_array_3x1([a]: [[bool; 3]; 1]) -> CanonicalMask<$vec4> {
                 from_array_3(a)
             }
             #[inline(always)]
-            pub(crate) fn to_array_3x1(mask: MaskStorage<$vec4>) -> [[bool; 3]; 1] {
+            pub(crate) fn to_array_3x1(mask: CanonicalMask<$vec4>) -> [[bool; 3]; 1] {
                 [to_array_3(mask)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_4x1([a]: [[bool; 4]; 1]) -> MaskStorage<$vec4> {
+            pub(crate) fn from_array_4x1([a]: [[bool; 4]; 1]) -> CanonicalMask<$vec4> {
                 from_array_4(a)
             }
             #[inline(always)]
-            pub(crate) fn to_array_4x1(mask: MaskStorage<$vec4>) -> [[bool; 4]; 1] {
+            pub(crate) fn to_array_4x1(mask: CanonicalMask<$vec4>) -> [[bool; 4]; 1] {
                 [to_array_4(mask)]
             }
 
             #[inline(always)]
-            pub(crate) fn from_array_1x2([[a], [b]]: [[bool; 1]; 2]) -> MaskStorage<$vec2> {
+            pub(crate) fn from_array_1x2([[a], [b]]: [[bool; 1]; 2]) -> CanonicalMask<$vec2> {
                 from_array_2([a, b])
             }
             #[inline(always)]
-            pub(crate) fn to_array_1x2(mask: MaskStorage<$vec2>) -> [[bool; 1]; 2] {
+            pub(crate) fn to_array_1x2(mask: CanonicalMask<$vec2>) -> [[bool; 1]; 2] {
                 let [a, b] = to_array_2(mask);
                 [[a], [b]]
             }
             #[inline(always)]
-            pub(crate) fn from_array_2x2([a, b]: [[bool; 2]; 2]) -> MaskStorage<$vec4> {
+            pub(crate) fn from_array_2x2([a, b]: [[bool; 2]; 2]) -> CanonicalMask<$vec4> {
                 from_array_4([a[0], a[1], b[0], b[1]])
             }
             #[inline(always)]
-            pub(crate) fn to_array_2x2(mask: MaskStorage<$vec4>) -> [[bool; 2]; 2] {
+            pub(crate) fn to_array_2x2(mask: CanonicalMask<$vec4>) -> [[bool; 2]; 2] {
                 let [a, b, c, d] = to_array_4(mask);
                 [[a, b], [c, d]]
             }
             #[inline(always)]
-            pub(crate) fn from_array_3x2([a, b]: [[bool; 3]; 2]) -> MaskStorage<[$vec4; 2]> {
-                MaskStorage::store_packed([from_array_3(a), from_array_3(b)])
+            pub(crate) fn from_array_3x2([a, b]: [[bool; 3]; 2]) -> CanonicalMask<[$vec4; 2]> {
+                CanonicalMask::from_parts([from_array_3(a), from_array_3(b)])
             }
             #[inline(always)]
-            pub(crate) fn to_array_3x2(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 3]; 2] {
-                let [a, b] = mask.unpack();
+            pub(crate) fn to_array_3x2(mask: CanonicalMask<[$vec4; 2]>) -> [[bool; 3]; 2] {
+                let [a, b] = mask.into_parts();
                 [to_array_3(a), to_array_3(b)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_4x2([a, b]: [[bool; 4]; 2]) -> MaskStorage<[$vec4; 2]> {
-                MaskStorage::store_packed([from_array_4(a), from_array_4(b)])
+            pub(crate) fn from_array_4x2([a, b]: [[bool; 4]; 2]) -> CanonicalMask<[$vec4; 2]> {
+                CanonicalMask::from_parts([from_array_4(a), from_array_4(b)])
             }
             #[inline(always)]
-            pub(crate) fn to_array_4x2(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 4]; 2] {
-                let [a, b] = mask.unpack();
+            pub(crate) fn to_array_4x2(mask: CanonicalMask<[$vec4; 2]>) -> [[bool; 4]; 2] {
+                let [a, b] = mask.into_parts();
                 [to_array_4(a), to_array_4(b)]
             }
 
             #[inline(always)]
-            pub(crate) fn from_array_1x3([[a], [b], [c]]: [[bool; 1]; 3]) -> MaskStorage<$vec4> {
+            pub(crate) fn from_array_1x3([[a], [b], [c]]: [[bool; 1]; 3]) -> CanonicalMask<$vec4> {
                 from_array_3([a, b, c])
             }
             #[inline(always)]
-            pub(crate) fn to_array_1x3(mask: MaskStorage<$vec4>) -> [[bool; 1]; 3] {
+            pub(crate) fn to_array_1x3(mask: CanonicalMask<$vec4>) -> [[bool; 1]; 3] {
                 let [a, b, c] = to_array_3(mask);
                 [[a], [b], [c]]
             }
             // A width aliases whichever of the two 2x3 layouts it uses, leaving the other dead.
             #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn from_array_2x3_in_vec4(array: [[bool; 2]; 3]) -> MaskStorage<[$vec4; 2]> {
+            pub(crate) fn from_array_2x3_in_vec4(
+                array: [[bool; 2]; 3],
+            ) -> CanonicalMask<[$vec4; 2]> {
                 let [[a, b], [c, d], [e, f]] = array;
-                MaskStorage::store_packed([
+                CanonicalMask::from_parts([
                     from_array_4([a, b, c, d]),
                     from_array_2([e, f]).widen(),
                 ])
             }
             #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn to_array_2x3_in_vec4(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 2]; 3] {
-                let [first, last] = mask.unpack();
+            pub(crate) fn to_array_2x3_in_vec4(mask: CanonicalMask<[$vec4; 2]>) -> [[bool; 2]; 3] {
+                let [first, last] = mask.into_parts();
                 let [a, b, c, d] = to_array_4(first);
                 let [e, f] = to_array_2(last.xy());
                 [[a, b], [c, d], [e, f]]
             }
             #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn from_array_2x3_in_vec2(array: [[bool; 2]; 3]) -> MaskStorage<[$vec2; 3]> {
-                MaskStorage::store_packed(array.map(from_array_2))
+            pub(crate) fn from_array_2x3_in_vec2(
+                array: [[bool; 2]; 3],
+            ) -> CanonicalMask<[$vec2; 3]> {
+                CanonicalMask::from_parts(array.map(from_array_2))
             }
             #[allow(dead_code)]
             #[inline(always)]
-            pub(crate) fn to_array_2x3_in_vec2(mask: MaskStorage<[$vec2; 3]>) -> [[bool; 2]; 3] {
-                mask.unpack().map(to_array_2)
+            pub(crate) fn to_array_2x3_in_vec2(mask: CanonicalMask<[$vec2; 3]>) -> [[bool; 2]; 3] {
+                mask.into_parts().map(to_array_2)
             }
             #[inline(always)]
-            pub(crate) fn from_array_3x3([a, b, c]: [[bool; 3]; 3]) -> MaskStorage<[$vec4; 3]> {
-                MaskStorage::store_packed([from_array_3(a), from_array_3(b), from_array_3(c)])
+            pub(crate) fn from_array_3x3([a, b, c]: [[bool; 3]; 3]) -> CanonicalMask<[$vec4; 3]> {
+                CanonicalMask::from_parts([from_array_3(a), from_array_3(b), from_array_3(c)])
             }
             #[inline(always)]
-            pub(crate) fn to_array_3x3(mask: MaskStorage<[$vec4; 3]>) -> [[bool; 3]; 3] {
-                let [a, b, c] = mask.unpack();
+            pub(crate) fn to_array_3x3(mask: CanonicalMask<[$vec4; 3]>) -> [[bool; 3]; 3] {
+                let [a, b, c] = mask.into_parts();
                 [to_array_3(a), to_array_3(b), to_array_3(c)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_4x3([a, b, c]: [[bool; 4]; 3]) -> MaskStorage<[$vec4; 3]> {
-                MaskStorage::store_packed([from_array_4(a), from_array_4(b), from_array_4(c)])
+            pub(crate) fn from_array_4x3([a, b, c]: [[bool; 4]; 3]) -> CanonicalMask<[$vec4; 3]> {
+                CanonicalMask::from_parts([from_array_4(a), from_array_4(b), from_array_4(c)])
             }
             #[inline(always)]
-            pub(crate) fn to_array_4x3(mask: MaskStorage<[$vec4; 3]>) -> [[bool; 4]; 3] {
-                let [a, b, c] = mask.unpack();
+            pub(crate) fn to_array_4x3(mask: CanonicalMask<[$vec4; 3]>) -> [[bool; 4]; 3] {
+                let [a, b, c] = mask.into_parts();
                 [to_array_4(a), to_array_4(b), to_array_4(c)]
             }
 
             #[inline(always)]
             pub(crate) fn from_array_1x4(
                 [[a], [b], [c], [d]]: [[bool; 1]; 4],
-            ) -> MaskStorage<$vec4> {
+            ) -> CanonicalMask<$vec4> {
                 from_array_4([a, b, c, d])
             }
             #[inline(always)]
-            pub(crate) fn to_array_1x4(mask: MaskStorage<$vec4>) -> [[bool; 1]; 4] {
+            pub(crate) fn to_array_1x4(mask: CanonicalMask<$vec4>) -> [[bool; 1]; 4] {
                 let [a, b, c, d] = to_array_4(mask);
                 [[a], [b], [c], [d]]
             }
             #[inline(always)]
-            pub(crate) fn from_array_2x4(array: [[bool; 2]; 4]) -> MaskStorage<[$vec4; 2]> {
+            pub(crate) fn from_array_2x4(array: [[bool; 2]; 4]) -> CanonicalMask<[$vec4; 2]> {
                 let [[a, b], [c, d], [e, f], [g, h]] = array;
-                MaskStorage::store_packed([from_array_4([a, b, c, d]), from_array_4([e, f, g, h])])
+                CanonicalMask::from_parts([from_array_4([a, b, c, d]), from_array_4([e, f, g, h])])
             }
             #[inline(always)]
-            pub(crate) fn to_array_2x4(mask: MaskStorage<[$vec4; 2]>) -> [[bool; 2]; 4] {
-                let [first, last] = mask.unpack();
+            pub(crate) fn to_array_2x4(mask: CanonicalMask<[$vec4; 2]>) -> [[bool; 2]; 4] {
+                let [first, last] = mask.into_parts();
                 let [a, b, c, d] = to_array_4(first);
                 let [e, f, g, h] = to_array_4(last);
                 [[a, b], [c, d], [e, f], [g, h]]
             }
             #[inline(always)]
-            pub(crate) fn from_array_3x4([a, b, c, d]: [[bool; 3]; 4]) -> MaskStorage<[$vec4; 4]> {
-                MaskStorage::store_packed([
+            pub(crate) fn from_array_3x4(
+                [a, b, c, d]: [[bool; 3]; 4],
+            ) -> CanonicalMask<[$vec4; 4]> {
+                CanonicalMask::from_parts([
                     from_array_3(a),
                     from_array_3(b),
                     from_array_3(c),
@@ -288,13 +294,15 @@ pub(crate) mod mask {
                 ])
             }
             #[inline(always)]
-            pub(crate) fn to_array_3x4(mask: MaskStorage<[$vec4; 4]>) -> [[bool; 3]; 4] {
-                let [a, b, c, d] = mask.unpack();
+            pub(crate) fn to_array_3x4(mask: CanonicalMask<[$vec4; 4]>) -> [[bool; 3]; 4] {
+                let [a, b, c, d] = mask.into_parts();
                 [to_array_3(a), to_array_3(b), to_array_3(c), to_array_3(d)]
             }
             #[inline(always)]
-            pub(crate) fn from_array_4x4([a, b, c, d]: [[bool; 4]; 4]) -> MaskStorage<[$vec4; 4]> {
-                MaskStorage::store_packed([
+            pub(crate) fn from_array_4x4(
+                [a, b, c, d]: [[bool; 4]; 4],
+            ) -> CanonicalMask<[$vec4; 4]> {
+                CanonicalMask::from_parts([
                     from_array_4(a),
                     from_array_4(b),
                     from_array_4(c),
@@ -302,8 +310,8 @@ pub(crate) mod mask {
                 ])
             }
             #[inline(always)]
-            pub(crate) fn to_array_4x4(mask: MaskStorage<[$vec4; 4]>) -> [[bool; 4]; 4] {
-                let [a, b, c, d] = mask.unpack();
+            pub(crate) fn to_array_4x4(mask: CanonicalMask<[$vec4; 4]>) -> [[bool; 4]; 4] {
+                let [a, b, c, d] = mask.into_parts();
                 [to_array_4(a), to_array_4(b), to_array_4(c), to_array_4(d)]
             }
         };
@@ -313,7 +321,7 @@ pub(crate) mod mask {
         use super::*;
 
         #[inline(always)]
-        fn from_array<const N: usize>(array: [bool; 4]) -> MaskStorage<i32x4> {
+        fn from_array<const N: usize>(array: [bool; 4]) -> CanonicalMask<i32x4> {
             std::assert_matches!(N, 2..=4);
             #[rustfmt::skip]
             let inner = cfg_select! {
@@ -347,14 +355,14 @@ pub(crate) mod mask {
                 // those bits directly; the SSE2 path duplicates each `0` or `1` byte across an i32
                 // lane and maps it to `0` or all-one bits; and the scalar path negates `0` or `1`.
                 // Consequently every lane, including lanes supplied as padding, is `0` or `-1`.
-                MaskStorage::new_unchecked(inner)
+                CanonicalMask::new_unchecked(inner)
             }
         }
 
         #[inline(always)]
-        fn from_array_1([a]: [bool; 1]) -> MaskStorage<i32> { MaskStorage::<i32>::new(a) }
+        fn from_array_1([a]: [bool; 1]) -> CanonicalMask<i32> { CanonicalMask::<i32>::new(a) }
         #[inline(always)]
-        pub(super) fn from_array_2(array: [bool; 2]) -> MaskStorage<compute_i32x2> {
+        pub(super) fn from_array_2(array: [bool; 2]) -> CanonicalMask<compute_i32x2> {
             cfg_select! {
                 all(target_feature = "neon", target_arch = "aarch64") => unsafe {
                     use core::arch::aarch64::*;
@@ -363,22 +371,22 @@ pub(crate) mod mask {
                     let result = vreinterpret_s32_u32(vtst_s32(v, v));
                     // SAFETY: `vtst_s32(v, v)` is all-zero or all-one per lane depending on whether
                     // that `0`/`1` lane is nonzero, and `vreinterpret_s32_u32` preserves those bits.
-                    MaskStorage::new_unchecked(result.into())
+                    CanonicalMask::new_unchecked(result.into())
                 },
                 _ => from_array::<2>([array[0], array[1], false, false]),
             }
         }
         #[inline(always)]
-        fn from_array_3(array: [bool; 3]) -> MaskStorage<i32x4> {
+        fn from_array_3(array: [bool; 3]) -> CanonicalMask<i32x4> {
             from_array::<3>([array[0], array[1], array[2], false])
         }
         #[inline(always)]
-        pub(super) fn from_array_4(array: [bool; 4]) -> MaskStorage<i32x4> {
+        pub(super) fn from_array_4(array: [bool; 4]) -> CanonicalMask<i32x4> {
             from_array::<4>(array)
         }
 
         #[inline(always)]
-        fn to_array<const N: usize>(mask: MaskStorage<i32x4>) -> [bool; N] {
+        fn to_array<const N: usize>(mask: CanonicalMask<i32x4>) -> [bool; N] {
             std::assert_matches!(N, 2..=4);
 
             #[rustfmt::skip]
@@ -415,9 +423,9 @@ pub(crate) mod mask {
             )
         }
         #[inline(always)]
-        fn to_array_1(mask: MaskStorage<i32>) -> [bool; 1] { [mask.into_inner() < 0] }
+        fn to_array_1(mask: CanonicalMask<i32>) -> [bool; 1] { [mask.into_inner() < 0] }
         #[inline(always)]
-        pub(super) fn to_array_2(mask: MaskStorage<compute_i32x2>) -> [bool; 2] {
+        pub(super) fn to_array_2(mask: CanonicalMask<compute_i32x2>) -> [bool; 2] {
             cfg_select! {
                 all(target_feature = "neon", target_arch = "aarch64") => unsafe {
                     use core::arch::aarch64::*;
@@ -434,9 +442,9 @@ pub(crate) mod mask {
             }
         }
         #[inline(always)]
-        fn to_array_3(mask: MaskStorage<i32x4>) -> [bool; 3] { to_array(mask) }
+        fn to_array_3(mask: CanonicalMask<i32x4>) -> [bool; 3] { to_array(mask) }
         #[inline(always)]
-        pub(super) fn to_array_4(mask: MaskStorage<i32x4>) -> [bool; 4] { to_array(mask) }
+        pub(super) fn to_array_4(mask: CanonicalMask<i32x4>) -> [bool; 4] { to_array(mask) }
 
         pub(crate) use from_array_2x3_in_vec4 as from_array_2x3;
         pub(crate) use to_array_2x3_in_vec4 as to_array_2x3;
@@ -458,26 +466,26 @@ pub(crate) mod mask {
         // straight to bytes.
 
         #[inline(always)]
-        fn from_array_1([x]: [bool; 1]) -> MaskStorage<i64> { MaskStorage::<i64>::new(x) }
+        fn from_array_1([x]: [bool; 1]) -> CanonicalMask<i64> { CanonicalMask::<i64>::new(x) }
         #[inline(always)]
-        fn from_array_2(array: [bool; 2]) -> MaskStorage<i64x2> {
-            let narrow: MaskStorage<i32x2> =
-                MaskStorage::store_mask(super::i32::from_array_2(array));
+        fn from_array_2(array: [bool; 2]) -> CanonicalMask<i64x2> {
+            let narrow: CanonicalMask<i32x2> =
+                CanonicalMask::store_mask(super::i32::from_array_2(array));
             narrow.cast_i64()
         }
         #[inline(always)]
-        fn from_array_3([x, y, z]: [bool; 3]) -> MaskStorage<i64x4> {
+        fn from_array_3([x, y, z]: [bool; 3]) -> CanonicalMask<i64x4> {
             from_array_4([x, y, z, false])
         }
         #[inline(always)]
-        fn from_array_4(array: [bool; 4]) -> MaskStorage<i64x4> {
+        fn from_array_4(array: [bool; 4]) -> CanonicalMask<i64x4> {
             super::i32::from_array_4(array).cast_i64()
         }
 
         #[inline(always)]
-        fn to_array_1(mask: MaskStorage<i64>) -> [bool; 1] { [mask.into_inner() < 0] }
+        fn to_array_1(mask: CanonicalMask<i64>) -> [bool; 1] { [mask.into_inner() < 0] }
         #[inline(always)]
-        fn to_array_2(mask: MaskStorage<i64x2>) -> [bool; 2] {
+        fn to_array_2(mask: CanonicalMask<i64x2>) -> [bool; 2] {
             cfg_select! {
                 all(target_feature = "avx512f", target_feature = "avx512vl") => unsafe {
                     // SAFETY: `avx512f` and `avx512vl` are enabled. `_mm_cvtepi64_epi8` keeps the
@@ -491,12 +499,12 @@ pub(crate) mod mask {
             }
         }
         #[inline(always)]
-        fn to_array_3(mask: MaskStorage<i64x4>) -> [bool; 3] {
+        fn to_array_3(mask: CanonicalMask<i64x4>) -> [bool; 3] {
             let [x, y, z, _] = to_array_4(mask);
             [x, y, z]
         }
         #[inline(always)]
-        fn to_array_4(mask: MaskStorage<i64x4>) -> [bool; 4] {
+        fn to_array_4(mask: CanonicalMask<i64x4>) -> [bool; 4] {
             cfg_select! {
                 all(target_feature = "avx512f", target_feature = "avx512vl") => unsafe {
                     // SAFETY: see `to_array_2`.
@@ -926,7 +934,7 @@ pub(crate) mod determinant {
 }
 
 pub(crate) mod index {
-    use crate::utils::ArithPrimitive;
+    use crate::utils::ArithOps;
 
     macro_rules! impl_index {
         ($get:ident, $as_array:ident $(, $mut:tt)?) => {
@@ -935,42 +943,42 @@ pub(crate) mod index {
                 if i == 0 && j == 0 { Some(a) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _2x1<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x1<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if j == 0 && i < 2 { a.$as_array().$get(i) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _3x1<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _3x1<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if j == 0 && i < 3 { a.$as_array().$get(i) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _4x1<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _4x1<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if j == 0 { a.$as_array().$get(i) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _1x2<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _1x2<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if j < 2 && i == 0 { a.$as_array().$get(j) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _2x2<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x2<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if i < 2 && j < 2 { a.$as_array().$get(2 * j + i) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _3x2<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _3x2<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 2],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -980,7 +988,7 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _4x2<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _4x2<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 2],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -990,14 +998,14 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _1x3<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _1x3<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if j < 3 && i == 0 { a.$as_array().$get(j) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _2x3_in_vec4<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x3_in_vec4<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 2],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1011,7 +1019,7 @@ pub(crate) mod index {
                 None
             }
             #[inline(always)]
-            pub(crate) fn _2x3_in_vec2<T, Tx2: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x3_in_vec2<T, Tx2: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx2; 3],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1021,7 +1029,7 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _3x3<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _3x3<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 3],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1031,7 +1039,7 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _4x3<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _4x3<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 3],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1041,14 +1049,14 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _1x4<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _1x4<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? Tx4,
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
                 if i == 0 { a.$as_array().$get(j) } else { None }
             }
             #[inline(always)]
-            pub(crate) fn _2x4<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _2x4<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 2],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1062,7 +1070,7 @@ pub(crate) mod index {
                 None
             }
             #[inline(always)]
-            pub(crate) fn _3x4<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _3x4<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 4],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1072,7 +1080,7 @@ pub(crate) mod index {
                 }
             }
             #[inline(always)]
-            pub(crate) fn _4x4<T, Tx4: ArithPrimitive<Scalar = T>>(
+            pub(crate) fn _4x4<T, Tx4: ArithOps<Scalar = T>>(
                 a: & $($mut)? [Tx4; 4],
                 (i, j): (usize, usize),
             ) -> Option<& $($mut)? T> {
@@ -1110,7 +1118,7 @@ pub(crate) mod index {
 }
 
 pub(crate) mod index_mut {
-    use crate::utils::ArithPrimitive;
+    use crate::utils::ArithOps;
     super::index::impl_index!(get_mut, as_mut_array_, mut);
 }
 

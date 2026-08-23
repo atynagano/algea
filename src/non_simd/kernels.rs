@@ -1,5 +1,5 @@
 pub(crate) trait Float:
-    crate::marker::Float + crate::utils::ArithPrimitive<Scalar = Self>
+    crate::marker::Float + crate::utils::ArithOps<Scalar = Self>
 {
 }
 

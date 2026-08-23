@@ -3,12 +3,12 @@
 #[rustfmt::skip]
 macro_rules! arith {
     // TODO(api-cleanup): fix macro parsing when higher-precedence operators appear on the right.
-    ($a:tt + $b:tt * $c:tt) => { $crate::utils::ArithPrimitive::mul_add_($b, $c, $a) };
-    ($a:tt - $b:tt * $c:tt) => { $crate::utils::ArithPrimitive::neg_mul_add_($b, $c, $a) };
-    ($a:tt * $b:tt + $c:tt) => { $crate::utils::ArithPrimitive::mul_add_($a, $b, $c) };
-    ($a:tt * $b:tt - $c:tt) => { $crate::utils::ArithPrimitive::mul_sub_($a, $b, $c) };
-    ($a:tt * $b:tt + $($t:tt)+) => { arith!(($crate::utils::ArithPrimitive::mul_noexcept_($a, $b)) + $($t)+) };
-    ($a:tt * $b:tt - $($t:tt)+) => { arith!(($crate::utils::ArithPrimitive::mul_noexcept_($a, $b)) - $($t)+) };
+    ($a:tt + $b:tt * $c:tt) => { $crate::utils::ArithOps::mul_add_($b, $c, $a) };
+    ($a:tt - $b:tt * $c:tt) => { $crate::utils::ArithOps::neg_mul_add_($b, $c, $a) };
+    ($a:tt * $b:tt + $c:tt) => { $crate::utils::ArithOps::mul_add_($a, $b, $c) };
+    ($a:tt * $b:tt - $c:tt) => { $crate::utils::ArithOps::mul_sub_($a, $b, $c) };
+    ($a:tt * $b:tt + $($t:tt)+) => { arith!(($crate::utils::ArithOps::mul_noexcept_($a, $b)) + $($t)+) };
+    ($a:tt * $b:tt - $($t:tt)+) => { arith!(($crate::utils::ArithOps::mul_noexcept_($a, $b)) - $($t)+) };
     ($a:tt + $b:tt * $c:tt + $($t:tt)+) => { arith!((arith!($a + $b * $c)) + $($t)+) };
     ($a:tt + $b:tt * $c:tt - $($t:tt)+) => { arith!((arith!($a + $b * $c)) - $($t)+) };
     ($a:tt - $b:tt * $c:tt + $($t:tt)+) => { arith!((arith!($a - $b * $c)) + $($t)+) };
@@ -47,9 +47,9 @@ macro_rules! if_ {
 pub(crate) use arith;
 pub(crate) use if_;
 
-// TODO(lane-count-generics): consider `ArithPrimitive<const N: usize>` and the same for
-// `MaskPrimitive`, so `any`/`all`/`cast`/`to_bitmask` can tell 2, 3 and 4 lanes apart.
-pub(crate) trait ArithPrimitive: Copy {
+// TODO(lane-count-generics): consider `ArithOps<const N: usize>` and the same for
+// `MaskOps`, so `any`/`all`/`cast`/`to_bitmask` can tell 2, 3 and 4 lanes apart.
+pub(crate) trait ArithOps: Copy {
     type Scalar;
     type F32;
     type F64;
@@ -58,7 +58,7 @@ pub(crate) trait ArithPrimitive: Copy {
     type U32;
     type U64;
     // NOTE: `Copy` is required to implement `Copy for Mask<T, D>`
-    type Mask: Copy + MaskLoad;
+    type Mask: Copy + MaskStorageRepr;
     const ZERO_: Self;
     const ONE_: Self;
     #[allow(dead_code)]
@@ -85,13 +85,13 @@ pub(crate) trait ArithPrimitive: Copy {
     // first, which needs the shape's valid lane count, so the element traits keep bodies of their
     // own for it.
     fn div_(self, _rhs: Self) -> Self { unimplemented!() }
-    fn eq_(self, _other: Self) -> MaskStorage<Self::Mask>;
-    fn ne_(self, _other: Self) -> MaskStorage<Self::Mask>;
-    fn gt_(self, _other: Self) -> MaskStorage<Self::Mask> { unimplemented!() }
-    fn lt_(self, _other: Self) -> MaskStorage<Self::Mask> { unimplemented!() }
-    fn ge_(self, _other: Self) -> MaskStorage<Self::Mask> { unimplemented!() }
-    fn le_(self, _other: Self) -> MaskStorage<Self::Mask> { unimplemented!() }
-    fn select_(_mask: MaskStorage<Self::Mask>, _true_values: Self, _false_values: Self) -> Self {
+    fn eq_(self, _other: Self) -> CanonicalMask<Self::Mask>;
+    fn ne_(self, _other: Self) -> CanonicalMask<Self::Mask>;
+    fn gt_(self, _other: Self) -> CanonicalMask<Self::Mask> { unimplemented!() }
+    fn lt_(self, _other: Self) -> CanonicalMask<Self::Mask> { unimplemented!() }
+    fn ge_(self, _other: Self) -> CanonicalMask<Self::Mask> { unimplemented!() }
+    fn le_(self, _other: Self) -> CanonicalMask<Self::Mask> { unimplemented!() }
+    fn select_(_mask: CanonicalMask<Self::Mask>, _true_values: Self, _false_values: Self) -> Self {
         unimplemented!()
     }
 
@@ -110,7 +110,7 @@ pub(crate) trait ArithPrimitive: Copy {
     fn fract_(self) -> Self { unimplemented!() }
     #[allow(dead_code)]
     fn round_ties_even_(self) -> Self { unimplemented!() }
-    fn is_nan_(self) -> MaskStorage<Self::Mask> { unimplemented!() }
+    fn is_nan_(self) -> CanonicalMask<Self::Mask> { unimplemented!() }
     /// a * b + c
     fn mul_add_(_a: Self, _b: Self, _c: Self) -> Self { unimplemented!() }
     /// a * b - c
@@ -132,9 +132,9 @@ pub(crate) trait ArithPrimitive: Copy {
     fn shr_scalar_noexcept_(self, _rhs: Self::Scalar) -> Self { unimplemented!() }
 }
 
-macro_rules! impl_arith_primitive {
+macro_rules! impl_arith_ops {
     ($self_ty:ty, mask=$mask:ty { $($item:item)* }) => {
-        impl ArithPrimitive for $self_ty {
+        impl ArithOps for $self_ty {
             type Scalar = Self;
             type F32 = f32;
             type F64 = f64;
@@ -168,28 +168,28 @@ macro_rules! impl_arith_primitive {
             #[inline(always)]
             fn min_(self, other: Self) -> Self { self.min(other) }
             #[inline(always)]
-            fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self == other) }
+            fn eq_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self == other) }
             #[inline(always)]
-            fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self != other) }
+            fn ne_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self != other) }
             #[inline(always)]
-            fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self > other) }
+            fn gt_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self > other) }
             #[inline(always)]
-            fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self < other) }
+            fn lt_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self < other) }
             #[inline(always)]
-            fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self >= other) }
+            fn ge_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self >= other) }
             #[inline(always)]
-            fn le_(self, other: Self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self <= other) }
+            fn le_(self, other: Self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self <= other) }
             #[inline(always)]
-            fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+            fn select_(mask: CanonicalMask<Self::Mask>, true_values: Self, false_values: Self) -> Self {
                 if mask.into_inner() < 0 { true_values } else { false_values }
             }
             $($item)*
         }
     };
 }
-macro_rules! impl_arith_primitive_int {
+macro_rules! impl_arith_ops_int {
     ($self_ty:ty, mask=$mask:ty { $($item:item)* }) => {
-        impl_arith_primitive! {
+        impl_arith_ops! {
             $self_ty, mask=$mask {
                 #[inline(always)]
                 fn add_noexcept_(self, rhs: Self) -> Self { self.wrapping_add(rhs) }
@@ -219,9 +219,9 @@ macro_rules! impl_arith_primitive_int {
         }
     }
 }
-macro_rules! impl_arith_primitive_all {
+macro_rules! impl_arith_ops_all {
     ($float:ty, $int:ty, $uint:ty) => {
-        impl_arith_primitive! {
+        impl_arith_ops! {
             $float, mask=$int {
                 #[inline(always)]
                 fn add_noexcept_(self, rhs: Self) -> Self { core::ops::Add::add(self, rhs) }
@@ -262,7 +262,7 @@ macro_rules! impl_arith_primitive_all {
                 #[inline(always)]
                 fn round_ties_even_(self) -> Self { self.round_ties_even() }
                 #[inline(always)]
-                fn is_nan_(self) -> MaskStorage<Self::Mask> { MaskStorage::<Self::Mask>::new(self.is_nan()) }
+                fn is_nan_(self) -> CanonicalMask<Self::Mask> { CanonicalMask::<Self::Mask>::new(self.is_nan()) }
                 // Wasm has no scalar fused multiply-add: the only one it has is the relaxed
                 // vector instruction, and reaching that from a scalar costs an `f32x4.splat` per
                 // operand that neither Wasmtime nor V8 removes. A scalar `f32.fma` has been asked
@@ -298,7 +298,7 @@ macro_rules! impl_arith_primitive_all {
                 }
             }
         }
-        impl_arith_primitive_int! {
+        impl_arith_ops_int! {
             $int, mask=$int {
                 #[inline(always)]
                 fn neg_noexcept_(self) -> Self { self.wrapping_neg() }
@@ -308,19 +308,19 @@ macro_rules! impl_arith_primitive_all {
                 fn signum_(self) -> Self { self.signum() }
             }
         }
-        impl_arith_primitive_int! {
+        impl_arith_ops_int! {
             $uint, mask=$int {}
         }
     }
 }
 
-impl_arith_primitive_all!(f32, i32, u32);
-impl_arith_primitive_all!(f64, i64, u64);
+impl_arith_ops_all!(f32, i32, u32);
+impl_arith_ops_all!(f64, i64, u64);
 
 // A storage value is an array of units -- compute vectors on the SIMD backend, scalars on the other
 // -- so the lane-wise operations on it are the unit's operations applied elementwise. Both backends
-// reach this through `SealedElement::Storage: Load<Output: ArithPrimitive>`.
-impl<T: ArithPrimitive, const N: usize> ArithPrimitive for [T; N] {
+// reach this through `SealedElement::Storage: Load<Output: ArithOps>`.
+impl<T: ArithOps, const N: usize> ArithOps for [T; N] {
     // The leaf scalar, as every other implementation reports: `f32` for `f32`, for `f32x4` and for
     // `[f32x4; N]` alike. That is what makes `filled_` reach the whole storage in one step.
     type Scalar = T::Scalar;
@@ -363,20 +363,20 @@ impl<T: ArithPrimitive, const N: usize> ArithPrimitive for [T; N] {
     #[inline(always)]
     fn div_(self, rhs: Self) -> Self { zip(self, rhs, T::div_) }
     #[inline(always)]
-    fn eq_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::eq_) }
+    fn eq_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::eq_) }
     #[inline(always)]
-    fn ne_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::ne_) }
+    fn ne_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::ne_) }
     #[inline(always)]
-    fn lt_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::lt_) }
+    fn lt_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::lt_) }
     #[inline(always)]
-    fn le_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::le_) }
+    fn le_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::le_) }
     #[inline(always)]
-    fn gt_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::gt_) }
+    fn gt_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::gt_) }
     #[inline(always)]
-    fn ge_(self, other: Self) -> MaskStorage<Self::Mask> { zip_mask(self, other, T::ge_) }
+    fn ge_(self, other: Self) -> CanonicalMask<Self::Mask> { zip_mask(self, other, T::ge_) }
     #[inline(always)]
-    fn is_nan_(self) -> MaskStorage<Self::Mask> {
-        MaskStorage::store_packed(core::array::from_fn(
+    fn is_nan_(self) -> CanonicalMask<Self::Mask> {
+        CanonicalMask::from_parts(core::array::from_fn(
             #[inline(always)]
             |i| T::is_nan_(self[i]),
         ))
@@ -415,8 +415,8 @@ impl<T: ArithPrimitive, const N: usize> ArithPrimitive for [T; N] {
     #[inline(always)]
     fn bitxor_(self, rhs: Self) -> Self { zip(self, rhs, T::bitxor_) }
     #[inline(always)]
-    fn select_(mask: MaskStorage<Self::Mask>, true_values: Self, false_values: Self) -> Self {
-        let mask = mask.unpack();
+    fn select_(mask: CanonicalMask<Self::Mask>, true_values: Self, false_values: Self) -> Self {
+        let mask = mask.into_parts();
         core::array::from_fn(
             #[inline(always)]
             |i| T::select_(mask[i], true_values[i], false_values[i]),
@@ -453,12 +453,12 @@ fn zip<T: Copy, const N: usize>(a: [T; N], b: [T; N], mut f: impl FnMut(T, T) ->
 
 /// Applies a comparison to each unit and collects the results into one wrapper.
 #[inline(always)]
-fn zip_mask<T: ArithPrimitive, const N: usize>(
+fn zip_mask<T: ArithOps, const N: usize>(
     a: [T; N],
     b: [T; N],
-    mut f: impl FnMut(T, T) -> MaskStorage<T::Mask>,
-) -> MaskStorage<[T::Mask; N]> {
-    MaskStorage::store_packed(core::array::from_fn(
+    mut f: impl FnMut(T, T) -> CanonicalMask<T::Mask>,
+) -> CanonicalMask<[T::Mask; N]> {
+    CanonicalMask::from_parts(core::array::from_fn(
         #[inline(always)]
         |i| f(a[i], b[i]),
     ))
@@ -520,38 +520,37 @@ mod mask_utils {
     /// Storage whose physical lanes are all-zero or all-one bit patterns.
     #[derive(Copy, Clone)]
     #[repr(transparent)]
-    pub(crate) struct CanonicalMaskStorage<T>(T);
-    pub(crate) use CanonicalMaskStorage as MaskStorage;
+    pub(crate) struct CanonicalMask<T>(T);
 
     /// The mask storage that goes with element type `T` at shape `M` x `N`.
     ///
-    /// Spelled through `ArithPrimitive::Mask` rather than through `SealedElement::Storage` so that
+    /// Spelled through `ArithOps::Mask` rather than through `SealedElement::Storage` so that
     /// the width relationship holds for every element type, not only for the ones that are their
     /// own mask: `f32` at `(4, 1)` stores `f32x4` and masks it with `i32x4`.
-    pub(crate) type MaskStorage2<T, const M: usize = 1, const N: usize = 1> = CanonicalMaskStorage<
-        <<T as private::SealedElement<M, N>>::Storage as crate::utils::ArithPrimitive>::Mask,
+    pub(crate) type MaskStorage<T, const M: usize = 1, const N: usize = 1> = CanonicalMask<
+        <<T as private::SealedElement<M, N>>::Storage as crate::utils::ArithOps>::Mask,
     >;
 
-    /// Primitive storage that can uphold the canonical mask invariant.
+    /// Loaded storage that can uphold the canonical mask invariant.
     ///
     /// # Safety
     ///
     /// Implementations must ensure that:
     ///
-    /// - `is_valid` returns `true` if and only if every physical lane, including
+    /// - `is_canonical` returns `true` if and only if every physical lane, including
     ///   padding lanes, is either an all-zero or all-one bit pattern.
     /// - `canonical_not`, `canonical_bitand`, `canonical_bitor` and `canonical_bitxor` map
     ///   canonical values to canonical values, combining every physical lane in full.
     /// - `canonical_select` maps a canonical selector and two canonical input values to a
     ///   canonical output by selecting each physical lane in full from one of the inputs.
     /// - copying a value preserves its physical lane representation.
-    pub unsafe trait MaskPrimitive: Copy {
-        fn is_valid(self) -> bool;
+    pub unsafe trait MaskOps: Copy {
+        fn is_canonical(self) -> bool;
         fn canonical_not(self) -> Self;
         fn canonical_bitand(self, rhs: Self) -> Self;
         fn canonical_bitor(self, rhs: Self) -> Self;
         fn canonical_bitxor(self, rhs: Self) -> Self;
-        // same as `Primitive::select_`
+        // same as `Loaded::select_`
         fn canonical_select(self, true_values: Self, false_values: Self) -> Self;
         // Only the SIMD backend's `SealedElement::any`/`all` (see `simd.rs`) calls these; the
         // non-SIMD backend implements `any`/`all` directly over its flat array storage instead.
@@ -561,7 +560,7 @@ mod mask_utils {
         fn all<const N: usize>(self) -> bool;
     }
 
-    /// Mask storage, paired with the `MaskPrimitive` its operations are performed on.
+    /// Mask storage, paired with the `MaskOps` its operations are performed on.
     ///
     /// A mask is stored at the width of the element it selects and computed at the width the
     /// target's instructions use. On x86 those differ for a two-lane shape, whose storage is an
@@ -572,84 +571,84 @@ mod mask_utils {
     ///
     /// Implementations must ensure that:
     ///
-    /// - `is_valid_storage` returns `true` if and only if every physical lane, including padding
+    /// - `is_canonical` returns `true` if and only if every physical lane, including padding
     ///   lanes, is either an all-zero or an all-one bit pattern.
-    /// - `__load` maps a value accepted by `is_valid_storage` to one accepted by
-    ///   `MaskPrimitive::is_valid`, and `__store` maps one back, so that neither direction can
+    /// - `__load_mask` maps a value accepted by `is_canonical` to one accepted by
+    ///   `MaskOps::is_canonical`, and `__store_mask` maps one back, so that neither direction can
     ///   turn a canonical value into a mixed lane.
-    pub(crate) unsafe trait MaskLoad: Copy {
-        type Primitive: MaskPrimitive;
-        fn is_valid_storage(self) -> bool;
-        fn __load(self) -> Self::Primitive;
-        fn __store(v: Self::Primitive) -> Self;
+    pub(crate) unsafe trait MaskStorageRepr: Copy {
+        type Loaded: MaskOps;
+        fn is_canonical(self) -> bool;
+        fn __load_mask(self) -> Self::Loaded;
+        fn __store_mask(v: Self::Loaded) -> Self;
     }
-    /// Implements `MaskLoad` for a type that is its own primitive.
-    macro_rules! impl_mask_load {
+    /// Implements `MaskStorageRepr` for a type that is its own loaded representation.
+    macro_rules! impl_mask_storage_repr {
         ($($ty:ty),+) => {$(
-            // SAFETY: both directions are the identity, and `is_valid_storage` is the primitive's
-            // own `is_valid`, so the two agree on which values are canonical.
-            unsafe impl $crate::utils::MaskLoad for $ty {
-                type Primitive = $ty;
+            // SAFETY: both directions are the identity, and `is_canonical` is the loaded
+            // representation's own method, so the two agree on which values are canonical.
+            unsafe impl $crate::utils::MaskStorageRepr for $ty {
+                type Loaded = $ty;
                 #[inline(always)]
-                fn is_valid_storage(self) -> bool {
-                    $crate::utils::MaskPrimitive::is_valid(self)
+                fn is_canonical(self) -> bool {
+                    $crate::utils::MaskOps::is_canonical(self)
                 }
                 #[inline(always)]
-                fn __load(self) -> Self::Primitive { self }
+                fn __load_mask(self) -> Self::Loaded { self }
                 #[inline(always)]
-                fn __store(v: Self::Primitive) -> Self { v }
+                fn __store_mask(v: Self::Loaded) -> Self { v }
             }
         )+};
     }
-    // The non-SIMD backend has no vector mask primitive to implement this for.
+    // The non-SIMD backend has no loaded vector mask representation to implement this for.
     #[allow(unused_imports)]
-    pub(crate) use impl_mask_load;
+    pub(crate) use impl_mask_storage_repr;
 
-    impl_mask_load!(i32, i64);
+    impl_mask_storage_repr!(i32, i64);
 
     // SAFETY: every element, including the ones used as padding, is validated and converted
     // through its own implementation, so neither direction can produce a mixed lane.
-    unsafe impl<T: MaskLoad, const N: usize> MaskLoad for [T; N] {
-        type Primitive = [T::Primitive; N];
+    unsafe impl<T: MaskStorageRepr, const N: usize> MaskStorageRepr for [T; N] {
+        type Loaded = [T::Loaded; N];
         #[inline(always)]
-        fn is_valid_storage(self) -> bool { self.into_iter().all(T::is_valid_storage) }
+        fn is_canonical(self) -> bool { self.into_iter().all(T::is_canonical) }
         #[inline(always)]
-        fn __load(self) -> Self::Primitive { self.map(T::__load) }
+        fn __load_mask(self) -> Self::Loaded { self.map(T::__load_mask) }
         #[inline(always)]
-        fn __store(v: Self::Primitive) -> Self { v.map(T::__store) }
+        fn __store_mask(v: Self::Loaded) -> Self { v.map(T::__store_mask) }
     }
 
-    impl<T: MaskLoad> MaskStorage<T> {
+    impl<T: MaskStorageRepr> CanonicalMask<T> {
         #[inline(always)]
-        pub(crate) fn load_mask(self) -> MaskStorage<<T as MaskLoad>::Primitive> {
-            // SAFETY: the wrapper holds canonical physical lanes, and `MaskLoad` guarantees that
-            // `__load` maps those to canonical lanes of the primitive.
-            unsafe { MaskStorage::new_unchecked(T::__load(self.into_inner())) }
+        pub(crate) fn load_mask(self) -> CanonicalMask<<T as MaskStorageRepr>::Loaded> {
+            // SAFETY: the wrapper holds canonical physical lanes, and `MaskStorageRepr` guarantees that
+            // `__load_mask` maps those to canonical lanes of the loaded representation.
+            unsafe { CanonicalMask::new_unchecked(T::__load_mask(self.into_inner())) }
         }
         #[inline(always)]
-        pub(crate) fn store_mask(mask: MaskStorage<<T as MaskLoad>::Primitive>) -> Self {
-            // `MaskLoad` guarantees that `__store` maps canonical lanes back to canonical lanes.
+        pub(crate) fn store_mask(mask: CanonicalMask<<T as MaskStorageRepr>::Loaded>) -> Self {
+            // `MaskStorageRepr` guarantees that `__store_mask` maps canonical lanes back to canonical lanes.
             // The debug assertion checks that rather than taking it on trust.
-            let inner = T::__store(mask.into_inner());
-            debug_assert!(inner.is_valid_storage());
-            MaskStorage(inner)
+            let inner = T::__store_mask(mask.into_inner());
+            debug_assert!(inner.is_canonical());
+            CanonicalMask(inner)
         }
     }
-    impl<T, const N: usize> MaskStorage<[T; N]> {
+    impl<T, const N: usize> CanonicalMask<[T; N]> {
         /// Collects one wrapper per unit into a single wrapper over the array.
         ///
         /// No bound is needed and no lane is inspected: every element is already canonical, and an
         /// array of canonical units is canonical.
         #[inline(always)]
-        pub(crate) fn store_packed(mask: [MaskStorage<T>; N]) -> Self {
-            MaskStorage(mask.map(MaskStorage::into_inner))
+        pub(crate) fn from_parts(mask: [CanonicalMask<T>; N]) -> Self {
+            CanonicalMask(mask.map(CanonicalMask::into_inner))
         }
     }
 
-    // SAFETY: `is_valid` accepts exactly 0 and -1. The relevant `ArithPrimitive` operations act on
+    // SAFETY: `is_canonical` accepts exactly 0 and -1. The relevant `ArithOps` operations act on
     // the value's complete bit pattern and preserve those two canonical values.
-    unsafe impl MaskPrimitive for i32 {
-        fn is_valid(self) -> bool { self == 0 || self == -1 }
+    unsafe impl MaskOps for i32 {
+        fn is_canonical(self) -> bool { self == 0 || self == -1 }
         #[inline(always)]
         fn canonical_not(self) -> Self { !self }
         #[inline(always)]
@@ -673,8 +672,8 @@ mod mask_utils {
             self < 0
         }
     }
-    unsafe impl MaskPrimitive for i64 {
-        fn is_valid(self) -> bool { self == 0 || self == -1 }
+    unsafe impl MaskOps for i64 {
+        fn is_canonical(self) -> bool { self == 0 || self == -1 }
         #[inline(always)]
         fn canonical_not(self) -> Self { !self }
         #[inline(always)]
@@ -698,13 +697,13 @@ mod mask_utils {
             self < 0
         }
     }
-    // SAFETY: every array element, including padding, is validated through its `MaskPrimitive`
-    // implementation. Its `ArithPrimitive` operations are applied elementwise and preserve the
+    // SAFETY: every array element, including padding, is validated through its `MaskOps`
+    // implementation. Its `ArithOps` operations are applied elementwise and preserve the
     // invariant by `T`'s guarantee.
-    unsafe impl<T: MaskPrimitive, const N: usize> MaskPrimitive for [T; N] {
-        fn is_valid(self) -> bool { self.into_iter().all(MaskPrimitive::is_valid) }
+    unsafe impl<T: MaskOps, const N: usize> MaskOps for [T; N] {
+        fn is_canonical(self) -> bool { self.into_iter().all(MaskOps::is_canonical) }
         #[inline(always)]
-        fn canonical_not(self) -> Self { self.map(MaskPrimitive::canonical_not) }
+        fn canonical_not(self) -> Self { self.map(MaskOps::canonical_not) }
         #[inline(always)]
         fn canonical_bitand(self, rhs: Self) -> Self {
             core::array::from_fn(
@@ -737,35 +736,35 @@ mod mask_utils {
         fn all<const M: usize>(self) -> bool { unimplemented!() }
     }
 
-    impl<T: MaskPrimitive> core::ops::Not for MaskStorage<T> {
+    impl<T: MaskOps> core::ops::Not for CanonicalMask<T> {
         type Output = Self;
         #[inline(always)]
         fn not(self) -> Self::Output {
             unsafe { Self::new_unchecked(self.into_inner().canonical_not()) }
         }
     }
-    impl<T: MaskPrimitive> core::ops::BitAnd for MaskStorage<T> {
+    impl<T: MaskOps> core::ops::BitAnd for CanonicalMask<T> {
         type Output = Self;
         #[inline(always)]
         fn bitand(self, rhs: Self) -> Self::Output {
             unsafe { Self::new_unchecked(self.into_inner().canonical_bitand(rhs.into_inner())) }
         }
     }
-    impl<T: MaskPrimitive> core::ops::BitOr for MaskStorage<T> {
+    impl<T: MaskOps> core::ops::BitOr for CanonicalMask<T> {
         type Output = Self;
         #[inline(always)]
         fn bitor(self, rhs: Self) -> Self::Output {
             unsafe { Self::new_unchecked(self.into_inner().canonical_bitor(rhs.into_inner())) }
         }
     }
-    impl<T: MaskPrimitive> core::ops::BitXor for MaskStorage<T> {
+    impl<T: MaskOps> core::ops::BitXor for CanonicalMask<T> {
         type Output = Self;
         #[inline(always)]
         fn bitxor(self, rhs: Self) -> Self::Output {
             unsafe { Self::new_unchecked(self.into_inner().canonical_bitxor(rhs.into_inner())) }
         }
     }
-    impl<T: MaskPrimitive> MaskStorage<T> {
+    impl<T: MaskOps> CanonicalMask<T> {
         /// Creates canonical mask storage without checking it in release builds.
         ///
         /// # Safety
@@ -774,13 +773,13 @@ mod mask_utils {
         /// either an all-zero or all-one bit pattern.
         #[inline(always)]
         pub(crate) unsafe fn new_unchecked(inner: T) -> Self {
-            debug_assert!(inner.is_valid());
+            debug_assert!(inner.is_canonical());
             Self(inner)
         }
         #[inline(always)]
         pub(crate) fn select(self, true_values: Self, false_values: Self) -> Self {
             // SAFETY: all three wrappers contain canonical physical lanes.
-            // `MaskPrimitive` guarantees that `ArithPrimitive::select_` selects each output lane
+            // `MaskOps` guarantees that `ArithOps::select_` selects each output lane
             // in full from one of the canonical inputs and therefore preserves the invariant.
             unsafe {
                 Self::new_unchecked(T::canonical_select(self.0, true_values.0, false_values.0))
@@ -793,18 +792,18 @@ mod mask_utils {
         #[inline(always)]
         pub(crate) fn all<const N: usize>(self) -> bool { self.0.all::<N>() }
     }
-    impl<T> MaskStorage<T> {
+    impl<T> CanonicalMask<T> {
         #[inline(always)]
         pub(crate) fn into_inner(self) -> T { self.0 }
     }
-    impl<T, const N: usize> MaskStorage<[T; N]> {
+    impl<T, const N: usize> CanonicalMask<[T; N]> {
         #[inline(always)]
-        pub(crate) fn unpack(self) -> [MaskStorage<T>; N] { self.0.map(MaskStorage) }
+        pub(crate) fn into_parts(self) -> [CanonicalMask<T>; N] { self.0.map(CanonicalMask) }
     }
-    impl MaskStorage<i32> {
+    impl CanonicalMask<i32> {
         #[inline(always)]
         #[allow(dead_code)]
-        pub(crate) fn unpack(self) -> Self { self }
+        pub(crate) fn into_parts(self) -> Self { self }
         #[expect(dead_code)]
         pub(crate) const TRUE: Self = Self(-1);
         #[expect(dead_code)]
@@ -817,10 +816,10 @@ mod mask_utils {
             }
         }
     }
-    impl MaskStorage<i64> {
+    impl CanonicalMask<i64> {
         #[inline(always)]
         #[allow(dead_code)]
-        pub(crate) fn unpack(self) -> Self { self }
+        pub(crate) fn into_parts(self) -> Self { self }
         #[expect(dead_code)]
         pub(crate) const TRUE: Self = Self(-1);
         #[expect(dead_code)]

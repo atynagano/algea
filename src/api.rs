@@ -724,7 +724,7 @@ impl<T: core::ops::Not + Element<D>, const D: usize> core::ops::Not for Vector<T
 impl<T: MaskElement<D>, const D: usize> core::ops::Not for Mask<T, D> {
     type Output = Self;
     #[inline]
-    fn not(self) -> Self::Output { vector::call!(Self(<T, D>::canonical_not(self.storage))) }
+    fn not(self) -> Self::Output { vector::call!(Self(<T, D>::mask_not(self.storage))) }
 }
 
 macro_rules! impl_mask_binop {
@@ -749,9 +749,9 @@ macro_rules! impl_mask_binop {
 
 impl_mask_binop! {
     [
-        [BitAnd::bitand, BitAndAssign::bitand_assign, canonical_bitand],
-        [BitOr::bitor, BitOrAssign::bitor_assign, canonical_bitor],
-        [BitXor::bitxor, BitXorAssign::bitxor_assign, canonical_bitxor],
+        [BitAnd::bitand, BitAndAssign::bitand_assign, mask_bitand],
+        [BitOr::bitor, BitOrAssign::bitor_assign, mask_bitor],
+        [BitXor::bitxor, BitXorAssign::bitxor_assign, mask_bitxor],
     ]
 }
 
@@ -1271,7 +1271,7 @@ where
     #[inline]
     fn select(self, true_values: Mask<T, D>, false_values: Mask<T, D>) -> Mask<T, D> {
         Mask {
-            storage: <T as private::SealedElement<D, 1>>::canonical_select_any_mask::<U>(
+            storage: <T as private::SealedElement<D, 1>>::mask_select_any::<U>(
                 self.storage,
                 true_values.storage,
                 false_values.storage,
