@@ -446,8 +446,6 @@ macro_rules! impl_layout {
                     }
                 }}
             }}
-            // TODO: Revisit these swizzle methods and their dispatch traits; independent
-            // element and dimension bounds may allow a substantially simpler implementation.
             if_! { $n == 1 and $m != 1 {
                 #[inline(always)]
                 fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> ConstStorage<$t, 2, 1>
