@@ -1,5 +1,6 @@
 use crate::{
     private,
+    support::Dimension,
     utils::{CanonicalMask, Load, Store},
 };
 #[allow(unused_imports)]
@@ -1792,7 +1793,8 @@ macro_rules! impl_swizzle_dispatch {
     (@impl $n:tt, $kind:ident[$($parameter:tt),+], $result:ident, [$($index:tt),+]) => {
         impl<T, const M: usize> private::SwizzleDispatch<T, M, $n> for private::$kind<$($parameter),+>
         where
-            T: private::SealedElement<M, 1> + private::SealedElement<$n, 1>,
+            Dimension<M>: private::SealedSupportedDimension,
+            T: private::SealedElement<M, 1> + private::SealedElement<$n, 1> + private::SealedSupportedElement,
             <T as private::SealedElement<M, 1>>::Storage: Load,
             <<T as private::SealedElement<M, 1>>::Storage as Load>::Output: Swizzle,
             <<<T as private::SealedElement<M, 1>>::Storage as Load>::Output as ComputeVector>::$result:

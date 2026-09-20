@@ -20,7 +20,7 @@ use crate::{
 ///     └                         ┘
 /// ```
 pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize> {
-    pub(crate) storage: <T as private::SealedElement<R, C>>::Storage,
+    pub(crate) storage: private::ConstStorage<T, R, C>,
 }
 
 #[rustfmt::skip]
@@ -30,7 +30,8 @@ mod impls;
 
 macro_rules! call {
     (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?) => {
-        <$t as $crate::private::SealedElement<$r, $c>>::$f $(::<$gen>)? $(($($arg),*))?
+        <$crate::private::ConstStorage<$t, $r, $c> as $crate::private::StorageOps<$t, Dimension<$r>, Dimension<$c>>>
+        ::$f $(::<$gen>)? $(($($arg),*))?
     };
     ($w:ident(<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?)) => {
         $w { storage: $crate::column_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }

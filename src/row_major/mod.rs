@@ -19,14 +19,15 @@ use crate::{
 ///     └                         ┘
 /// ```
 pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize> {
-    pub(crate) storage: <T as private::SealedElement<C, R>>::Storage,
+    pub(crate) storage: private::ConstStorage<T, C, R>,
 }
 
 mod impls;
 
 macro_rules! call {
     (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?) => {
-        <$t as $crate::private::SealedElement<$c, $r>>::$f $(::<$gen>)? $(($($arg),*))?
+        <$crate::private::ConstStorage<$t, $c, $r> as $crate::private::StorageOps<$t, Dimension<$c>, Dimension<$r>>>
+        ::$f $(::<$gen>)? $(($($arg),*))?
     };
     ($w:ident(<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?)) => {
         $w { storage: $crate::row_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }

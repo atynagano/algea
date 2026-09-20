@@ -1,5 +1,5 @@
 use super::{Matrix, call};
-use crate::{__internal, Element, FloatElement, Vector};
+use crate::{__internal, Element, FloatElement, Vector, support::Dimension};
 
 impl<T: Element<D, D>, const D: usize> Matrix<T, D, D> {
     /// The identity matrix.
@@ -12,7 +12,7 @@ impl<T: Element<D, D>, const D: usize> Matrix<T, D, D> {
 
 impl<T: FloatElement<D>, const D: usize> Matrix<T, D, D>
 where
-    __internal::Dimension<D>: __internal::AtMost<4>,
+    Dimension<D>: __internal::AtMost<4>,
 {
     /// Returns the multiplicative inverse of the matrix.
     #[inline]

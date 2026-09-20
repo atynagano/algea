@@ -7,19 +7,28 @@ use crate::{
     marker::{CastFrom, Lane, Signed, StoredVerbatim},
     private,
     row_major,
-    support::{Element, FloatElement, IntElement, MaskElement, SintElement, UintElement},
+    support::{
+        Dimension,
+        Element,
+        FloatElement,
+        IntElement,
+        MaskElement,
+        SintElement,
+        UintElement,
+    },
+    utils,
 };
 
 pub(crate) mod vector {
     macro_rules! call {
         (<$t:ty, $r:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?) => {
-            <$t as $crate::private::SealedElement<$r, 1>>::$f $(::<$gen>)? $(($($arg),*))?
+            <$crate::private::ConstStorage<$t, $r> as $crate::private::StorageOps<$t, Dimension<$r>>>::$f $(::<$gen>)? $(($($arg),*))?
         };
         ($w:ident(<$t:ty, $r:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?)) => {
             $w { storage: $crate::api::vector::call!(<$t, $r>::$f $(::<$gen>)? $(($($arg),*))?) }
         };
         (<$t:ty, $r:tt>::$f:ident $(::<$($gen:tt),+>)? $(($($arg:expr),*))?) => {
-            <$t as $crate::private::SealedElement<$r, 1>>::$f $(::<$($gen),+>)? $(($($arg),*))?
+            <$crate::private::ConstStorage<$t, $r> as $crate::private::StorageOps<$t, Dimension<$r>>>::$f $(::<$($gen),+>)? $(($($arg),*))?
         };
         ($w:ident(<$t:ty, $r:tt>::$f:ident $(::<$($gen:tt),+>)? $(($($arg:expr),*))?)) => {
             $w { storage: $crate::api::vector::call!(<$t, $r>::$f $(::<$($gen),+>)? $(($($arg),*))?) }
@@ -35,10 +44,7 @@ macro_rules! impl_from_array {
             $($d => {
                 let a = core::mem::transmute_copy::<[T; $D], [$t; $d]>(& $array);
                 let a = paste::paste!(crate::kernels::from_array::$t:: [<_ $d x1>])([a]);
-                core::mem::transmute_copy::<
-                    <$t as private::SealedElement<$d, 1>>::Storage,
-                    <T as private::SealedElement<$D, 1>>::Storage,
-                >(&a)
+                core::mem::transmute_copy::<private::ConstStorage<$t, $d>, private::ConstStorage<T, $D>>(&a)
             },)*
             _ => unreachable!(),
         }
@@ -47,9 +53,9 @@ macro_rules! impl_from_array {
 
 impl<T: Element<D>, const D: usize> Vector<T, D> {
     /// A vector with all lanes set to zero.
-    pub const ZERO: Self = vector::call!(Self(<T, D>::ZERO));
+    pub const ZERO: Self = Self { storage: utils::ArithOps::ZERO_ };
     /// A vector with all lanes set to one.
-    pub const ONE: Self = vector::call!(Self(<T, D>::ONE));
+    pub const ONE: Self = Self { storage: utils::ArithOps::ONE_ };
 
     /// Constructs a vector with every lane set to `value`.
     #[inline]
@@ -60,8 +66,7 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
     /// Constructs a vector from an array of lanes.
     #[inline]
     pub const fn from_array(array: [T; D]) -> Self {
-        let mut out =
-            core::mem::MaybeUninit::<<T as private::SealedElement<D, 1>>::Storage>::uninit();
+        let mut out = core::mem::MaybeUninit::<private::ConstStorage<T, D>>::uninit();
 
         // SAFETY: `Element<D>` is sealed to `f32`, `i32`, and `u32`, with `D`
         // restricted to 1..=4. `Sealed::TYPE` exactly identifies `T`, so the
@@ -90,7 +95,7 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
 
     /// Converts each lane to `U` using Rust's `as` conversion semantics.
     #[inline]
-    pub fn cast<U: Element<D> + CastFrom<T>>(self) -> Vector<U, D> {
+    pub fn cast<U: Element + CastFrom<T>>(self) -> Vector<U, D> {
         vector::call!(Vector(<U, D>::cast_from::<T>(self.storage)))
     }
 }
@@ -169,56 +174,56 @@ impl<T: Signed + Element<D>, const D: usize> Vector<T, D> {
 
 impl<T: Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<1>,
+    Dimension<D>: __internal::AtLeast<1>,
 {
     /// The positive unit vector along the x-axis.
     pub const POS_X: Self = vector::call!(Self(<T, D>::POS_X));
 }
 impl<T: Signed + Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<1>,
+    Dimension<D>: __internal::AtLeast<1>,
 {
     /// The negative unit vector along the x-axis.
     pub const NEG_X: Self = vector::call!(Self(<T, D>::NEG_X));
 }
 impl<T: Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<2>,
+    Dimension<D>: __internal::AtLeast<2>,
 {
     /// The positive unit vector along the y-axis.
     pub const POS_Y: Self = vector::call!(Self(<T, D>::POS_Y));
 }
 impl<T: Signed + Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<2>,
+    Dimension<D>: __internal::AtLeast<2>,
 {
     /// The negative unit vector along the y-axis.
     pub const NEG_Y: Self = vector::call!(Self(<T, D>::NEG_Y));
 }
 impl<T: Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<3>,
+    Dimension<D>: __internal::AtLeast<3>,
 {
     /// The positive unit vector along the z-axis.
     pub const POS_Z: Self = vector::call!(Self(<T, D>::POS_Z));
 }
 impl<T: Signed + Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<3>,
+    Dimension<D>: __internal::AtLeast<3>,
 {
     /// The negative unit vector along the z-axis.
     pub const NEG_Z: Self = vector::call!(Self(<T, D>::NEG_Z));
 }
 impl<T: Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<4>,
+    Dimension<D>: __internal::AtLeast<4>,
 {
     /// The positive unit vector along the w-axis.
     pub const POS_W: Self = vector::call!(Self(<T, D>::POS_W));
 }
 impl<T: Signed + Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<4>,
+    Dimension<D>: __internal::AtLeast<4>,
 {
     /// The negative unit vector along the w-axis.
     pub const NEG_W: Self = vector::call!(Self(<T, D>::NEG_W));
@@ -274,15 +279,9 @@ macro_rules! impl_matrix_from_array {
     (@m $t:ty, $M:expr, $N:expr, $array:expr, $n:literal, [$($m:literal),*]) => {
         match $M {
             $($m => {
-                let a = core::mem::transmute_copy::<
-                    [[T; $M]; $N],
-                    [[$t; $m]; $n],
-                >($array);
+                let a = core::mem::transmute_copy::<[[T; $M]; $N], [[$t; $m]; $n]>($array);
                 let a = paste::paste!(crate::kernels::from_array::$t:: [<_ $m x $n>])(a);
-                core::mem::transmute_copy::<
-                    <$t as private::SealedElement<$m, $n>>::Storage,
-                    <T as private::SealedElement<$M, $N>>::Storage,
-                >(&a)
+                core::mem::transmute_copy::<private::ConstStorage<$t, $m, $n>, private::ConstStorage<T, $M, $N>>(&a)
             },)*
             _ => unreachable!(),
         }
@@ -305,8 +304,7 @@ impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C
     /// Constructs a matrix from its logical rows.
     #[inline]
     pub const fn from_rows(rows: [[T; C]; R]) -> Self {
-        let mut out =
-            core::mem::MaybeUninit::<<T as private::SealedElement<C, R>>::Storage>::uninit();
+        let mut out = core::mem::MaybeUninit::<private::ConstStorage<T, C, R>>::uninit();
 
         // SAFETY: The type and dimension argument is the same as in
         // `column_major::Matrix::from_columns`. Row-major storage uses the
@@ -388,8 +386,7 @@ impl<T: Element<R, C>, const R: usize, const C: usize> column_major::Matrix<T, R
     /// Constructs a matrix from its logical columns.
     #[inline]
     pub const fn from_columns(columns: [[T; R]; C]) -> Self {
-        let mut out =
-            core::mem::MaybeUninit::<<T as private::SealedElement<R, C>>::Storage>::uninit();
+        let mut out = core::mem::MaybeUninit::<private::ConstStorage<T, R, C>>::uninit();
 
         // SAFETY: `Element<R, C>` is sealed to `f32`, `i32`, and `u32`, with
         // both dimensions restricted to 1..=4. `Sealed::TYPE` identifies `T`,
@@ -1270,13 +1267,7 @@ where
 {
     #[inline]
     fn select(self, true_values: Mask<T, D>, false_values: Mask<T, D>) -> Mask<T, D> {
-        Mask {
-            storage: <T as private::SealedElement<D, 1>>::mask_select_any::<U>(
-                self.storage,
-                true_values.storage,
-                false_values.storage,
-            ),
-        }
+        vector::call!(Mask(<T, D>::mask_select_any::<U>(self.storage, true_values.storage, false_values.storage)))
     }
 }
 impl<T, U, const D: usize> Select<Vector<T, D>> for Mask<U, D>
@@ -1286,12 +1277,6 @@ where
 {
     #[inline]
     fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
-        Vector {
-            storage: <T as private::SealedElement<D, 1>>::select_any_mask::<U>(
-                self.storage,
-                true_values.storage,
-                false_values.storage,
-            ),
-        }
+        vector::call!(Vector(<T, D>::select_any_mask::<U>(self.storage, true_values.storage, false_values.storage)))
     }
 }

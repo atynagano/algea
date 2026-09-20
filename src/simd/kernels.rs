@@ -1214,6 +1214,8 @@ pub(crate) mod to_array {
     }
 }
 
+// TODO: Share the 32-bit and 64-bit kernels with generic scalar and vector types, as `to_array`
+// does, instead of generating a separate copy for every scalar type.
 pub(crate) mod from_array {
     // Use `new` instead of `From<[T; 4]>` so these constructors remain `const fn`.
     macro_rules! impl_fns {

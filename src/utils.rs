@@ -515,7 +515,7 @@ mod mask_utils {
     // reason for the lane width to match the values being selected: the width casts and the
     // canonical `0`/`-1` invariant would both disappear.
 
-    use crate::private;
+    use crate::{private, support::Dimension};
 
     /// Storage whose physical lanes are all-zero or all-one bit patterns.
     #[derive(Copy, Clone)]
@@ -527,9 +527,10 @@ mod mask_utils {
     /// Spelled through `ArithOps::Mask` rather than through `SealedElement::Storage` so that
     /// the width relationship holds for every element type, not only for the ones that are their
     /// own mask: `f32` at `(4, 1)` stores `f32x4` and masks it with `i32x4`.
-    pub(crate) type MaskStorage<T, const M: usize = 1, const N: usize = 1> = CanonicalMask<
-        <<T as private::SealedElement<M, N>>::Storage as crate::utils::ArithOps>::Mask,
-    >;
+    pub(crate) type ConstMaskStorage<T, const M: usize, const N: usize = 1> =
+        CanonicalMask<<private::ConstStorage<T, M, N> as crate::utils::ArithOps>::Mask>;
+    pub(crate) type DimMaskStorage<T, R, C = Dimension<1>> =
+        CanonicalMask<<private::DimStorage<T, R, C> as crate::utils::ArithOps>::Mask>;
 
     /// Loaded storage that can uphold the canonical mask invariant.
     ///
