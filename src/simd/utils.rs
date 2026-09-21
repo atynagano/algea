@@ -666,12 +666,12 @@ mod _64bit_types {
             unsafe { Self(vbsl_s32(vreinterpret_u32_s32(self.0), true_values.0, false_values.0)) }
         }
         #[inline(always)]
-        fn any<const N: usize>(self) -> bool {
+        fn canonical_any<const N: usize>(self) -> bool {
             assert_eq!(N, 2);
             unsafe { vminv_s32(self.into()) < 0 }
         }
         #[inline(always)]
-        fn all<const N: usize>(self) -> bool {
+        fn canonical_all<const N: usize>(self) -> bool {
             assert_eq!(N, 2);
             unsafe { vmaxv_s32(self.into()) < 0 }
         }
@@ -1580,7 +1580,9 @@ unsafe impl MaskOps for i32x4 {
             }
         } else if N == 2 {
             cfg_select! {
-                all(target_feature = "neon", target_arch = "aarch64") => self.xy().any::<2>(),
+                all(target_feature = "neon", target_arch = "aarch64") => {
+                    self.xy().canonical_any::<2>()
+                }
                 _ => self.to_bitmask() & 0b0011 != 0,
             }
         } else {
@@ -1604,7 +1606,9 @@ unsafe impl MaskOps for i32x4 {
             }
         } else if N == 2 {
             cfg_select! {
-                all(target_feature = "neon", target_arch = "aarch64") => self.xy().all::<2>(),
+                all(target_feature = "neon", target_arch = "aarch64") => {
+                    self.xy().canonical_all::<2>()
+                }
                 _ => self.to_bitmask() & 0b0011 == 0b0011,
             }
         } else {
