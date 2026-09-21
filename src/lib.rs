@@ -23,11 +23,11 @@ cfg_select! {
     // Keep this cfg name in sync if the crate is renamed.
     algea_force_simd = "true" => {
         mod simd;
-        use simd::kernels;
+        use simd::{definitions, kernels};
     }
     algea_force_simd = "false" => {
         mod non_simd;
-        use non_simd::kernels;
+        use non_simd::{definitions, kernels};
     }
     any(
         target_feature = "sse2",
@@ -35,11 +35,11 @@ cfg_select! {
         target_feature = "simd128",
     ) => {
         mod simd;
-        use simd::kernels;
+        use simd::{definitions, kernels};
     }
     _ => {
         mod non_simd;
-        use non_simd::kernels;
+        use non_simd::{definitions, kernels};
     }
 }
 
@@ -48,8 +48,8 @@ cfg_select! {
 /// A fixed-size, orientation-independent vector.
 ///
 /// In column-major expressions it acts as a column vector; in row-major
-/// expressions it acts as a row vector. Types other than `f32`, `i32`, and `u32`
-/// do not currently implement [`Element`].
+/// expressions it acts as a row vector. The supported lane types are `f32`, `f64`,
+/// `i32`, `i64`, `u32`, and `u64`.
 ///
 pub struct Vector<T: Element<D>, const D: usize> {
     pub(crate) storage: private::ConstStorage<T, D>,
@@ -482,6 +482,7 @@ pub mod support {
 }
 
 pub(crate) mod private {
+    pub(crate) use crate::definitions::{SealedStorageElement, SealedSupportedDimension};
     use crate::{
         marker::{Float, Int, Lane, StoredVerbatim},
         support::{Dimension, SupportedDimension, SupportedElement},
@@ -508,9 +509,9 @@ pub(crate) mod private {
         // The non-SIMD backend never calls this (see `src/non_simd/utils.rs`), so it is unused
         // under that backend.
         #[allow(dead_code)]
-        fn dispatch(v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+        fn dispatch(v: ConstStorage<T, M>) -> ConstStorage<T, N>
         where
-            T: SealedElement<M, 1> + SealedElement<N, 1> + SealedSupportedElement,
+            T: SealedSupportedElement,
             Dimension<M>: SealedSupportedDimension,
             Dimension<N>: SealedSupportedDimension;
     }
@@ -587,7 +588,7 @@ pub(crate) mod private {
     // overlap; consolidate them once their marker bounds and all backend call
     // sites can be unified without broadening the public API.
     pub(crate) trait Sealed: Sized {
-        // Scalar implementations used through `SealedElement` must override `TYPE`
+        // Scalar implementations used through `SealedSupportedElement` must override `TYPE`
         // so that it exactly identifies the concrete scalar type. Non-scalar
         // implementations used only to seal helper traits may keep this default;
         // evaluating it then fails during const evaluation.
@@ -659,35 +660,7 @@ pub(crate) mod private {
     pub(crate) type DimArray<T, D> = <D as DimensionTypes>::Array<T>;
     pub(crate) type DimVector<T, D> = <D as DimensionTypes>::Vector<T>;
 
-    pub(crate) trait SealedElement<const R: usize, const C: usize> {
-        type Storage: StorageOps<Self, Dimension<R>, Dimension<C>>
-        where
-            Self: SealedSupportedElement,
-            Dimension<R>: SealedSupportedDimension,
-            Dimension<C>: SealedSupportedDimension;
-    }
-
-    pub(crate) trait SealedSupportedElement:
-        Sealed
-        + SealedElement<1, 1>
-        + SealedElement<2, 1>
-        + SealedElement<3, 1>
-        + SealedElement<4, 1>
-        + SealedElement<1, 2>
-        + SealedElement<2, 2>
-        + SealedElement<3, 2>
-        + SealedElement<4, 2>
-        + SealedElement<1, 3>
-        + SealedElement<2, 3>
-        + SealedElement<3, 3>
-        + SealedElement<4, 3>
-        + SealedElement<1, 4>
-        + SealedElement<2, 4>
-        + SealedElement<3, 4>
-        + SealedElement<4, 4>
-    {
-        // TODO: Check whether these arguments can and should use
-        // `<Self as SealedElement<1, 1>>::Storage` instead of `ConstStorage<Self, 1>`.
+    pub(crate) trait SealedSupportedElement: Sealed + SealedStorageElement {
         fn vector_concat_1_1(
             a: ConstStorage<Self, 1>,
             b: ConstStorage<Self, 1>,
@@ -712,14 +685,6 @@ pub(crate) mod private {
             let [[b0]] = crate::api::vector::call!(<Self, 1>::to_array(b));
             crate::api::vector::call!(<Self, 3>::from_array([[a0, a1, b0]]))
         }
-    }
-
-    pub(crate) trait SealedSupportedDimension: Sized {
-        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension>: StorageOps<T, Self, C>;
-        type Storage1xN<T: SealedSupportedElement>: StorageOps<T, Dimension<1>, Self>;
-        type Storage2xN<T: SealedSupportedElement>: StorageOps<T, Dimension<2>, Self>;
-        type Storage3xN<T: SealedSupportedElement>: StorageOps<T, Dimension<3>, Self>;
-        type Storage4xN<T: SealedSupportedElement>: StorageOps<T, Dimension<4>, Self>;
     }
 
     pub(crate) trait StorageOps<
@@ -872,7 +837,7 @@ pub(crate) mod private {
         {
             unimplemented!()
         }
-        fn select_any_mask<Mask: SupportedElement>(
+        fn select_any_mask<Mask: SealedSupportedElement>(
             _mask: DimMaskStorage<Mask, R, C>,
             _true_values: Self,
             _false_values: Self,
@@ -944,7 +909,7 @@ pub(crate) mod private {
         ) -> DimMaskStorage<T, R, C> {
             CanonicalMask::store_mask(a.load_mask() ^ b.load_mask())
         }
-        fn mask_select_any<Mask: SupportedElement>(
+        fn mask_select_any<Mask: SealedSupportedElement>(
             _mask: DimMaskStorage<Mask, R, C>,
             _true_values: DimMaskStorage<T, R, C>,
             _false_values: DimMaskStorage<T, R, C>,
@@ -996,8 +961,8 @@ pub(crate) mod private {
             Self::substantiate_mask(ArithOps::is_nan_(_a))
         }
 
-        // Defaulted like the other lane-wise operations: `src/api.rs` exposes these on `Vector`
-        // alone, so the backends implement them for a one-column shape only.
+        // The public API exposes these on `Vector` alone, but the `each_max` and `each_min`
+        // defaults cover every supported storage shape.
         #[inline(always)]
         fn each_max(a: Self, b: Self) -> Self { ArithOps::max_(a, b) }
         #[inline(always)]

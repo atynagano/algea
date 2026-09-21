@@ -68,12 +68,12 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
     pub const fn from_array(array: [T; D]) -> Self {
         let mut out = core::mem::MaybeUninit::<private::ConstStorage<T, D>>::uninit();
 
-        // SAFETY: `Element<D>` is sealed to `f32`, `i32`, and `u32`, with `D`
-        // restricted to 1..=4. `Sealed::TYPE` exactly identifies `T`, so the
+        // SAFETY: `Element<D>` is sealed to `f32`, `f64`, `i32`, `i64`, `u32`, and `u64`,
+        // with `D` restricted to 1..=4. `Sealed::TYPE` exactly identifies `T`, so the
         // selected type arm has `$t == T`; likewise, the selected dimension arm
         // has `$d == D`. Consequently, the first `transmute_copy` copies between
         // identical array types, and the second copies between identical
-        // `SealedElement<D, 1>::Storage` types. Both sources are fully initialized
+        // `ConstStorage<T, D>` types. Both sources are fully initialized
         // and `Copy`, so the copies preserve layout, validity, and ownership.
         let storage = unsafe {
             match <T as private::Sealed>::TYPE {

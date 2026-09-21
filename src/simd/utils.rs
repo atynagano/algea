@@ -1,5 +1,5 @@
 use crate::{
-    private,
+    private::{self, ConstStorage},
     support::Dimension,
     utils::{CanonicalMask, Load, Store},
 };
@@ -317,8 +317,8 @@ mod _64bit_types {
         fn canonical_select(self, _true_values: Self, _false_values: Self) -> Self {
             unimplemented!()
         }
-        fn any<const N: usize>(self) -> bool { unimplemented!() }
-        fn all<const N: usize>(self) -> bool { unimplemented!() }
+        fn canonical_any<const N: usize>(self) -> bool { unimplemented!() }
+        fn canonical_all<const N: usize>(self) -> bool { unimplemented!() }
     }
     // SAFETY: `__load_mask` zeroes the two lanes it adds and copies the other two, and `__store_mask` drops
     // those two again, so a canonical value maps to a canonical value in either direction.
@@ -1564,7 +1564,7 @@ unsafe impl MaskOps for i32x4 {
         i32x4::select(self, true_values, false_values)
     }
     #[inline(always)]
-    fn any<const N: usize>(self) -> bool {
+    fn canonical_any<const N: usize>(self) -> bool {
         std::assert_matches!(N, 2..=4);
         if N == 4 {
             self.any()
@@ -1588,7 +1588,7 @@ unsafe impl MaskOps for i32x4 {
         }
     }
     #[inline(always)]
-    fn all<const N: usize>(self) -> bool {
+    fn canonical_all<const N: usize>(self) -> bool {
         std::assert_matches!(N, 2..=4);
         if N == 4 {
             self.all()
@@ -1628,7 +1628,7 @@ unsafe impl MaskOps for i64x2 {
         i64x2::select(self, true_values, false_values)
     }
     #[inline(always)]
-    fn any<const N: usize>(self) -> bool {
+    fn canonical_any<const N: usize>(self) -> bool {
         assert_eq!(N, 2);
         cfg_select! {
             // NEON has no bitmask instruction. A canonical 64-bit lane is all-zero or all-one, so
@@ -1644,7 +1644,7 @@ unsafe impl MaskOps for i64x2 {
         }
     }
     #[inline(always)]
-    fn all<const N: usize>(self) -> bool {
+    fn canonical_all<const N: usize>(self) -> bool {
         assert_eq!(N, 2);
         cfg_select! {
             // See `any`.
@@ -1673,8 +1673,8 @@ unsafe impl MaskOps for i64x4 {
         i64x4::select(self, true_values, false_values)
     }
     #[inline(always)]
-    fn any<const N: usize>(self) -> bool {
-        // Two lanes reach this type even though `i64x2` exists: a shape of `SealedElement<2, 3>`,
+    fn canonical_any<const N: usize>(self) -> bool {
+        // Two lanes reach this type even though `i64x2` exists: a shape of `SealedSimdElement<2, 3>`,
         // which is a 3x2 row-major or 2x3 column-major matrix, packs its three units of two lanes
         // into two four-lane ones, and the second of those has only two live lanes.
         std::assert_matches!(N, 2..=4);
@@ -1689,7 +1689,7 @@ unsafe impl MaskOps for i64x4 {
                     // SAFETY: without a 256-bit register `wide::i64x4` is `#[repr(C)] { a: i64x2,
                     // b: i64x2 }`, which has the same layout as `[i64x2; 2]`.
                     let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::any::<2>(low | high)
+                    MaskOps::canonical_any::<2>(low | high)
                 }
             }
         } else if N == 3 {
@@ -1699,7 +1699,7 @@ unsafe impl MaskOps for i64x4 {
                 _ => {
                     // SAFETY: see the four-lane branch.
                     let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::any::<2>(low | (high & i64x2::new([-1, 0])))
+                    MaskOps::canonical_any::<2>(low | (high & i64x2::new([-1, 0])))
                 }
             }
         } else {
@@ -1708,22 +1708,22 @@ unsafe impl MaskOps for i64x4 {
                 _ => {
                     // SAFETY: see the four-lane branch.
                     let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::any::<2>(low)
+                    MaskOps::canonical_any::<2>(low)
                 }
             }
         }
     }
     #[inline(always)]
-    fn all<const N: usize>(self) -> bool {
+    fn canonical_all<const N: usize>(self) -> bool {
         std::assert_matches!(N, 2..=4);
-        // See `any` for how the two target families differ, and for why two lanes arrive here.
+        // See `canonical_any` for how the two target families differ, and for why two lanes arrive here.
         if N == 4 {
             cfg_select! {
                 target_feature = "avx2" => self.all(),
                 _ => {
-                    // SAFETY: see `any`.
+                    // SAFETY: see `canonical_any`.
                     let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::all::<2>(low & high)
+                    MaskOps::canonical_all::<2>(low & high)
                 }
             }
         } else if N == 3 {
@@ -1731,18 +1731,18 @@ unsafe impl MaskOps for i64x4 {
                 target_feature = "avx2" => self.to_bitmask() & 0b0111 == 0b0111,
                 // Lane 3 is padding; filling it stops it from making the answer false.
                 _ => {
-                    // SAFETY: see `any`.
+                    // SAFETY: see `canonical_any`.
                     let [low, high]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::all::<2>(low & (high | i64x2::new([0, -1])))
+                    MaskOps::canonical_all::<2>(low & (high | i64x2::new([0, -1])))
                 }
             }
         } else {
             cfg_select! {
                 target_feature = "avx2" => self.to_bitmask() & 0b0011 == 0b0011,
                 _ => {
-                    // SAFETY: see `any`.
+                    // SAFETY: see `canonical_any`.
                     let [low, _]: [i64x2; 2] = unsafe { core::mem::transmute(self) };
-                    MaskOps::all::<2>(low)
+                    MaskOps::canonical_all::<2>(low)
                 }
             }
         }
@@ -1770,10 +1770,9 @@ impl CanonicalMask<i64x4> {
 // neither, it loads whatever compute vector the storage holds and stores the result back — so they
 // are generic here. That is 336 impls rather than 336 x 3 widths x 6 element types.
 //
-// The bounds are the ones the body needs and they are discharged where `SealedElement::swizzle2`,
+// The bounds are the ones the body needs and are discharged where `StorageOps::swizzle2`,
 // `swizzle3` and `swizzle4` call this, with the element type and the source width both concrete.
-// None of them reaches the element trait itself, which is what keeps the SIMD storage traits out
-// of the backend-independent API.
+// They stay in this backend rather than being required by the backend-independent storage trait.
 //
 // An index list that names a lane a source of width `M` does not have needs no special case: this
 // impl is only instantiated when it is called, and `build.rs` pairs each accessor with the smallest
@@ -1793,17 +1792,14 @@ macro_rules! impl_swizzle_dispatch {
     (@impl $n:tt, $kind:ident[$($parameter:tt),+], $result:ident, [$($index:tt),+]) => {
         impl<T, const M: usize> private::SwizzleDispatch<T, M, $n> for private::$kind<$($parameter),+>
         where
+            T: private::SealedSupportedElement,
             Dimension<M>: private::SealedSupportedDimension,
-            T: private::SealedElement<M, 1> + private::SealedElement<$n, 1> + private::SealedSupportedElement,
-            <T as private::SealedElement<M, 1>>::Storage: Load,
-            <<T as private::SealedElement<M, 1>>::Storage as Load>::Output: Swizzle,
-            <<<T as private::SealedElement<M, 1>>::Storage as Load>::Output as ComputeVector>::$result:
-                Store<<T as private::SealedElement<$n, 1>>::Storage>,
+            ConstStorage<T, M>: Load,
+            <ConstStorage<T, M> as Load>::Output: Swizzle,
+            <<ConstStorage<T, M> as Load>::Output as ComputeVector>::$result: Store<ConstStorage<T, $n>>,
         {
             #[inline(always)]
-            fn dispatch(
-                v: <T as private::SealedElement<M, 1>>::Storage,
-            ) -> <T as private::SealedElement<$n, 1>>::Storage {
+            fn dispatch(v: ConstStorage<T, M>) -> ConstStorage<T, $n> {
                 swizzle!(v.load(), [$($index),+]).store()
             }
         }

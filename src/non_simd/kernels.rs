@@ -23,14 +23,6 @@ pub(crate) mod reduce {
 }
 
 #[inline(always)]
-pub(crate) fn diagonal<T: Copy, const N: usize>(a: [[T; N]; N]) -> [[T; N]; 1] {
-    [core::array::from_fn(
-        #[inline(always)]
-        |i| a[i][i],
-    )]
-}
-
-#[inline(always)]
 pub(crate) fn transpose<T: Copy, const M: usize, const N: usize>(a: [[T; M]; N]) -> [[T; N]; M] {
     core::array::from_fn(
         #[inline(always)]
@@ -78,11 +70,31 @@ fn div<T: Float, const N: usize>(a: [T; N], b: [T; N]) -> [T; N] {
     )
 }
 
+#[inline(always)]
+fn transmute_array<T: Copy, const M: usize, const N: usize, const M2: usize, const N2: usize>(
+    a: [[T; M]; N],
+) -> [[T; M2]; N2] {
+    assert_eq!(M, M2);
+    assert_eq!(N, N2);
+    let a: &[[T; M2]; N2] = a.as_flattened().as_chunks::<M2>().0.try_into().unwrap();
+    *a
+}
+
 pub(crate) mod inverse {
     #![allow(unused_parens)]
 
-    use super::{Float, add, div, mul, permute, permute2};
+    use super::{Float, add, div, mul, permute, permute2, transmute_array};
     use crate::utils::arith;
+
+    pub(crate) fn inverse<T: Float, const M: usize, const N: usize>(a: [[T; M]; N]) -> [[T; M]; N] {
+        match (M, N) {
+            (1, 1) => transmute_array(_1x1(transmute_array(a))),
+            (2, 2) => transmute_array(_2x2(transmute_array(a))),
+            (3, 3) => transmute_array(_3x3(transmute_array(a))),
+            (4, 4) => transmute_array(_4x4(transmute_array(a))),
+            _ => unimplemented!(),
+        }
+    }
 
     #[inline(always)]
     fn matmul2x2x2<T: Float>(a: [T; 4], b: [T; 4]) -> [T; 4] {
@@ -124,6 +136,7 @@ pub(crate) mod inverse {
         [[c0[1], c1[1], c2[1]], [c0[2], c1[2], c2[2]], [c0[0], c1[0], c2[0]]]
     }
 
+    // TODO: Investigate sharing the 4x4 inverse implementation with the SIMD backend.
     #[inline(always)]
     pub(crate) fn _4x4<T: Float>(a: [[T; 4]; 4]) -> [[T; 4]; 4] {
         #[inline(always)]
@@ -191,8 +204,19 @@ pub(crate) mod inverse {
 pub(crate) mod determinant {
     #![allow(unused_parens)]
 
-    use super::{Float, add, mul, permute, permute2};
+    use super::{Float, add, mul, permute, permute2, transmute_array};
     use crate::utils::arith;
+
+    #[inline(always)]
+    pub(crate) fn determinant<T: Float, const M: usize, const N: usize>(a: [[T; M]; N]) -> T {
+        match (M, N) {
+            (1, 1) => a[0][0],
+            (2, 2) => _2x2(transmute_array(a)),
+            (3, 3) => _3x3(transmute_array(a)),
+            (4, 4) => _4x4(transmute_array(a)),
+            _ => unimplemented!(),
+        }
+    }
 
     #[inline(always)]
     pub(crate) fn _2x2<T: Float>([a, b]: [[T; 2]; 2]) -> T {

@@ -319,7 +319,7 @@ impl_arith_ops_all!(f64, i64, u64);
 
 // A storage value is an array of units -- compute vectors on the SIMD backend, scalars on the other
 // -- so the lane-wise operations on it are the unit's operations applied elementwise. Both backends
-// reach this through `SealedElement::Storage: Load<Output: ArithOps>`.
+// use these array implementations through their storage types.
 impl<T: ArithOps, const N: usize> ArithOps for [T; N] {
     // The leaf scalar, as every other implementation reports: `f32` for `f32`, for `f32x4` and for
     // `[f32x4; N]` alike. That is what makes `filled_` reach the whole storage in one step.
@@ -336,8 +336,6 @@ impl<T: ArithOps, const N: usize> ArithOps for [T; N] {
     // has to name something, and this is the shape that would be right if it ever were read.
     type Mask = [T::Mask; N];
 
-    // TODO(duplicate-constants): with these available through the storage type, `SealedElement`
-    // need not carry `ZERO` and `ONE` of its own.
     const ZERO_: Self = [T::ZERO_; N];
     const ONE_: Self = [T::ONE_; N];
 
@@ -524,9 +522,9 @@ mod mask_utils {
 
     /// The mask storage that goes with element type `T` at shape `M` x `N`.
     ///
-    /// Spelled through `ArithOps::Mask` rather than through `SealedElement::Storage` so that
-    /// the width relationship holds for every element type, not only for the ones that are their
-    /// own mask: `f32` at `(4, 1)` stores `f32x4` and masks it with `i32x4`.
+    /// Spelled through the element storage's `ArithOps::Mask`, rather than the mask element's
+    /// own storage, so the width relationship holds even when the element is not its own mask:
+    /// `f32` at `(4, 1)` stores `f32x4` and masks it with `i32x4`.
     pub(crate) type ConstMaskStorage<T, const M: usize, const N: usize = 1> =
         CanonicalMask<<private::ConstStorage<T, M, N> as crate::utils::ArithOps>::Mask>;
     pub(crate) type DimMaskStorage<T, R, C = Dimension<1>> =
@@ -553,12 +551,12 @@ mod mask_utils {
         fn canonical_bitxor(self, rhs: Self) -> Self;
         // same as `Loaded::select_`
         fn canonical_select(self, true_values: Self, false_values: Self) -> Self;
-        // Only the SIMD backend's `SealedElement::any`/`all` (see `simd.rs`) calls these; the
-        // non-SIMD backend implements `any`/`all` directly over its flat array storage instead.
+        // Only the SIMD backend's mask reductions call these; the non-SIMD backend implements
+        // `StorageOps::any`/`all` directly over its array storage instead.
         #[allow(dead_code)]
-        fn any<const N: usize>(self) -> bool;
+        fn canonical_any<const N: usize>(self) -> bool;
         #[allow(dead_code)]
-        fn all<const N: usize>(self) -> bool;
+        fn canonical_all<const N: usize>(self) -> bool;
     }
 
     /// Mask storage, paired with the `MaskOps` its operations are performed on.
@@ -663,12 +661,12 @@ mod mask_utils {
             if self < 0 { true_values } else { false_values }
         }
         #[inline(always)]
-        fn any<const N: usize>(self) -> bool {
+        fn canonical_any<const N: usize>(self) -> bool {
             assert_eq!(N, 1);
             self < 0
         }
         #[inline(always)]
-        fn all<const N: usize>(self) -> bool {
+        fn canonical_all<const N: usize>(self) -> bool {
             assert_eq!(N, 1);
             self < 0
         }
@@ -688,12 +686,12 @@ mod mask_utils {
             if self < 0 { true_values } else { false_values }
         }
         #[inline(always)]
-        fn any<const N: usize>(self) -> bool {
+        fn canonical_any<const N: usize>(self) -> bool {
             assert_eq!(N, 1);
             self < 0
         }
         #[inline(always)]
-        fn all<const N: usize>(self) -> bool {
+        fn canonical_all<const N: usize>(self) -> bool {
             assert_eq!(N, 1);
             self < 0
         }
@@ -733,8 +731,8 @@ mod mask_utils {
                 |i| self[i].canonical_select(true_values[i], false_values[i]),
             )
         }
-        fn any<const M: usize>(self) -> bool { unimplemented!() }
-        fn all<const M: usize>(self) -> bool { unimplemented!() }
+        fn canonical_any<const M: usize>(self) -> bool { unimplemented!() }
+        fn canonical_all<const M: usize>(self) -> bool { unimplemented!() }
     }
 
     impl<T: MaskOps> core::ops::Not for CanonicalMask<T> {
@@ -788,10 +786,10 @@ mod mask_utils {
         }
         #[allow(dead_code)]
         #[inline(always)]
-        pub(crate) fn any<const N: usize>(self) -> bool { self.0.any::<N>() }
+        pub(crate) fn any<const N: usize>(self) -> bool { self.0.canonical_any::<N>() }
         #[allow(dead_code)]
         #[inline(always)]
-        pub(crate) fn all<const N: usize>(self) -> bool { self.0.all::<N>() }
+        pub(crate) fn all<const N: usize>(self) -> bool { self.0.canonical_all::<N>() }
     }
     impl<T> CanonicalMask<T> {
         #[inline(always)]
