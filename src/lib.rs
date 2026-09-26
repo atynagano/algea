@@ -995,6 +995,35 @@ pub(crate) mod private {
         fn sqrt(a: Self) -> Self { ArithOps::sqrt_(a) }
         fn transpose(a: Self) -> DimStorage<T, C, R>;
 
+        #[allow(dead_code)]
+        fn substantiate_1x(_a: Self) -> DimStorage<T, Dimension<1>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_2x(_a: Self) -> DimStorage<T, Dimension<2>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_3x(_a: Self) -> DimStorage<T, Dimension<3>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_4x(_a: Self) -> DimStorage<T, Dimension<4>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x1(_a: Self) -> DimStorage<T, R, Dimension<1>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x2(_a: Self) -> DimStorage<T, R, Dimension<2>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x3(_a: Self) -> DimStorage<T, R, Dimension<3>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x4(_a: Self) -> DimStorage<T, R, Dimension<4>> { unimplemented!() }
+        // TODO(integer-products): After the numeric element semantics are defined, generalize
+        // matrix products to integers, retain non-FMA integer kernels, and add debug-mode
+        // overflow tests through every public product operation.
+        fn matmul<const K: usize>(
+            _a: DimStorage<T, R, Dimension<K>>,
+            _b: DimStorage<T, Dimension<K>, C>,
+        ) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension,
+        {
+            unimplemented!()
+        }
+
         fn from_bits(_a: DimStorage<<T as Float>::Bits, R, C>) -> Self
         where
             T: Float<Bits: SealedSupportedElement>,

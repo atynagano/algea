@@ -30,6 +30,9 @@ macro_rules! if_ {
     (3 == 3 and 3 == 3 { $($then:tt)* }) => { $($then)* };
     (4 == 4 and 4 == 4 { $($then:tt)* }) => { $($then)* };
     (1 == 1 { $($then:tt)* }) => { $($then)* };
+    (2 == 2 { $($then:tt)* }) => { $($then)* };
+    (3 == 3 { $($then:tt)* }) => { $($then)* };
+    (4 == 4 { $($then:tt)* }) => { $($then)* };
     (1 == 1 { $($then:tt)* } else { $($else:tt)* }) => { $($then)* };
     (32 == 32 { $($then:tt)* }) => { $($then)* };
     ($_:tt == 1 { $($then:tt)* } else { $($else:tt)* }) => { $($else)* };
@@ -475,6 +478,7 @@ fn zip3<T: Copy, const N: usize>(
     )
 }
 
+#[allow(dead_code)]
 pub(super) trait Load {
     type Output;
     fn load(self) -> Self::Output;

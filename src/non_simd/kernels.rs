@@ -341,6 +341,8 @@ pub(crate) mod matmul {
         // Match the SIMD addition order where doing so has no performance cost, because a
         // different order can amplify numerical differences. Bit-identical results across
         // platforms are not guaranteed; FMA contraction and its rounding may still differ.
+        // When this kernel is generalized to integer matrices, multiplication and addition must
+        // use explicit wrapping semantics so scalar debug builds match SIMD and release builds.
         match (R, K, C) {
             // x, x + y, (x + y) + z
             (_, 1..=3, _) => core::array::from_fn(
@@ -401,26 +403,5 @@ pub(crate) mod matmul {
             ),
             _ => unimplemented!(),
         }
-    }
-
-    // These aliases are used by row_major and column_major modules
-    macro_rules! impl_mat_mul_mat {
-        ([$($a:literal),*]; $b:tt; $c:tt) => {
-            $(impl_mat_mul_mat!(@a $a; $b; $c);)*
-        };
-        (@a $a:literal; [$($b:literal),*]; $c:tt) => {
-            $(impl_mat_mul_mat!(@ab $a; $b; $c);)*
-        };
-        (@ab $a:literal; $b:literal; [$($c:literal),*]) => {
-            $(paste::paste!(pub(crate) use super::matmul as [<matmul $a x $b x $c>];);)*
-        };
-    }
-
-    pub(crate) mod f32 {
-        impl_mat_mul_mat!([1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
-    }
-
-    pub(crate) mod f64 {
-        impl_mat_mul_mat!([1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
     }
 }

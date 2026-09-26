@@ -1,8 +1,9 @@
-use super::{Element, private};
 use crate::{
+    Element,
+    FloatElement,
     Vector,
-    kernels::matmul,
-    utils::{Load, Store},
+    private,
+    support::{Dimension, SupportedDimension},
 };
 
 /// A fixed-size matrix stored as row vectors.
@@ -25,21 +26,20 @@ pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize> {
 mod impls;
 
 macro_rules! call {
-    (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?) => {
-        <$crate::private::ConstStorage<$t, $c, $r> as $crate::private::StorageOps<$t, Dimension<$c>, Dimension<$r>>>
-        ::$f $(::<$gen>)? $(($($arg),*))?
+    (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:tt>)? $(($($arg:expr),*))?) => {
+        <$crate::private::ConstStorage<$t, $c, $r> as $crate::private::StorageOps<
+            $t,
+            $crate::support::Dimension<$c>,
+            $crate::support::Dimension<$r>,
+        >>::$f $(::<$gen>)? $(($($arg),*))?
     };
-    ($w:ident(<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:ty>)? $(($($arg:expr),*))?)) => {
+    ($w:ident(<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:tt>)? $(($($arg:expr),*))?)) => {
         $w { storage: $crate::row_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }
     };
 }
 pub(crate) use call;
 
-/// Enables `R × K` by `K × C` matrix multiplication with the `*` operator.
-///
-/// When `T` implements this trait, `Matrix<T, R, K>` implements
-/// [`core::ops::Mul`]`<Matrix<T, K, C>, Output = Matrix<T, R, C>>`.
-/// This allows generic code to require that a particular matrix product is available:
+/// Multiplies an `R × K` matrix by a `K × C` matrix with the `*` operator.
 ///
 /// ```text
 /// ┌ a00 a01 a02 a03 ┐   ┌ b00 b01 b02 b03 ┐   ┌ c00 c01 c02 c03 ┐
@@ -49,28 +49,28 @@ pub(crate) use call;
 /// ```
 ///
 /// ```
-/// use algea::row_major::{Matrix, MatrixProduct};
+/// use algea::row_major::Matrix;
 ///
-/// fn multiply<T: MatrixProduct<4, 4, 4>>(
-///     a: Matrix<T, 4, 4>,
-///     b: Matrix<T, 4, 4>,
-/// ) -> Matrix<T, 4, 4> {
-///     a * b
-/// }
+/// let a = Matrix::<f32, 2, 3>::from_rows([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+/// let b = Matrix::<f32, 3, 2>::from_rows([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]]);
+/// assert_eq!((a * b).to_rows(), [[58.0, 64.0], [139.0, 154.0]]);
 /// ```
-// TODO(integer-products): when these product traits support integer elements, add debug-mode
-// overflow tests through every public matrix/vector product operation.
-pub trait MatrixProduct<const R: usize, const K: usize, const C: usize>:
-    Element<R, K> + OuterProduct<R, C> + VectorMatrixProduct<K, C>
+impl<T: FloatElement, const R: usize, const K: usize, const C: usize>
+    core::ops::Mul<Matrix<T, K, C>> for Matrix<T, R, K>
+where
+    Dimension<R>: SupportedDimension,
+    Dimension<K>: SupportedDimension,
+    Dimension<C>: SupportedDimension,
 {
-    #[doc(hidden)]
-    fn __matrix_product(lhs: Matrix<Self, R, K>, rhs: Matrix<Self, K, C>) -> Matrix<Self, R, C>;
+    type Output = Matrix<T, R, C>;
+    #[inline]
+    fn mul(self, rhs: Matrix<T, K, C>) -> Self::Output {
+        call!(Matrix(<T, R, C>::matmul::<K>(rhs.storage, self.storage)))
+    }
 }
+
 /// Enables multiplication of an `R`-lane row vector by an `R × C` matrix with the
 /// `*` operator.
-///
-/// When `T` implements this trait, `Vector<T, R>` implements
-/// [`core::ops::Mul`]`<Matrix<T, R, C>, Output = Vector<T, C>>`.
 ///
 /// ```text
 ///                   ┌ a00 a01 a02 a03 ┐
@@ -80,24 +80,24 @@ pub trait MatrixProduct<const R: usize, const K: usize, const C: usize>:
 /// ```
 ///
 /// ```
-/// use algea::{Vector, row_major::{Matrix, VectorMatrixProduct}};
+/// use algea::{Vector, row_major::Matrix};
 ///
-/// fn multiply<T: VectorMatrixProduct<4, 4>>(
-///     vector: Vector<T, 4>,
-///     matrix: Matrix<T, 4, 4>,
-/// ) -> Vector<T, 4> {
-///     vector * matrix
-/// }
+/// let vector = Vector::<f32, 2>::from([2.0, 3.0]);
+/// let matrix = Matrix::<f32, 2, 3>::from_rows([[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+/// assert_eq!((vector * matrix).to_array(), [29.0, 34.0, 39.0]);
 /// ```
-pub trait VectorMatrixProduct<const R: usize, const C: usize>: Element<R, C> {
-    #[doc(hidden)]
-    fn __vector_matrix_product(lhs: Vector<Self, R>, rhs: Matrix<Self, R, C>) -> Vector<Self, C>;
+impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, R, C>>
+    for Vector<T, R>
+{
+    type Output = Vector<T, C>;
+    #[inline]
+    fn mul(self, rhs: Matrix<T, R, C>) -> Self::Output {
+        call!(Vector(<T, 1, C>::matmul::<R>(rhs.storage, self.storage)))
+    }
 }
-/// Enables an outer product between an `R × 1` matrix and a `C`-lane row vector with
-/// the `*` operator.
-///
-/// When `T` implements this trait, `Matrix<T, R, 1>` implements
-/// [`core::ops::Mul`]`<Vector<T, C>, Output = Matrix<T, R, C>>`.
+
+/// Computes an outer product between an `R × 1` matrix and a `C`-lane row vector with the
+/// `*` operator.
 ///
 /// ```text
 /// ┌ x0 ┐                     ┌ x0*y0 x0*y1 x0*y2 x0*y3 ┐
@@ -107,158 +107,32 @@ pub trait VectorMatrixProduct<const R: usize, const C: usize>: Element<R, C> {
 /// ```
 ///
 /// ```
-/// use algea::{Vector, row_major::{Matrix, OuterProduct}};
+/// use algea::{Vector, row_major::Matrix};
 ///
-/// fn outer_product<T: OuterProduct<4, 4>>(
-///     column: Matrix<T, 4, 1>,
-///     row: Vector<T, 4>,
-/// ) -> Matrix<T, 4, 4> {
-///     column * row
-/// }
+/// let column = Matrix::<f32, 2, 1>::from_rows([[2.0], [3.0]]);
+/// let row = Vector::<f32, 3>::from([4.0, 5.0, 6.0]);
+/// assert_eq!((column * row).to_rows(), [[8.0, 10.0, 12.0], [12.0, 15.0, 18.0]]);
 /// ```
-pub trait OuterProduct<const R: usize, const C: usize>: Element<R, C> {
-    #[doc(hidden)]
-    fn __outer_product(lhs: Matrix<Self, R, 1>, rhs: Vector<Self, C>) -> Matrix<Self, R, C>;
-}
-
-impl<T: MatrixProduct<R, K, C>, const R: usize, const K: usize, const C: usize>
-    core::ops::Mul<Matrix<T, K, C>> for Matrix<T, R, K>
-{
-    type Output = Matrix<T, R, C>;
-    #[inline]
-    fn mul(self, rhs: Matrix<T, K, C>) -> Self::Output {
-        MatrixProduct::__matrix_product(self, rhs)
-    }
-}
-impl<T: VectorMatrixProduct<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, R, C>>
-    for Vector<T, R>
-{
-    type Output = Vector<T, C>;
-    #[inline]
-    fn mul(self, rhs: Matrix<T, R, C>) -> Self::Output {
-        VectorMatrixProduct::__vector_matrix_product(self, rhs)
-    }
-}
-impl<T: OuterProduct<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
+impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
     for Matrix<T, R, 1>
 {
     type Output = Matrix<T, R, C>;
     #[inline]
-    fn mul(self, rhs: Vector<T, C>) -> Self::Output { OuterProduct::__outer_product(self, rhs) }
+    fn mul(self, rhs: Vector<T, C>) -> Self::Output {
+        call!(Matrix(<T, R, C>::matmul::<1>(rhs.storage, self.storage)))
+    }
 }
 
-// Assignment is available only for the row-major vector-times-matrix orientation.
-impl<T: VectorMatrixProduct<N, N>, const N: usize> core::ops::MulAssign<Matrix<T, N, N>>
-    for Vector<T, N>
+impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::MulAssign<Matrix<T, C, C>>
+    for Matrix<T, R, C>
 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Matrix<T, C, C>) { *self = *self * rhs; }
+}
+
+// Vector assignment follows the row-vector orientation. Column-vector multiplication has the
+// matrix on the left and therefore has no symmetric `MulAssign` form.
+impl<T: FloatElement<N>, const N: usize> core::ops::MulAssign<Matrix<T, N, N>> for Vector<T, N> {
     #[inline]
     fn mul_assign(&mut self, rhs: Matrix<T, N, N>) { *self = *self * rhs; }
 }
-
-// TODO(matrix-element-generalization): Replace the concrete scalar implementations with a sealed
-// matrix-element bound only after every integer and floating-point shape is verified; integer
-// kernels must retain a non-FMA path.
-macro_rules! impl_mat_mul_mat {
-    ($self:ident, [$($a:literal),*]; $b:tt; $c:tt) => {
-        $(impl_mat_mul_mat!(@a $self, $a; $b; $c);)*
-    };
-    (@a $self:ident, $a:literal; [$($b:literal),*]; $c:tt) => {
-        $(impl_mat_mul_mat!(@ab $self, $a; $b; $c);)*
-    };
-    (@ab $self:ident, $a:literal; $b:literal; [$($c:literal),*]) => {
-        $(
-            paste::paste! {
-                impl_mat_mul_mat!(@c $self, $a, $b, $c, [<matmul $c x $b x $a>]);
-            }
-        )*
-    };
-    (@c $self:ident, $a:literal, $b:literal, $c:literal, $f:ident) => {
-        impl MatrixProduct<$a, $b, $c> for $self {
-            #[doc(hidden)]
-            #[inline(always)]
-            fn __matrix_product(
-                lhs: Matrix<Self, $a, $b>,
-                rhs: Matrix<Self, $b, $c>,
-            ) -> Matrix<Self, $a, $c> {
-                Matrix { storage: matmul::$self::$f(rhs.storage.load(), lhs.storage.load()).store() }
-            }
-        }
-    };
-}
-
-macro_rules! impl_vec_mul_mat {
-    ($self:ident, $a:literal, $b:literal, $f:ident) => {
-        impl VectorMatrixProduct<$a, $b> for $self {
-            #[doc(hidden)]
-            #[inline(always)]
-            fn __vector_matrix_product(
-                lhs: Vector<Self, $a>,
-                rhs: Matrix<Self, $a, $b>,
-            ) -> Vector<Self, $b> {
-                Vector {
-                    storage: matmul::$self::$f(rhs.storage.load(), lhs.storage.load()).store(),
-                }
-            }
-        }
-    };
-}
-
-macro_rules! impl_mat_mul_vec {
-    ($self:ident, $a:literal, $b:literal, $f:ident) => {
-        impl OuterProduct<$a, $b> for $self {
-            #[doc(hidden)]
-            #[inline(always)]
-            fn __outer_product(
-                lhs: Matrix<Self, $a, 1>,
-                rhs: Vector<Self, $b>,
-            ) -> Matrix<Self, $a, $b> {
-                Matrix {
-                    storage: matmul::$self::$f(rhs.storage.load(), lhs.storage.load()).store(),
-                }
-            }
-        }
-    };
-}
-
-macro_rules! impl_mat_mul_float {
-    ($($self:ident),+) => {
-        $(
-            impl_mat_mul_mat!($self, [1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
-
-            impl_vec_mul_mat!($self, 1, 1, matmul1x1x1);
-            impl_vec_mul_mat!($self, 1, 2, matmul2x1x1);
-            impl_vec_mul_mat!($self, 1, 3, matmul3x1x1);
-            impl_vec_mul_mat!($self, 1, 4, matmul4x1x1);
-            impl_vec_mul_mat!($self, 2, 1, matmul1x2x1);
-            impl_vec_mul_mat!($self, 2, 2, matmul2x2x1);
-            impl_vec_mul_mat!($self, 2, 3, matmul3x2x1);
-            impl_vec_mul_mat!($self, 2, 4, matmul4x2x1);
-            impl_vec_mul_mat!($self, 3, 1, matmul1x3x1);
-            impl_vec_mul_mat!($self, 3, 2, matmul2x3x1);
-            impl_vec_mul_mat!($self, 3, 3, matmul3x3x1);
-            impl_vec_mul_mat!($self, 3, 4, matmul4x3x1);
-            impl_vec_mul_mat!($self, 4, 1, matmul1x4x1);
-            impl_vec_mul_mat!($self, 4, 2, matmul2x4x1);
-            impl_vec_mul_mat!($self, 4, 3, matmul3x4x1);
-            impl_vec_mul_mat!($self, 4, 4, matmul4x4x1);
-
-            impl_mat_mul_vec!($self, 1, 1, matmul1x1x1);
-            impl_mat_mul_vec!($self, 1, 2, matmul2x1x1);
-            impl_mat_mul_vec!($self, 1, 3, matmul3x1x1);
-            impl_mat_mul_vec!($self, 1, 4, matmul4x1x1);
-            impl_mat_mul_vec!($self, 2, 1, matmul1x1x2);
-            impl_mat_mul_vec!($self, 2, 2, matmul2x1x2);
-            impl_mat_mul_vec!($self, 2, 3, matmul3x1x2);
-            impl_mat_mul_vec!($self, 2, 4, matmul4x1x2);
-            impl_mat_mul_vec!($self, 3, 1, matmul1x1x3);
-            impl_mat_mul_vec!($self, 3, 2, matmul2x1x3);
-            impl_mat_mul_vec!($self, 3, 3, matmul3x1x3);
-            impl_mat_mul_vec!($self, 3, 4, matmul4x1x3);
-            impl_mat_mul_vec!($self, 4, 1, matmul1x1x4);
-            impl_mat_mul_vec!($self, 4, 2, matmul2x1x4);
-            impl_mat_mul_vec!($self, 4, 3, matmul3x1x4);
-            impl_mat_mul_vec!($self, 4, 4, matmul4x1x4);
-        )+
-    };
-}
-impl_mat_mul_float!(f32, f64);

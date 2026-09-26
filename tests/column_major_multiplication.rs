@@ -2,7 +2,8 @@
 
 use algea::{
     Vector,
-    column_major::{Matrix, MatrixProduct, MatrixVectorProduct, OuterProduct},
+    column_major::Matrix,
+    support::{Dimension, SupportedDimension},
 };
 
 fn columns<T: Copy, const R: usize, const C: usize>(rows: [[T; C]; R]) -> [[T; R]; C] {
@@ -33,7 +34,8 @@ macro_rules! impl_adapters {
     ($t:ty) => {
         impl<const R: usize, const C: usize> VectorProduct<R, C> for $t
         where
-            $t: MatrixVectorProduct<C, R>,
+            Dimension<R>: SupportedDimension,
+            Dimension<C>: SupportedDimension,
         {
             fn product(lhs: [$t; R], rhs: [[$t; C]; R]) -> [$t; C] {
                 let transposed: [[$t; R]; C] =
@@ -45,7 +47,8 @@ macro_rules! impl_adapters {
 
         impl<const R: usize, const C: usize> OuterProductAdapter<R, C> for $t
         where
-            $t: OuterProduct<R, C>,
+            Dimension<R>: SupportedDimension,
+            Dimension<C>: SupportedDimension,
         {
             fn product(lhs: [$t; R], rhs: [$t; C]) -> [[$t; C]; R] {
                 let matrix: Matrix<$t, 1, C> = Matrix::from(core::array::from_fn(|j| [rhs[j]]));

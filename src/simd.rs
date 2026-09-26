@@ -379,7 +379,67 @@ macro_rules! impl_layout {
             }
             #[inline(always)]
             fn transpose(a: Self) -> ConstStorage<$t, $n, $m> {
-                paste::paste!(crate::kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
+                paste::paste!(kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
+            }
+
+            if_! { $m == 1 {
+                #[inline(always)]
+                fn substantiate_1x(a: Self) -> ConstStorage<$t, 1, $n> { a }
+            }}
+            if_! { $m == 2 {
+                #[inline(always)]
+                fn substantiate_2x(a: Self) -> ConstStorage<$t, 2, $n> { a }
+            }}
+            if_! { $m == 3 {
+                #[inline(always)]
+                fn substantiate_3x(a: Self) -> ConstStorage<$t, 3, $n> { a }
+            }}
+            if_! { $m == 4 {
+                #[inline(always)]
+                fn substantiate_4x(a: Self) -> ConstStorage<$t, 4, $n> { a }
+            }}
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn substantiate_x1(a: Self) -> ConstStorage<$t, $m, 1> { a }
+            }}
+            if_! { $n == 2 {
+                #[inline(always)]
+                fn substantiate_x2(a: Self) -> ConstStorage<$t, $m, 2> { a }
+            }}
+            if_! { $n == 3 {
+                #[inline(always)]
+                fn substantiate_x3(a: Self) -> ConstStorage<$t, $m, 3> { a }
+            }}
+            if_! { $n == 4 {
+                #[inline(always)]
+                fn substantiate_x4(a: Self) -> ConstStorage<$t, $m, 4> { a }
+            }}
+            #[inline(always)]
+            fn matmul<const K: usize>(a: ConstStorage<$t, $m, K>, b: ConstStorage<$t, K, $n>) -> Self
+            where Dimension<K>: SealedSupportedDimension {
+                match K {
+                    1 => {
+                        let a = private::StorageOps::substantiate_x1(a).load();
+                        let b = private::StorageOps::substantiate_1x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x1x $n>])(a, b).store()
+                    },
+                    2 => {
+                        let a = private::StorageOps::substantiate_x2(a).load();
+                        let b = private::StorageOps::substantiate_2x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x2x $n>])(a, b).store()
+                    },
+                    3 => {
+                        let a = private::StorageOps::substantiate_x3(a).load();
+                        let b = private::StorageOps::substantiate_3x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x3x $n>])(a, b).store()
+                    },
+                    4 => {
+                        let a = private::StorageOps::substantiate_x4(a).load();
+                        let b = private::StorageOps::substantiate_4x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x4x $n>])(a, b).store()
+                    },
+                    _ => unimplemented!()
+                }
             }
             if_! { $signed $int == signed int {
                 #[inline(always)]
@@ -510,7 +570,7 @@ macro_rules! impl_layout {
                 if_! { $float == float {
                     #[inline(always)]
                     fn dot(a: Self, b: Self) -> $t {
-                        paste::paste!(kernels::matmul::$t:: [<matmul1x $m x1>] (a.load(), b.load()).store())
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]:: [<matmul1x $m x1>] (a.load(), b.load()).store())
                     }
                 }}
             }}

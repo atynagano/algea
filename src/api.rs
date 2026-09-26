@@ -754,9 +754,7 @@ impl_mask_binop! {
     ]
 }
 
-impl<T: row_major::MatrixProduct<N, N, N>, const N: usize> core::iter::Product
-    for row_major::Matrix<T, N, N>
-{
+impl<T: FloatElement<N>, const N: usize> core::iter::Product for row_major::Matrix<T, N, N> {
     #[inline]
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
@@ -771,9 +769,7 @@ impl<T: row_major::MatrixProduct<N, N, N>, const N: usize> core::iter::Product
         }
     }
 }
-impl<T: column_major::MatrixProduct<N, N, N>, const N: usize> core::iter::Product
-    for column_major::Matrix<T, N, N>
-{
+impl<T: FloatElement<N>, const N: usize> core::iter::Product for column_major::Matrix<T, N, N> {
     #[inline]
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();

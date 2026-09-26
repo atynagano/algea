@@ -817,7 +817,7 @@ pub(crate) mod inverse {
 
     pub(crate) mod f32 {
         use super::{
-            super::matmul::f32::{matmul1x3x1, matmul2x2x2},
+            super::matmul::_32bit::{matmul1x3x1, matmul2x2x2},
             *,
         };
         use wide::f32x4;
@@ -828,7 +828,7 @@ pub(crate) mod inverse {
     }
     pub(crate) mod f64 {
         use super::{
-            super::matmul::f64::{matmul1x3x1, matmul2x2x2},
+            super::matmul::_64bit::{matmul1x3x1, matmul2x2x2},
             *,
         };
         use wide::f64x4;
@@ -859,7 +859,7 @@ pub(crate) mod determinant {
     use crate::{simd::utils::swizzle, utils::arith};
 
     macro_rules! impl_determinant {
-        ($scalar:ident, $vec4:ident) => {
+        ($scalar:ident, $vec4:ident, $bits:ident) => {
             #[inline(always)]
             pub(crate) fn _2x2(a: $vec4) -> $scalar {
                 let [a, b, c, d] = a.to_array();
@@ -878,7 +878,7 @@ pub(crate) mod determinant {
                 let c0 = arith!(r1 * r2_yzx - r1_yzx * r2);
 
                 // det = dot(r0, cross(r1, r2))
-                matmul::$scalar::matmul1x3x1(c0, swizzle!(r0, [2, 0, 1, _]))
+                matmul::$bits::matmul1x3x1(c0, swizzle!(r0, [2, 0, 1, _]))
             }
 
             #[inline(always)]
@@ -925,12 +925,12 @@ pub(crate) mod determinant {
     pub(crate) mod f32 {
         use super::*;
         use wide::f32x4;
-        impl_determinant!(f32, f32x4);
+        impl_determinant!(f32, f32x4, _32bit);
     }
     pub(crate) mod f64 {
         use super::*;
         use wide::f64x4;
-        impl_determinant!(f64, f64x4);
+        impl_determinant!(f64, f64x4, _64bit);
     }
 }
 
@@ -2645,13 +2645,632 @@ pub(crate) mod select {
 }
 
 pub(crate) mod matmul {
-    #![allow(unused_parens)]
+    mod impls {
+        #![allow(unused_parens)]
 
-    use super::{reduce, transpose};
-    use crate::{
-        simd::utils::{Simd2Ext, Simd4Ext, swizzle},
-        utils::arith,
-    };
+        use crate::{
+            kernels::{reduce, transpose},
+            simd::utils::{Simd2Ext, Simd4Ext, swizzle},
+            utils::{ArithOps, arith},
+        };
+
+        // Kernels in this module use the column-major storage contract.
+
+        // TODO(codegen-optimization): Benchmark horizontal reductions on representative targets
+        // and use `hadd` only where its latency and throughput improve the complete kernel.
+
+        pub(crate) trait Vector2: ArithOps + ComputeVector2<Vector4: ArithOps> {}
+        pub(crate) trait Vector4: ArithOps + ComputeVector4<Vector2: ArithOps> {}
+
+        impl<T: ArithOps + ComputeVector2<Vector4: ArithOps>> Vector2 for T {}
+        impl<T: ArithOps + ComputeVector4<Vector2: ArithOps>> Vector4 for T {}
+
+        // ============================================================
+        // matmul1xBxC
+        // ============================================================
+
+        pub(crate) use matmul4x1x1 as matmul1x1x1;
+        pub(crate) use matmul4x1x1 as matmul2x1x1;
+        pub(crate) use matmul4x1x1 as matmul3x1x1;
+
+        // TODO(matmul-splat): benchmark `swizzle!(b, [0, 0, 0, 0])` against `T::filled_(b)`.
+        #[inline(always)]
+        pub(crate) fn matmul4x1x1<T: ArithOps>(a: T, b: T::Scalar) -> T {
+            arith!(a * (T::filled_(b)))
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x2x1<V2: Vector2>(a: V2, b: V2) -> V2::Scalar {
+            reduce::sum::<V2, 2>(arith!(a * b))
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x2x1<V4: Vector4>(a: V4, b: V4::Vector2) -> V4::Vector2 {
+            // b = [b0, b1, *, *], a (2x2 column-major packed) = [a00, a10, a01, a11]
+            let xxyy = swizzle!(b, [0, 0, 1, 1]);
+            let products = arith!(a * xxyy);
+            let upper_products = swizzle!(products, [2, 3]);
+            arith!((products.xy()) + upper_products)
+        }
+
+        pub(crate) use matmul4x2x1 as matmul3x2x1;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x2x1<V4: Vector4>(a: [V4; 2], b: V4::Vector2) -> V4 {
+            let xxxx = swizzle!(b, [0, 0, 0, 0]);
+            let yyyy = swizzle!(b, [1, 1, 1, 1]);
+            arith!((a[0]) * xxxx + (a[1]) * yyyy)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x3x1<V4: Vector4>(a: V4, b: V4) -> V4::Scalar {
+            // TODO(codegen-optimization): Compare two FMAs with two multiplies plus additions,
+            // including lane-shuffle cost and targets without FMA; retain this path unless the
+            // fused version wins consistently.
+            reduce::sum::<V4, 3>(arith!(a * b))
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x3x1_in_vec4<V4: Vector4>(a: [V4; 2], b: V4) -> V4::Vector2 {
+            let xxyy = swizzle!(b, [0, 0, 1, 1]);
+            let zz = swizzle!(b, [2, 2]);
+            let products01 = arith!((a[0]) * xxyy);
+            let upper_products01 = swizzle!(products01, [2, 3]);
+            arith!((arith!((products01.xy()) + upper_products01)) + (a[1].xy()) * zz)
+        }
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x3x1_in_vec2<V4: Vector4>(a: [V4::Vector2; 3], b: V4) -> V4::Vector2 {
+            let [a0, a1, a2] = a;
+            let b0 = swizzle!(b, [0, 0]);
+            let b1 = swizzle!(b, [1, 1]);
+            let b2 = swizzle!(b, [2, 2]);
+            arith!(a0 * b0 + a1 * b1 + a2 * b2)
+        }
+
+        pub(crate) use matmul4x3x1 as matmul3x3x1;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x3x1<V4: Vector4>(a: [V4; 3], b: V4) -> V4 {
+            let xxxx = swizzle!(b, [0, 0, 0, 0]);
+            let yyyy = swizzle!(b, [1, 1, 1, 1]);
+            let zzzz = swizzle!(b, [2, 2, 2, 2]);
+            arith!((a[0]) * xxxx + (a[1]) * yyyy + (a[2]) * zzzz)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x4x1<V4: Vector4>(a: V4, b: V4) -> V4::Scalar {
+            reduce::sum::<V4, 4>(arith!(a * b))
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x4x1<V4: Vector4>(a: [V4; 2], b: V4) -> V4::Vector2 {
+            let xxyy = swizzle!(b, [0, 0, 1, 1]);
+            let zzww = swizzle!(b, [2, 2, 3, 3]);
+            let pair_sums = arith!((a[0]) * xxyy + (a[1]) * zzww);
+            let upper_pair_sums = swizzle!(pair_sums, [2, 3]);
+            arith!((pair_sums.xy()) + upper_pair_sums)
+        }
+
+        use crate::simd::utils::{ComputeVector2, ComputeVector4};
+        pub(crate) use matmul4x4x1 as matmul3x4x1;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x4x1<V4: Vector4>(a: [V4; 4], b: V4) -> V4 {
+            let xxxx = swizzle!(b, [0, 0, 0, 0]);
+            let yyyy = swizzle!(b, [1, 1, 1, 1]);
+            let zzzz = swizzle!(b, [2, 2, 2, 2]);
+            let wwww = swizzle!(b, [3, 3, 3, 3]);
+            arith!((a[0]) * xxxx + (a[1]) * yyyy + (a[2]) * zzzz + (a[3]) * wwww)
+        }
+
+        // ============================================================
+        // matmul2xBxC
+        // ============================================================
+
+        pub(crate) use matmul1x1x4 as matmul1x1x2;
+
+        #[inline(always)]
+        pub(crate) fn matmul2x1x2<V2: Vector2>(a: V2, b: V2) -> V2::Vector4 {
+            // Outer product in 2x2 packed column-major order:
+            // `[a0*b0, a1*b0, a0*b1, a1*b1]`.
+            arith!((swizzle!(a, [0, 1, 0, 1])) * (swizzle!(b, [0, 0, 1, 1])))
+        }
+
+        pub(crate) use matmul4x1x2 as matmul3x1x2;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x1x2<V4: Vector4>(a: V4, b: V4::Vector2) -> [V4; 2] {
+            let col0 = arith!(a * (swizzle!(b, [0, 0, 0, 0])));
+            let col1 = arith!(a * (swizzle!(b, [1, 1, 1, 1])));
+            [col0, col1]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x2x2<V4: Vector4>(a: V4::Vector2, b: V4) -> V4::Vector2 {
+            let products = arith!((swizzle!(a, [0, 1, 0, 1])) * b);
+            arith!((swizzle!(products, [0, 2])) + (swizzle!(products, [1, 3])))
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x2x2<V4: Vector4>(a: V4, b: V4) -> V4 {
+            arith!(
+                (swizzle!(a, [0, 3, 0, 3])) * b
+                    + (swizzle!(a, [2, 1, 2, 1])) * (swizzle!(b, [1, 0, 3, 2]))
+            )
+        }
+
+        pub(crate) use matmul4x2x2 as matmul3x2x2;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x2x2<V4: Vector4>(a: [V4; 2], b: V4) -> [V4; 2] {
+            let xxxx = swizzle!(b, [0, 0, 0, 0]);
+            let yyyy = swizzle!(b, [1, 1, 1, 1]);
+            let zzzz = swizzle!(b, [2, 2, 2, 2]);
+            let wwww = swizzle!(b, [3, 3, 3, 3]);
+            let col0 = arith!((a[0]) * xxxx + (a[1]) * yyyy);
+            let col1 = arith!((a[0]) * zzzz + (a[1]) * wwww);
+            [col0, col1]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x3x2<V4: Vector4>(a: V4, b: [V4; 2]) -> V4::Vector2 {
+            // TODO(codegen-optimization): Compare this path with a transpose-and-FMA chain on
+            // representative FMA and non-FMA targets before changing the kernel.
+            let cols01_lo = swizzle!(b[0], b[1], [0, 4, 1, 5]);
+            let cols01_hi = swizzle!(b[0], b[1], [2, 6]);
+            let products01 = arith!(cols01_lo * (swizzle!(a, [0, 0, 1, 1])));
+            let sums01 = arith!((products01.xy()) + (swizzle!(products01, [2, 3])));
+            arith!(sums01 + (swizzle!(a, [2, 2])) * cols01_hi)
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x3x2_in_vec4<V4: Vector4>(a: [V4; 2], b: [V4; 2]) -> V4 {
+            let col0 = matmul2x3x1_in_vec4(a, b[0]);
+            let col1 = matmul2x3x1_in_vec4(a, b[1]);
+            swizzle!(col0, col1, @concat)
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x3x2_in_vec2<V4: Vector4>(a: [V4::Vector2; 3], b: [V4; 2]) -> V4 {
+            let col0 = matmul2x3x1_in_vec2(a, b[0]);
+            let col1 = matmul2x3x1_in_vec2(a, b[1]);
+            swizzle!(col0, col1, @concat)
+        }
+
+        // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
+        // outperform delegation to the wider kernel on representative targets.
+        pub(crate) use matmul4x3x2 as matmul3x3x2;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x3x2<V4: Vector4>(a: [V4; 3], b: [V4; 2]) -> [V4; 2] {
+            let col0 = matmul4x3x1(a, b[0]);
+            let col1 = matmul4x3x1(a, b[1]);
+            [col0, col1]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x4x2<V4: Vector4>(a: V4, b: [V4; 2]) -> V4::Vector2 {
+            let scaled_col0 = arith!(a * (b[0]));
+            let scaled_col1 = arith!(a * (b[1]));
+            let pair_sums = arith!(
+                (swizzle!(scaled_col0, scaled_col1, [0, 4, 1, 5]))
+                    + (swizzle!(scaled_col0, scaled_col1, [2, 6, 3, 7]))
+            );
+            arith!((pair_sums.xy()) + (swizzle!(pair_sums, [2, 3])))
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x4x2<V4: Vector4>(a: [V4; 2], b: [V4; 2]) -> V4 {
+            let col0 = matmul2x4x1(a, b[0]);
+            let col1 = matmul2x4x1(a, b[1]);
+            swizzle!(col0, col1, @concat)
+        }
+
+        pub(crate) use matmul4x4x2 as matmul3x4x2;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x4x2<V4: Vector4>(a: [V4; 4], b: [V4; 2]) -> [V4; 2] {
+            let col0 = matmul4x4x1(a, b[0]);
+            let col1 = matmul4x4x1(a, b[1]);
+            [col0, col1]
+        }
+
+        // ============================================================
+        // matmul3xBxC
+        // ============================================================
+
+        pub(crate) use matmul1x1x4 as matmul1x1x3;
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x1x3_in_vec4<V4: Vector4>(a: V4::Vector2, b: V4) -> [V4; 2] {
+            // a = [a0, a1, *, *], b = [b0, b1, b2, *]
+            // Packed output: `cols01 = [a0*b0, a1*b0, a0*b1, a1*b1]` and
+            // `col2 = [a0*b2, a1*b2, *, *]`.
+            let xyxy = swizzle!(a, [0, 1, 0, 1]);
+            let xxyy = swizzle!(b, [0, 0, 1, 1]);
+            let zz__ = swizzle!(b, [2, 2, _, _]);
+            [arith!(xyxy * xxyy), arith!(xyxy * zz__)]
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x1x3_in_vec2<V4: Vector4>(a: V4::Vector2, b: V4) -> [V4::Vector2; 3] {
+            [
+                arith!(a * (swizzle!(b, [0, 0]))),
+                arith!(a * (swizzle!(b, [1, 1]))),
+                arith!(a * (swizzle!(b, [2, 2]))),
+            ]
+        }
+
+        pub(crate) use matmul4x1x3 as matmul3x1x3;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x1x3<V4: Vector4>(a: V4, b: V4) -> [V4; 3] {
+            let col0 = arith!(a * (swizzle!(b, [0, 0, 0, 0])));
+            let col1 = arith!(a * (swizzle!(b, [1, 1, 1, 1])));
+            let col2 = arith!(a * (swizzle!(b, [2, 2, 2, 2])));
+            [col0, col1, col2]
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul1x2x3_in_vec4<V4: Vector4>(a: V4::Vector2, b: [V4; 2]) -> V4 {
+            // TODO(codegen-optimization): Compare this path with a single-horizontal-add packed
+            // formulation, and adopt it only when complete-kernel benchmarks improve.
+
+            let col0 = swizzle!(b[0], b[1], [0, 2, 4, _]);
+            let col1 = swizzle!(b[0], b[1], [1, 3, 5, _]);
+            let xxx_ = swizzle!(a, [0, 0, 0, _]);
+            let yyy_ = swizzle!(a, [1, 1, 1, _]);
+            arith!(xxx_ * col0 + yyy_ * col1)
+        }
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul1x2x3_in_vec2<V2: Vector2>(a: V2, b: [V2; 3]) -> V2::Vector4 {
+            // TODO(codegen-optimization): this multiplies and then reduces. The four-lane
+            // sibling instead gathers `b`'s rows and runs one multiply-accumulate chain;
+            // compare the two here.
+            let products = [arith!(a * (b[0])), arith!(a * (b[1])), arith!(a * (b[2]))];
+            let [low, high] = transpose::transpose2x3_in_vec2::<V2>(products);
+            arith!(low + high)
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x2x3_in_vec4<V4: Vector4>(a: V4, b: [V4; 2]) -> [V4; 2] {
+            // b[0] = [b00, b10, b01, b11], b[1] = [b02, b12, *, *]
+            // `cols01` has the same first-two-column layout as `matmul2x2x2`; `col2` stores only
+            // the final column.
+            let xyxy = swizzle!(a, [0, 1, 0, 1]);
+            let zwzw = swizzle!(a, [2, 3, 2, 3]);
+
+            let xxzz0 = swizzle!(b[0], [0, 0, 2, 2]);
+            let yyww0 = swizzle!(b[0], [1, 1, 3, 3]);
+            let cols01 = arith!(xyxy * xxzz0 + zwzw * yyww0);
+
+            let b1_xx = swizzle!(b[1], [0, 0, _, _]);
+            let b1_yy = swizzle!(b[1], [1, 1, _, _]);
+            let xy__ = swizzle!(a, [0, 1, _, _]);
+            let zw__ = swizzle!(a, [2, 3, _, _]);
+            let col2 = arith!(xy__ * b1_xx + zw__ * b1_yy);
+
+            [cols01, col2]
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x2x3_in_vec2<V4: Vector4>(
+            a: V4,
+            b: [V4::Vector2; 3],
+        ) -> [V4::Vector2; 3] {
+            let a0 = swizzle!(a, [0, 1]);
+            let a1 = swizzle!(a, [2, 3]);
+            b.map(
+                #[inline(always)]
+                |col| {
+                    let x = swizzle!(col, [0, 0]);
+                    let y = swizzle!(col, [1, 1]);
+                    arith!(a0 * x + a1 * y)
+                },
+            )
+        }
+
+        #[allow(unused_imports)]
+        pub(crate) use matmul4x2x3_in_vec2 as matmul3x2x3_in_vec2;
+        #[allow(unused_imports)]
+        pub(crate) use matmul4x2x3_in_vec4 as matmul3x2x3_in_vec4;
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul4x2x3_in_vec4<V4: Vector4>(a: [V4; 2], b: [V4; 2]) -> [V4; 3] {
+            // b[0] = [b00, b10, b01, b11] (columns 0,1 packed)
+            // b[1] = [b02, b12, *, *] (column 2)
+            let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]); // b00
+            let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]); // b10
+            let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]); // b01
+            let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]); // b11
+            let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
+            let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
+
+            let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]); // b02
+            let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]); // b12
+            let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
+
+            [col0, col1, col2]
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul4x2x3_in_vec2<V4: Vector4>(a: [V4; 2], b: [V4::Vector2; 3]) -> [V4; 3] {
+            // Each output column scales `a`'s two columns by one lane of the matching column
+            // of `b`.
+            let [a0, a1] = a;
+            b.map(
+                #[inline(always)]
+                |col| {
+                    let x = swizzle!(col, [0, 0, 0, 0]);
+                    let y = swizzle!(col, [1, 1, 1, 1]);
+                    arith!(a0 * x + a1 * y)
+                },
+            )
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x3x3<V4: Vector4>(a: V4, b: [V4; 3]) -> V4 {
+            // TODO(codegen-optimization): Compare this path with transposed columns and a
+            // lane-splat FMA chain on representative targets before changing the kernel.
+            let [coeff_x, coeff_y, coeff_z] = transpose::transpose3x3(b);
+            let xxx_ = swizzle!(a, [0, 0, 0, _]);
+            let yyy_ = swizzle!(a, [1, 1, 1, _]);
+            let zzz_ = swizzle!(a, [2, 2, 2, _]);
+
+            arith!(xxx_ * coeff_x + yyy_ * coeff_y + zzz_ * coeff_z)
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x3x3_in_vec4<V4: Vector4>(a: [V4; 2], b: [V4; 3]) -> [V4; 2] {
+            let col0 = matmul2x3x1_in_vec4(a, b[0]);
+            let col1 = matmul2x3x1_in_vec4(a, b[1]);
+            let col2 = matmul2x3x1_in_vec4(a, b[2]);
+            [swizzle!(col0, col1, @concat), col2.widen()]
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x3x3_in_vec2<V4: Vector4>(
+            a: [V4::Vector2; 3],
+            b: [V4; 3],
+        ) -> [V4::Vector2; 3] {
+            [
+                matmul2x3x1_in_vec2(a, b[0]),
+                matmul2x3x1_in_vec2(a, b[1]),
+                matmul2x3x1_in_vec2(a, b[2]),
+            ]
+        }
+
+        // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
+        // outperform delegation to the wider kernel on representative targets.
+        pub(crate) use matmul4x3x3 as matmul3x3x3;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x3x3<V4: Vector4>(a: [V4; 3], b: [V4; 3]) -> [V4; 3] {
+            let col0 = matmul4x3x1(a, b[0]);
+            let col1 = matmul4x3x1(a, b[1]);
+            let col2 = matmul4x3x1(a, b[2]);
+            [col0, col1, col2]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x4x3<V4: Vector4>(a: V4, b: [V4; 3]) -> V4 {
+            // TODO(codegen-optimization): Compare this path with an explicit transpose and
+            // column-splat FMA chain, and adopt it only when complete-kernel benchmarks improve.
+
+            let transposed = transpose::transpose4x3(b);
+            matmul3x4x1(transposed, a)
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x4x3_in_vec4<V4: Vector4>(a: [V4; 2], b: [V4; 3]) -> [V4; 2] {
+            let col0 = matmul2x4x1(a, b[0]);
+            let col1 = matmul2x4x1(a, b[1]);
+            let col2 = matmul2x4x1(a, b[2]);
+            [swizzle!(col0, col1, @concat), col2.widen()]
+        }
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x4x3_in_vec2<V4: Vector4>(a: [V4; 2], b: [V4; 3]) -> [V4::Vector2; 3] {
+            [matmul2x4x1(a, b[0]), matmul2x4x1(a, b[1]), matmul2x4x1(a, b[2])]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul3x4x3<V4: Vector4>(a: [V4; 4], b: [V4; 3]) -> [V4; 3] {
+            matmul4x4x3(a, b)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul4x4x3<V4: Vector4>(a: [V4; 4], b: [V4; 3]) -> [V4; 3] {
+            let col0 = matmul4x4x1(a, b[0]);
+            let col1 = matmul4x4x1(a, b[1]);
+            let col2 = matmul4x4x1(a, b[2]);
+            [col0, col1, col2]
+        }
+
+        // ============================================================
+        // matmul4xBxC
+        // ============================================================
+
+        #[inline(always)]
+        pub(crate) fn matmul1x1x4<T: ArithOps>(a: T::Scalar, b: T) -> T { matmul4x1x1(b, a) }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x1x4<V4: Vector4>(a: V4::Vector2, b: V4) -> [V4; 2] {
+            // a = [a0, a1, *, *], b = [b0, b1, b2, b3]
+            let xyxy = swizzle!(a, [0, 1, 0, 1]);
+            let xxyy = swizzle!(b, [0, 0, 1, 1]);
+            let zzww = swizzle!(b, [2, 2, 3, 3]);
+            [arith!(xyxy * xxyy), arith!(xyxy * zzww)]
+        }
+
+        pub(crate) use matmul4x1x4 as matmul3x1x4;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x1x4<V4: Vector4>(a: V4, b: V4) -> [V4; 4] {
+            let col0 = arith!(a * (swizzle!(b, [0, 0, 0, 0])));
+            let col1 = arith!(a * (swizzle!(b, [1, 1, 1, 1])));
+            let col2 = arith!(a * (swizzle!(b, [2, 2, 2, 2])));
+            let col3 = arith!(a * (swizzle!(b, [3, 3, 3, 3])));
+            [col0, col1, col2, col3]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x2x4<V4: Vector4>(a: V4::Vector2, b: [V4; 2]) -> V4 {
+            let xyxy = swizzle!(a, [0, 1, 0, 1]);
+            let scaled_cols01 = arith!((b[0]) * xyxy);
+            let scaled_cols23 = arith!((b[1]) * xyxy);
+            let even_products = swizzle!(scaled_cols01, scaled_cols23, [0, 2, 4, 6]);
+            let odd_products = swizzle!(scaled_cols01, scaled_cols23, [1, 3, 5, 7]);
+            arith!(even_products + odd_products)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x2x4<V4: Vector4>(a: V4, b: [V4; 2]) -> [V4; 2] {
+            // Each of `b[0]` and `b[1]` stores two columns in the packed 2x2 layout. Apply the
+            // `matmul2x2x2` pattern independently to each value.
+            let xyxy = swizzle!(a, [0, 1, 0, 1]);
+            let zwzw = swizzle!(a, [2, 3, 2, 3]);
+
+            let xxzz0 = swizzle!(b[0], [0, 0, 2, 2]);
+            let yyww0 = swizzle!(b[0], [1, 1, 3, 3]);
+            let cols01 = arith!(xyxy * xxzz0 + zwzw * yyww0);
+
+            let xxzz1 = swizzle!(b[1], [0, 0, 2, 2]);
+            let yyww1 = swizzle!(b[1], [1, 1, 3, 3]);
+            let cols23 = arith!(xyxy * xxzz1 + zwzw * yyww1);
+
+            [cols01, cols23]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul3x2x4<V4: Vector4>(a: [V4; 2], b: [V4; 2]) -> [V4; 4] {
+            // b[0] = [b00, b10, b01, b11], b[1] = [b02, b12, b03, b13]
+            let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]);
+            let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]);
+            let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]);
+            let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]);
+            let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
+            let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
+
+            let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]);
+            let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]);
+            let b1_zzzz = swizzle!(b[1], [2, 2, 2, 2]);
+            let b1_wwww = swizzle!(b[1], [3, 3, 3, 3]);
+            let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
+            let col3 = arith!((a[0]) * b1_zzzz + (a[1]) * b1_wwww);
+
+            [col0, col1, col2, col3]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul4x2x4<V4: Vector4>(a: [V4; 2], b: [V4; 2]) -> [V4; 4] {
+            let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]);
+            let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]);
+            let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]);
+            let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]);
+            let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
+            let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
+
+            let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]);
+            let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]);
+            let b1_zzzz = swizzle!(b[1], [2, 2, 2, 2]);
+            let b1_wwww = swizzle!(b[1], [3, 3, 3, 3]);
+            let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
+            let col3 = arith!((a[0]) * b1_zzzz + (a[1]) * b1_wwww);
+
+            [col0, col1, col2, col3]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x3x4<V4: Vector4>(a: V4, b: [V4; 4]) -> V4 {
+            // TODO(codegen-optimization): Compare LLVM's current structure-of-arrays lowering with
+            // an explicit `$vec4` transpose, and change it only with assembly or benchmark evidence.
+
+            let [coeff_x, coeff_y, coeff_z] = transpose::transpose3x4(b);
+            let xxx_ = swizzle!(a, [0, 0, 0, _]);
+            let yyy_ = swizzle!(a, [1, 1, 1, _]);
+            let zzz_ = swizzle!(a, [2, 2, 2, _]);
+            arith!(coeff_x * xxx_ + coeff_y * yyy_ + coeff_z * zzz_)
+        }
+
+        #[inline(always)]
+        #[allow(dead_code)]
+        pub(crate) fn matmul2x3x4_in_vec4<V4: Vector4>(a: [V4; 2], b: [V4; 4]) -> [V4; 2] {
+            let col0 = matmul2x3x1_in_vec4(a, b[0]);
+            let col1 = matmul2x3x1_in_vec4(a, b[1]);
+            let col2 = matmul2x3x1_in_vec4(a, b[2]);
+            let col3 = matmul2x3x1_in_vec4(a, b[3]);
+            [swizzle!(col0, col1, @concat), swizzle!(col2, col3, @concat)]
+        }
+
+        #[allow(dead_code)]
+        #[inline(always)]
+        pub(crate) fn matmul2x3x4_in_vec2<V4: Vector4>(a: [V4::Vector2; 3], b: [V4; 4]) -> [V4; 2] {
+            // A 2x4 result packs two columns per unit.
+            let col0 = matmul2x3x1_in_vec2(a, b[0]);
+            let col1 = matmul2x3x1_in_vec2(a, b[1]);
+            let col2 = matmul2x3x1_in_vec2(a, b[2]);
+            let col3 = matmul2x3x1_in_vec2(a, b[3]);
+            [swizzle!(col0, col1, @concat), swizzle!(col2, col3, @concat)]
+        }
+
+        // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
+        // outperform delegation to the wider kernel on representative targets.
+        pub(crate) use matmul4x3x4 as matmul3x3x4;
+
+        #[inline(always)]
+        pub(crate) fn matmul4x3x4<V4: Vector4>(a: [V4; 3], b: [V4; 4]) -> [V4; 4] {
+            let col0 = matmul4x3x1(a, b[0]);
+            let col1 = matmul4x3x1(a, b[1]);
+            let col2 = matmul4x3x1(a, b[2]);
+            let col3 = matmul4x3x1(a, b[3]);
+            [col0, col1, col2, col3]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul1x4x4<V4: Vector4>(a: V4, b: [V4; 4]) -> V4 {
+            let transposed = transpose::transpose4x4(b);
+            matmul4x4x1(transposed, a)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul2x4x4<V4: Vector4>(a: [V4; 2], b: [V4; 4]) -> [V4; 2] {
+            let col0 = matmul2x4x1(a, b[0]);
+            let col1 = matmul2x4x1(a, b[1]);
+            let col2 = matmul2x4x1(a, b[2]);
+            let col3 = matmul2x4x1(a, b[3]);
+            [swizzle!(col0, col1, @concat), swizzle!(col2, col3, @concat)]
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul3x4x4<V4: Vector4>(a: [V4; 4], b: [V4; 4]) -> [V4; 4] {
+            matmul4x4x4(a, b)
+        }
+
+        #[inline(always)]
+        pub(crate) fn matmul4x4x4<V4: Vector4>(a: [V4; 4], b: [V4; 4]) -> [V4; 4] {
+            let col0 = matmul4x4x1(a, b[0]);
+            let col1 = matmul4x4x1(a, b[1]);
+            let col2 = matmul4x4x1(a, b[2]);
+            let col3 = matmul4x4x1(a, b[3]);
+            [col0, col1, col2, col3]
+        }
+    }
 
     // See the note beside the 2x3 layout tables in `simd.rs`. A matmul shape is affected when its
     // left operand, its right operand
@@ -2679,651 +3298,13 @@ pub(crate) mod matmul {
         };
     }
 
-    macro_rules! impl_matmul {
-        ($scalar:ident, $vec2:ident, $vec4:ident) => {
-            // Kernels in this module use the column-major storage contract.
-
-            // TODO(codegen-optimization): Benchmark horizontal reductions on representative targets
-            // and use `hadd` only where its latency and throughput improve the complete kernel.
-
-            // ============================================================
-            // matmul1xBxC
-            // ============================================================
-
-            #[inline(always)]
-            pub(crate) fn matmul1x1x1(a: $scalar, b: $scalar) -> $scalar { a * b }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x1x1(a: $vec2, b: $scalar) -> $vec2 { a * $vec2::splat(b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x1x1(a: $vec4, b: $scalar) -> $vec4 { a * b }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x1x1(a: $vec4, b: $scalar) -> $vec4 { a * b }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x2x1(a: $vec2, b: $vec2) -> $scalar {
-                reduce::sum::<$vec2, 2>(a * b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x2x1(a: $vec4, b: $vec2) -> $vec2 {
-                // b = [b0, b1, *, *], a (2x2 column-major packed) = [a00, a10, a01, a11]
-                let xxyy = swizzle!(b, [0, 0, 1, 1]);
-                let products = a * xxyy;
-                let upper_products = swizzle!(products, [2, 3]);
-                products.xy() + upper_products
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x2x1(a: [$vec4; 2], b: $vec2) -> $vec4 { matmul4x2x1(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x2x1(a: [$vec4; 2], b: $vec2) -> $vec4 {
-                let xxxx = swizzle!(b, [0, 0, 0, 0]);
-                let yyyy = swizzle!(b, [1, 1, 1, 1]);
-                arith!((a[0]) * xxxx + (a[1]) * yyyy)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x3x1(a: $vec4, b: $vec4) -> $scalar {
-                // TODO(codegen-optimization): Compare two FMAs with two multiplies plus additions,
-                // including lane-shuffle cost and targets without FMA; retain this path unless the
-                // fused version wins consistently.
-                reduce::sum::<$vec4, 3>(a * b)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x3x1_in_vec4(a: [$vec4; 2], b: $vec4) -> $vec2 {
-                let xxyy = swizzle!(b, [0, 0, 1, 1]);
-                let zz = swizzle!(b, [2, 2]);
-                let products01 = a[0] * xxyy;
-                let upper_products01 = swizzle!(products01, [2, 3]);
-                arith!((products01.xy() + upper_products01) + (a[1].xy()) * zz)
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x3x1_in_vec2(a: [$vec2; 3], b: $vec4) -> $vec2 {
-                let [a0, a1, a2] = a;
-                let b0 = swizzle!(b, [0, 0]);
-                let b1 = swizzle!(b, [1, 1]);
-                let b2 = swizzle!(b, [2, 2]);
-                arith!(a0 * b0 + a1 * b1 + a2 * b2)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x3x1(a: [$vec4; 3], b: $vec4) -> $vec4 { matmul4x3x1(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x3x1(a: [$vec4; 3], b: $vec4) -> $vec4 {
-                let xxxx = swizzle!(b, [0, 0, 0, 0]);
-                let yyyy = swizzle!(b, [1, 1, 1, 1]);
-                let zzzz = swizzle!(b, [2, 2, 2, 2]);
-                arith!((a[0]) * xxxx + (a[1]) * yyyy + (a[2]) * zzzz)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x4x1(a: $vec4, b: $vec4) -> $scalar {
-                reduce::sum::<$vec4, 4>(a * b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x4x1(a: [$vec4; 2], b: $vec4) -> $vec2 {
-                let xxyy = swizzle!(b, [0, 0, 1, 1]);
-                let zzww = swizzle!(b, [2, 2, 3, 3]);
-                let pair_sums = arith!((a[0]) * xxyy + (a[1]) * zzww);
-                let upper_pair_sums = swizzle!(pair_sums, [2, 3]);
-                pair_sums.xy() + upper_pair_sums
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x4x1(a: [$vec4; 4], b: $vec4) -> $vec4 { matmul4x4x1(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x4x1(a: [$vec4; 4], b: $vec4) -> $vec4 {
-                let xxxx = swizzle!(b, [0, 0, 0, 0]);
-                let yyyy = swizzle!(b, [1, 1, 1, 1]);
-                let zzzz = swizzle!(b, [2, 2, 2, 2]);
-                let wwww = swizzle!(b, [3, 3, 3, 3]);
-                arith!((a[0]) * xxxx + (a[1]) * yyyy + (a[2]) * zzzz + (a[3]) * wwww)
-            }
-
-            // ============================================================
-            // matmul2xBxC
-            // ============================================================
-
-            #[inline(always)]
-            pub(crate) fn matmul1x1x2(a: $scalar, b: $vec2) -> $vec2 { $vec2::splat(a) * b }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x1x2(a: $vec2, b: $vec2) -> $vec4 {
-                // Outer product in 2x2 packed column-major order:
-                // `[a0*b0, a1*b0, a0*b1, a1*b1]`.
-                swizzle!(a, [0, 1, 0, 1]) * swizzle!(b, [0, 0, 1, 1])
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x1x2(a: $vec4, b: $vec2) -> [$vec4; 2] { matmul4x1x2(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x1x2(a: $vec4, b: $vec2) -> [$vec4; 2] {
-                let col0 = a * swizzle!(b, [0, 0, 0, 0]);
-                let col1 = a * swizzle!(b, [1, 1, 1, 1]);
-                [col0, col1]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x2x2(a: $vec2, b: $vec4) -> $vec2 {
-                let products = swizzle!(a, [0, 1, 0, 1]) * b;
-                swizzle!(products, [0, 2]) + swizzle!(products, [1, 3])
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x2x2(a: $vec4, b: $vec4) -> $vec4 {
-                arith!(
-                    (swizzle!(a, [0, 3, 0, 3])) * b
-                        + (swizzle!(a, [2, 1, 2, 1])) * (swizzle!(b, [1, 0, 3, 2]))
-                )
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x2x2(a: [$vec4; 2], b: $vec4) -> [$vec4; 2] { matmul4x2x2(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x2x2(a: [$vec4; 2], b: $vec4) -> [$vec4; 2] {
-                let xxxx = swizzle!(b, [0, 0, 0, 0]);
-                let yyyy = swizzle!(b, [1, 1, 1, 1]);
-                let zzzz = swizzle!(b, [2, 2, 2, 2]);
-                let wwww = swizzle!(b, [3, 3, 3, 3]);
-                let col0 = arith!((a[0]) * xxxx + (a[1]) * yyyy);
-                let col1 = arith!((a[0]) * zzzz + (a[1]) * wwww);
-                [col0, col1]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x3x2(a: $vec4, b: [$vec4; 2]) -> $vec2 {
-                // TODO(codegen-optimization): Compare this path with a transpose-and-FMA chain on
-                // representative FMA and non-FMA targets before changing the kernel.
-                let cols01_lo = swizzle!(b[0], b[1], [0, 4, 1, 5]);
-                let cols01_hi = swizzle!(b[0], b[1], [2, 6]);
-                let products01 = cols01_lo * swizzle!(a, [0, 0, 1, 1]);
-                let sums01 = products01.xy() + swizzle!(products01, [2, 3]);
-                arith!(sums01 + (swizzle!(a, [2, 2])) * cols01_hi)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x3x2_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> $vec4 {
-                let col0 = matmul2x3x1_in_vec4(a, b[0]);
-                let col1 = matmul2x3x1_in_vec4(a, b[1]);
-                swizzle!(col0, col1, @concat)
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x3x2_in_vec2(a: [$vec2; 3], b: [$vec4; 2]) -> $vec4 {
-                let col0 = matmul2x3x1_in_vec2(a, b[0]);
-                let col1 = matmul2x3x1_in_vec2(a, b[1]);
-                swizzle!(col0, col1, @concat)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x3x2(a: [$vec4; 3], b: [$vec4; 2]) -> [$vec4; 2] {
-                // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
-                // outperform delegation to the wider kernel on representative targets.
-                matmul4x3x2(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x3x2(a: [$vec4; 3], b: [$vec4; 2]) -> [$vec4; 2] {
-                let col0 = matmul4x3x1(a, b[0]);
-                let col1 = matmul4x3x1(a, b[1]);
-                [col0, col1]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x4x2(a: $vec4, b: [$vec4; 2]) -> $vec2 {
-                let scaled_col0 = a * b[0];
-                let scaled_col1 = a * b[1];
-                let pair_sums = swizzle!(scaled_col0, scaled_col1, [0, 4, 1, 5])
-                    + swizzle!(scaled_col0, scaled_col1, [2, 6, 3, 7]);
-                pair_sums.xy() + swizzle!(pair_sums, [2, 3])
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x4x2(a: [$vec4; 2], b: [$vec4; 2]) -> $vec4 {
-                let col0 = matmul2x4x1(a, b[0]);
-                let col1 = matmul2x4x1(a, b[1]);
-                swizzle!(col0, col1, @concat)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x4x2(a: [$vec4; 4], b: [$vec4; 2]) -> [$vec4; 2] {
-                matmul4x4x2(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x4x2(a: [$vec4; 4], b: [$vec4; 2]) -> [$vec4; 2] {
-                let col0 = matmul4x4x1(a, b[0]);
-                let col1 = matmul4x4x1(a, b[1]);
-                [col0, col1]
-            }
-
-            // ============================================================
-            // matmul3xBxC
-            // ============================================================
-
-            #[inline(always)]
-            pub(crate) fn matmul1x1x3(a: $scalar, b: $vec4) -> $vec4 { $vec4::splat(a) * b }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x1x3_in_vec4(a: $vec2, b: $vec4) -> [$vec4; 2] {
-                // a = [a0, a1, *, *], b = [b0, b1, b2, *]
-                // Packed output: `cols01 = [a0*b0, a1*b0, a0*b1, a1*b1]` and
-                // `col2 = [a0*b2, a1*b2, *, *]`.
-                let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let xxyy = swizzle!(b, [0, 0, 1, 1]);
-                let zz__ = swizzle!(b, [2, 2, _, _]);
-                [xyxy * xxyy, xyxy * zz__]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x1x3_in_vec2(a: $vec2, b: $vec4) -> [$vec2; 3] {
-                [
-                    a * swizzle!(b, [0, 0]),
-                    a * swizzle!(b, [1, 1]),
-                    a * swizzle!(b, [2, 2]),
-                ]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x1x3(a: $vec4, b: $vec4) -> [$vec4; 3] { matmul4x1x3(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x1x3(a: $vec4, b: $vec4) -> [$vec4; 3] {
-                let col0 = a * swizzle!(b, [0, 0, 0, 0]);
-                let col1 = a * swizzle!(b, [1, 1, 1, 1]);
-                let col2 = a * swizzle!(b, [2, 2, 2, 2]);
-                [col0, col1, col2]
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul1x2x3_in_vec4(a: $vec2, b: [$vec4; 2]) -> $vec4 {
-                // TODO(codegen-optimization): Compare this path with a single-horizontal-add packed
-                // formulation, and adopt it only when complete-kernel benchmarks improve.
-
-                let col0 = swizzle!(b[0], b[1], [0, 2, 4, _]);
-                let col1 = swizzle!(b[0], b[1], [1, 3, 5, _]);
-                let xxx_ = swizzle!(a, [0, 0, 0, _]);
-                let yyy_ = swizzle!(a, [1, 1, 1, _]);
-                arith!(xxx_ * col0 + yyy_ * col1)
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul1x2x3_in_vec2(a: $vec2, b: [$vec2; 3]) -> $vec4 {
-                // TODO(codegen-optimization): this multiplies and then reduces. The four-lane
-                // sibling instead gathers `b`'s rows and runs one multiply-accumulate chain;
-                // compare the two here.
-                let products = [a * b[0], a * b[1], a * b[2]];
-                let [low, high] = transpose::transpose2x3_in_vec2::<$vec2>(products);
-                low + high
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x2x3_in_vec4(a: $vec4, b: [$vec4; 2]) -> [$vec4; 2] {
-                // b[0] = [b00, b10, b01, b11], b[1] = [b02, b12, *, *]
-                // `cols01` has the same first-two-column layout as `matmul2x2x2`; `col2` stores only
-                // the final column.
-                let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let zwzw = swizzle!(a, [2, 3, 2, 3]);
-
-                let xxzz0 = swizzle!(b[0], [0, 0, 2, 2]);
-                let yyww0 = swizzle!(b[0], [1, 1, 3, 3]);
-                let cols01 = arith!(xyxy * xxzz0 + zwzw * yyww0);
-
-                let b1_xx = swizzle!(b[1], [0, 0, _, _]);
-                let b1_yy = swizzle!(b[1], [1, 1, _, _]);
-                let xy__ = swizzle!(a, [0, 1, _, _]);
-                let zw__ = swizzle!(a, [2, 3, _, _]);
-                let col2 = arith!(xy__ * b1_xx + zw__ * b1_yy);
-
-                [cols01, col2]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x2x3_in_vec2(a: $vec4, b: [$vec2; 3]) -> [$vec2; 3] {
-                let a0 = swizzle!(a, [0, 1]);
-                let a1 = swizzle!(a, [2, 3]);
-                b.map(
-                    #[inline(always)]
-                    |col| {
-                        let x = swizzle!(col, [0, 0]);
-                        let y = swizzle!(col, [1, 1]);
-                        arith!(a0 * x + a1 * y)
-                    },
-                )
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul3x2x3_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
-                matmul4x2x3_in_vec4(a, b)
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul3x2x3_in_vec2(a: [$vec4; 2], b: [$vec2; 3]) -> [$vec4; 3] {
-                matmul4x2x3_in_vec2(a, b)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul4x2x3_in_vec4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 3] {
-                // b[0] = [b00, b10, b01, b11] (columns 0,1 packed)
-                // b[1] = [b02, b12, *, *] (column 2)
-                let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]); // b00
-                let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]); // b10
-                let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]); // b01
-                let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]); // b11
-                let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
-                let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
-
-                let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]); // b02
-                let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]); // b12
-                let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
-
-                [col0, col1, col2]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul4x2x3_in_vec2(a: [$vec4; 2], b: [$vec2; 3]) -> [$vec4; 3] {
-                // Each output column scales `a`'s two columns by one lane of the matching column
-                // of `b`.
-                let [a0, a1] = a;
-                b.map(
-                    #[inline(always)]
-                    |col| {
-                        let x = swizzle!(col, [0, 0, 0, 0]);
-                        let y = swizzle!(col, [1, 1, 1, 1]);
-                        arith!(a0 * x + a1 * y)
-                    },
-                )
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x3x3(a: $vec4, b: [$vec4; 3]) -> $vec4 {
-                // TODO(codegen-optimization): Compare this path with transposed columns and a
-                // lane-splat FMA chain on representative targets before changing the kernel.
-                let [coeff_x, coeff_y, coeff_z] = transpose::transpose3x3(b);
-                let xxx_ = swizzle!(a, [0, 0, 0, _]);
-                let yyy_ = swizzle!(a, [1, 1, 1, _]);
-                let zzz_ = swizzle!(a, [2, 2, 2, _]);
-
-                arith!(xxx_ * coeff_x + yyy_ * coeff_y + zzz_ * coeff_z)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x3x3_in_vec4(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
-                let col0 = matmul2x3x1_in_vec4(a, b[0]);
-                let col1 = matmul2x3x1_in_vec4(a, b[1]);
-                let col2 = matmul2x3x1_in_vec4(a, b[2]);
-                [swizzle!(col0, col1, @concat), col2.widen()]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x3x3_in_vec2(a: [$vec2; 3], b: [$vec4; 3]) -> [$vec2; 3] {
-                [
-                    matmul2x3x1_in_vec2(a, b[0]),
-                    matmul2x3x1_in_vec2(a, b[1]),
-                    matmul2x3x1_in_vec2(a, b[2]),
-                ]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x3x3(a: [$vec4; 3], b: [$vec4; 3]) -> [$vec4; 3] {
-                // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
-                // outperform delegation to the wider kernel on representative targets.
-                matmul4x3x3(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x3x3(a: [$vec4; 3], b: [$vec4; 3]) -> [$vec4; 3] {
-                let col0 = matmul4x3x1(a, b[0]);
-                let col1 = matmul4x3x1(a, b[1]);
-                let col2 = matmul4x3x1(a, b[2]);
-                [col0, col1, col2]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x4x3(a: $vec4, b: [$vec4; 3]) -> $vec4 {
-                // TODO(codegen-optimization): Compare this path with an explicit transpose and
-                // column-splat FMA chain, and adopt it only when complete-kernel benchmarks improve.
-
-                let transposed = transpose::transpose4x3(b);
-                matmul3x4x1(transposed, a)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x4x3_in_vec4(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec4; 2] {
-                let col0 = matmul2x4x1(a, b[0]);
-                let col1 = matmul2x4x1(a, b[1]);
-                let col2 = matmul2x4x1(a, b[2]);
-                [swizzle!(col0, col1, @concat), col2.widen()]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x4x3_in_vec2(a: [$vec4; 2], b: [$vec4; 3]) -> [$vec2; 3] {
-                [matmul2x4x1(a, b[0]), matmul2x4x1(a, b[1]), matmul2x4x1(a, b[2])]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x4x3(a: [$vec4; 4], b: [$vec4; 3]) -> [$vec4; 3] {
-                matmul4x4x3(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x4x3(a: [$vec4; 4], b: [$vec4; 3]) -> [$vec4; 3] {
-                let col0 = matmul4x4x1(a, b[0]);
-                let col1 = matmul4x4x1(a, b[1]);
-                let col2 = matmul4x4x1(a, b[2]);
-                [col0, col1, col2]
-            }
-
-            // ============================================================
-            // matmul4xBxC
-            // ============================================================
-
-            #[inline(always)]
-            pub(crate) fn matmul1x1x4(a: $scalar, b: $vec4) -> $vec4 { $vec4::splat(a) * b }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x1x4(a: $vec2, b: $vec4) -> [$vec4; 2] {
-                // a = [a0, a1, *, *], b = [b0, b1, b2, b3]
-                let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let xxyy = swizzle!(b, [0, 0, 1, 1]);
-                let zzww = swizzle!(b, [2, 2, 3, 3]);
-                [xyxy * xxyy, xyxy * zzww]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x1x4(a: $vec4, b: $vec4) -> [$vec4; 4] { matmul4x1x4(a, b) }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x1x4(a: $vec4, b: $vec4) -> [$vec4; 4] {
-                let col0 = a * swizzle!(b, [0, 0, 0, 0]);
-                let col1 = a * swizzle!(b, [1, 1, 1, 1]);
-                let col2 = a * swizzle!(b, [2, 2, 2, 2]);
-                let col3 = a * swizzle!(b, [3, 3, 3, 3]);
-                [col0, col1, col2, col3]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x2x4(a: $vec2, b: [$vec4; 2]) -> $vec4 {
-                let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let scaled_cols01 = b[0] * xyxy;
-                let scaled_cols23 = b[1] * xyxy;
-                let even_products = swizzle!(scaled_cols01, scaled_cols23, [0, 2, 4, 6]);
-                let odd_products = swizzle!(scaled_cols01, scaled_cols23, [1, 3, 5, 7]);
-                even_products + odd_products
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x2x4(a: $vec4, b: [$vec4; 2]) -> [$vec4; 2] {
-                // Each of `b[0]` and `b[1]` stores two columns in the packed 2x2 layout. Apply the
-                // `matmul2x2x2` pattern independently to each value.
-                let xyxy = swizzle!(a, [0, 1, 0, 1]);
-                let zwzw = swizzle!(a, [2, 3, 2, 3]);
-
-                let xxzz0 = swizzle!(b[0], [0, 0, 2, 2]);
-                let yyww0 = swizzle!(b[0], [1, 1, 3, 3]);
-                let cols01 = arith!(xyxy * xxzz0 + zwzw * yyww0);
-
-                let xxzz1 = swizzle!(b[1], [0, 0, 2, 2]);
-                let yyww1 = swizzle!(b[1], [1, 1, 3, 3]);
-                let cols23 = arith!(xyxy * xxzz1 + zwzw * yyww1);
-
-                [cols01, cols23]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x2x4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 4] {
-                // b[0] = [b00, b10, b01, b11], b[1] = [b02, b12, b03, b13]
-                let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]);
-                let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]);
-                let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]);
-                let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]);
-                let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
-                let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
-
-                let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]);
-                let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]);
-                let b1_zzzz = swizzle!(b[1], [2, 2, 2, 2]);
-                let b1_wwww = swizzle!(b[1], [3, 3, 3, 3]);
-                let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
-                let col3 = arith!((a[0]) * b1_zzzz + (a[1]) * b1_wwww);
-
-                [col0, col1, col2, col3]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x2x4(a: [$vec4; 2], b: [$vec4; 2]) -> [$vec4; 4] {
-                let b0_xxxx = swizzle!(b[0], [0, 0, 0, 0]);
-                let b0_yyyy = swizzle!(b[0], [1, 1, 1, 1]);
-                let b0_zzzz = swizzle!(b[0], [2, 2, 2, 2]);
-                let b0_wwww = swizzle!(b[0], [3, 3, 3, 3]);
-                let col0 = arith!((a[0]) * b0_xxxx + (a[1]) * b0_yyyy);
-                let col1 = arith!((a[0]) * b0_zzzz + (a[1]) * b0_wwww);
-
-                let b1_xxxx = swizzle!(b[1], [0, 0, 0, 0]);
-                let b1_yyyy = swizzle!(b[1], [1, 1, 1, 1]);
-                let b1_zzzz = swizzle!(b[1], [2, 2, 2, 2]);
-                let b1_wwww = swizzle!(b[1], [3, 3, 3, 3]);
-                let col2 = arith!((a[0]) * b1_xxxx + (a[1]) * b1_yyyy);
-                let col3 = arith!((a[0]) * b1_zzzz + (a[1]) * b1_wwww);
-
-                [col0, col1, col2, col3]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x3x4(a: $vec4, b: [$vec4; 4]) -> $vec4 {
-                // TODO(codegen-optimization): Compare LLVM's current structure-of-arrays lowering with
-                // an explicit `$vec4` transpose, and change it only with assembly or benchmark evidence.
-
-                let [coeff_x, coeff_y, coeff_z] = transpose::transpose3x4(b);
-                let xxx_ = swizzle!(a, [0, 0, 0, _]);
-                let yyy_ = swizzle!(a, [1, 1, 1, _]);
-                let zzz_ = swizzle!(a, [2, 2, 2, _]);
-                arith!(coeff_x * xxx_ + coeff_y * yyy_ + coeff_z * zzz_)
-            }
-
-            #[inline(always)]
-            #[allow(dead_code)]
-            pub(crate) fn matmul2x3x4_in_vec4(a: [$vec4; 2], b: [$vec4; 4]) -> [$vec4; 2] {
-                let col0 = matmul2x3x1_in_vec4(a, b[0]);
-                let col1 = matmul2x3x1_in_vec4(a, b[1]);
-                let col2 = matmul2x3x1_in_vec4(a, b[2]);
-                let col3 = matmul2x3x1_in_vec4(a, b[3]);
-                [
-                    swizzle!(col0, col1, @concat),
-                    swizzle!(col2, col3, @concat),
-                ]
-            }
-            #[allow(dead_code)]
-            #[inline(always)]
-            pub(crate) fn matmul2x3x4_in_vec2(a: [$vec2; 3], b: [$vec4; 4]) -> [$vec4; 2] {
-                // A 2x4 result packs two columns per unit.
-                let col0 = matmul2x3x1_in_vec2(a, b[0]);
-                let col1 = matmul2x3x1_in_vec2(a, b[1]);
-                let col2 = matmul2x3x1_in_vec2(a, b[2]);
-                let col3 = matmul2x3x1_in_vec2(a, b[3]);
-                [swizzle!(col0, col1, @concat), swizzle!(col2, col3, @concat)]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x3x4(a: [$vec4; 3], b: [$vec4; 4]) -> [$vec4; 4] {
-                // TODO(codegen-optimization): Specialize this shape only if assembly or benchmarks
-                // outperform delegation to the wider kernel on representative targets.
-                matmul4x3x4(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x3x4(a: [$vec4; 3], b: [$vec4; 4]) -> [$vec4; 4] {
-                let col0 = matmul4x3x1(a, b[0]);
-                let col1 = matmul4x3x1(a, b[1]);
-                let col2 = matmul4x3x1(a, b[2]);
-                let col3 = matmul4x3x1(a, b[3]);
-                [col0, col1, col2, col3]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul1x4x4(a: $vec4, b: [$vec4; 4]) -> $vec4 {
-                let transposed = transpose::transpose4x4(b);
-                matmul4x4x1(transposed, a)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul2x4x4(a: [$vec4; 2], b: [$vec4; 4]) -> [$vec4; 2] {
-                let col0 = matmul2x4x1(a, b[0]);
-                let col1 = matmul2x4x1(a, b[1]);
-                let col2 = matmul2x4x1(a, b[2]);
-                let col3 = matmul2x4x1(a, b[3]);
-                [
-                    swizzle!(col0, col1, @concat),
-                    swizzle!(col2, col3, @concat),
-                ]
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul3x4x4(a: [$vec4; 4], b: [$vec4; 4]) -> [$vec4; 4] {
-                matmul4x4x4(a, b)
-            }
-
-            #[inline(always)]
-            pub(crate) fn matmul4x4x4(a: [$vec4; 4], b: [$vec4; 4]) -> [$vec4; 4] {
-                let col0 = matmul4x4x1(a, b[0]);
-                let col1 = matmul4x4x1(a, b[1]);
-                let col2 = matmul4x4x1(a, b[2]);
-                let col3 = matmul4x4x1(a, b[3]);
-                [col0, col1, col2, col3]
-            }
-        };
-    }
-
-    pub(crate) mod f32 {
-        use super::{super::super::utils::compute_f32x2, *};
-        use wide::f32x4;
-        impl_matmul!(f32, compute_f32x2, f32x4);
+    pub(crate) mod _32bit {
+        pub(crate) use super::impls::*;
         select_2x3!(in_vec4);
     }
-    pub(crate) mod f64 {
-        use super::*;
-        use wide::{f64x2, f64x4};
-        impl_matmul!(f64, f64x2, f64x4);
+
+    pub(crate) mod _64bit {
+        pub(crate) use super::impls::*;
         cfg_select! {
             target_feature = "avx2" => {
                 select_2x3!(in_vec4);

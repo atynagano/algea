@@ -299,6 +299,19 @@ macro_rules! impl_layout {
             #[inline(always)]
             fn transpose(a: Self) -> ConstStorage<$t, N, M> { kernels::transpose(a) }
 
+            if_! { $float == float {
+                #[inline(always)]
+                fn matmul<const K: usize>(
+                    a: ConstStorage<$t, M, K>,
+                    b: ConstStorage<$t, K, N>,
+                ) -> Self {
+                    kernels::matmul::matmul(
+                        private::StorageOps::to_array(a),
+                        private::StorageOps::to_array(b),
+                    )
+                }
+            }}
+
             if_! { $signed $int == signed int {
                 #[inline(always)]
                 fn from_mask(mask: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> Self { mask.into_inner() }

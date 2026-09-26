@@ -1,6 +1,7 @@
 /// The body is a macro so both floating-point widths can be instantiated from it. The including
 /// file supplies `matrix_from_rows!`/`matrix_to_rows!` for its own storage order, and the
-/// `VectorProduct`/`OuterProductAdapter` adapters for each element type.
+/// `VectorProduct`/`OuterProductAdapter` adapters for each element type, plus the dimension
+/// marker imports required by the generic checks.
 macro_rules! matrix_multiplication_tests {
     ($module:ident, $t:ty) => {
         mod $module {
@@ -8,7 +9,9 @@ macro_rules! matrix_multiplication_tests {
 
             fn check<const R: usize, const K: usize, const C: usize>(failures: &mut Vec<String>)
             where
-                $t: MatrixProduct<R, K, C>,
+                Dimension<R>: SupportedDimension,
+                Dimension<K>: SupportedDimension,
+                Dimension<C>: SupportedDimension,
             {
                 let lhs: [[$t; K]; R] = core::array::from_fn(|i| {
                     core::array::from_fn(|k| (1 + i * K + k) as $t * 0.25)
@@ -40,6 +43,8 @@ macro_rules! matrix_multiplication_tests {
             fn check_vector_matrix<const R: usize, const C: usize>(failures: &mut Vec<String>)
             where
                 $t: VectorProduct<R, C>,
+                Dimension<R>: SupportedDimension,
+                Dimension<C>: SupportedDimension,
             {
                 let lhs: [$t; R] = core::array::from_fn(|i| (i + 1) as $t * 0.25);
                 let rhs: [[$t; C]; R] = core::array::from_fn(|i| {
@@ -64,7 +69,9 @@ macro_rules! matrix_multiplication_tests {
 
             fn check_outer_product<const R: usize, const C: usize>(failures: &mut Vec<String>)
             where
-                $t: OuterProduct<R, C>,
+                $t: OuterProductAdapter<R, C>,
+                Dimension<R>: SupportedDimension,
+                Dimension<C>: SupportedDimension,
             {
                 let lhs: [$t; R] = core::array::from_fn(|i| (i + 1) as $t * 0.25);
                 let rhs: [$t; C] =
