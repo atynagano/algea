@@ -13,9 +13,9 @@ macro_rules! arith {
     ($a:tt + $b:tt * $c:tt - $($t:tt)+) => { arith!((arith!($a + $b * $c)) - $($t)+) };
     ($a:tt - $b:tt * $c:tt + $($t:tt)+) => { arith!((arith!($a - $b * $c)) + $($t)+) };
     ($a:tt - $b:tt * $c:tt - $($t:tt)+) => { arith!((arith!($a - $b * $c)) - $($t)+) };
-    // ($a:tt + $b:tt) => { $a + $b };
+    ($a:tt + $b:tt) => { $crate::utils::ArithOps::add_noexcept_($a, $b) };
     // ($a:tt - $b:tt) => { $a - $b };
-    // ($a:tt * $b:tt) => { $a * $b };
+    ($a:tt * $b:tt) => { $crate::utils::ArithOps::mul_noexcept_($a, $b) };
     // ($a:tt) => { $a };
 }
 
@@ -50,7 +50,7 @@ pub(crate) use if_;
 // TODO(lane-count-generics): consider `ArithOps<const N: usize>` and the same for
 // `MaskOps`, so `any`/`all`/`cast`/`to_bitmask` can tell 2, 3 and 4 lanes apart.
 pub(crate) trait ArithOps: Copy {
-    type Scalar;
+    type Scalar: ArithOps<Scalar = Self::Scalar>;
     type F32;
     type F64;
     type I32;

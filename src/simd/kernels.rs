@@ -2,16 +2,17 @@
 mod tests;
 
 pub(crate) mod reduce {
-    use crate::utils::ArithOps;
-    use std::ops::Add;
+    #![allow(unused_parens)]
+
+    use crate::utils::{ArithOps, arith};
 
     // TODO(reduce-operations): only `sum` has a reduction; product, min and max do not.
+    // TODO(integer-reductions): when a public integer API reaches this kernel, add debug-mode
+    // overflow tests through that API to verify that reduction does not panic.
 
     // TODO(reduce-sum-codegen): confirm which reduction shape wins per lane count and target.
     #[inline(always)]
-    pub(crate) fn sum<T: ArithOps<Scalar: Copy + Add<Output = T::Scalar>>, const N: usize>(
-        v: T,
-    ) -> T::Scalar {
+    pub(crate) fn sum<T: ArithOps, const N: usize>(v: T) -> T::Scalar {
         match N {
             1 => {
                 let [x] = *v.as_array_().first_chunk::<1>().unwrap();
@@ -19,17 +20,17 @@ pub(crate) mod reduce {
             }
             2 => {
                 let [x, y] = *v.as_array_().first_chunk::<2>().unwrap();
-                x + y
+                arith!(x + y)
             }
             3 => {
                 let [x, y, z] = *v.as_array_().first_chunk::<3>().unwrap();
-                x + y + z
+                arith!((arith!(x + y)) + z)
             }
             4 => {
                 // Preserve this addition tree to avoid the usual `hadd` latency and throughput cost;
                 // revisit it only with representative benchmark or codegen evidence.
                 let [x, y, z, w] = *v.as_array_().first_chunk::<4>().unwrap();
-                (x + z) + (y + w)
+                arith!((arith!(x + z)) + (arith!(y + w)))
             }
             _ => unimplemented!(),
         }

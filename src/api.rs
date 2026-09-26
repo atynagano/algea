@@ -101,6 +101,8 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
 }
 
 impl<T: FloatElement<D>, const D: usize> Vector<T, D> {
+    // TODO(integer-dot): when dot products support integer elements, add debug-mode overflow tests
+    // that verify the operation wraps without panicking.
     /// Returns the dot product of `self` and `rhs`.
     #[inline]
     pub fn dot(self, rhs: Self) -> T { vector::call!(<T, D>::dot(self.storage, rhs.storage)) }

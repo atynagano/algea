@@ -7,16 +7,21 @@ impl Float for f32 {}
 impl Float for f64 {}
 
 pub(crate) mod reduce {
+    #![allow(unused_parens)]
 
+    use crate::utils::{ArithOps, arith};
+
+    // TODO(integer-reductions): when a public integer API reaches this kernel, add debug-mode
+    // overflow tests through that API to verify that reduction does not panic.
     #[inline(always)]
-    pub(crate) fn sum<T: Copy + core::ops::Add<Output = T>, const N: usize>(v: [T; N]) -> T {
+    pub(crate) fn sum<T: ArithOps<Scalar = T>, const N: usize>(v: [T; N]) -> T {
         match N {
             1 => v[0],
-            2 => v[0] + v[1],
-            3 => v[0] + v[1] + v[2],
+            2 => arith!((v[0]) + (v[1])),
+            3 => arith!((arith!((v[0]) + (v[1]))) + (v[2])),
             // Preserve this addition tree to avoid the usual `hadd` latency and throughput cost;
             // revisit it only with representative benchmark or codegen evidence.
-            4 => (v[0] + v[2]) + (v[1] + v[3]),
+            4 => arith!((arith!((v[0]) + (v[2]))) + (arith!((v[1]) + (v[3])))),
             _ => unimplemented!(),
         }
     }

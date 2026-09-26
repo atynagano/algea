@@ -58,6 +58,8 @@ pub(crate) use call;
 ///     a * b
 /// }
 /// ```
+// TODO(integer-products): when these product traits support integer elements, add debug-mode
+// overflow tests through every public matrix/vector product operation.
 pub trait MatrixProduct<const R: usize, const K: usize, const C: usize>:
     Element<R, K> + OuterProduct<R, C> + VectorMatrixProduct<K, C>
 {
