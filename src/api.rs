@@ -4,7 +4,7 @@ use crate::{
     Select,
     Vector,
     column_major,
-    marker::{CastFrom, Lane, Signed, StoredVerbatim},
+    marker::{CastFrom, Lane, MatrixLayout, Signed, StoredVerbatim},
     private,
     row_major,
     support::{
@@ -14,6 +14,7 @@ use crate::{
         IntElement,
         MaskElement,
         SintElement,
+        SupportedDimension,
         UintElement,
     },
     utils,
@@ -35,6 +36,19 @@ pub(crate) mod vector {
         };
     }
     pub(crate) use crate::Vector;
+    pub(crate) use call;
+}
+
+pub(crate) mod matrix {
+    macro_rules! call {
+        (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:tt>)? $(($($arg:expr),*))?) => {
+            <L::StorageRxC<$t, $r, $c> as $crate::private::OrientedStorageOps<$t, $r, $c, L>>::$f $(::<$gen>)? $(($($arg),*))?
+        };
+        ($w:ident(<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:tt>)? $(($($arg:expr),*))?)) => {
+            $w { storage: $crate::api::matrix::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }
+        };
+    }
+    pub(crate) use crate::Matrix;
     pub(crate) use call;
 }
 
@@ -290,19 +304,32 @@ macro_rules! impl_matrix_from_array {
     };
 }
 
-impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C> {
+impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> crate::Matrix<T, R, C, L> {
     /// A matrix with all elements set to zero.
-    pub const ZERO: Self = row_major::call!(Self(<T, R, C>::ZERO));
+    pub const ZERO: Self = matrix::call!(Self(<T, R, C>::ZERO));
 
     /// A matrix with all elements set to one.
-    pub const ONE: Self = row_major::call!(Self(<T, R, C>::ONE));
+    pub const ONE: Self = matrix::call!(Self(<T, R, C>::ONE));
 
     /// Constructs a matrix with every element set to `value`.
     #[inline]
-    pub fn filled(value: T) -> row_major::Matrix<T, R, C> {
-        row_major::call!(Self(<T, R, C>::filled(value)))
+    pub fn filled(value: T) -> Self { matrix::call!(Self(<T, R, C>::filled(value))) }
+
+    /// Returns the transpose of this matrix in the same storage orientation.
+    #[inline]
+    pub fn transpose(self) -> crate::Matrix<T, C, R, L> {
+        use crate::Matrix;
+        matrix::call!(Matrix(<T, R, C>::transpose(self.storage)))
     }
 
+    /// Converts each matrix element to `U` using Rust's `as` conversion semantics.
+    #[inline]
+    pub fn cast<U: Element<R, C> + CastFrom<T>>(self) -> crate::Matrix<U, R, C, L> {
+        use crate::Matrix;
+        matrix::call!(Matrix(<U, R, C>::cast_from::<T>(self.storage)))
+    }
+}
+impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C> {
     /// Constructs a matrix from its logical rows.
     #[inline]
     pub const fn from_rows(rows: [[T; C]; R]) -> Self {
@@ -351,40 +378,14 @@ impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C
     #[inline]
     pub fn to_row_vecs(self) -> [Vector<T, C>; R] { self.to_rows().map(Vector::from) }
 
-    /// Returns the transpose of this matrix in the same storage orientation.
-    #[inline]
-    pub fn transpose(self) -> row_major::Matrix<T, C, R> {
-        use row_major::Matrix;
-        row_major::call!(Matrix(<T, R, C>::transpose(self.storage)))
-    }
-
     /// Reinterprets the storage as a column-major matrix representing the
     /// transpose of `self`.
     #[inline]
     pub const fn to_column_major_transposed(self) -> column_major::Matrix<T, C, R> {
         column_major::Matrix { storage: self.storage }
     }
-
-    /// Converts each matrix element to `U` using Rust's `as` conversion semantics.
-    #[inline]
-    pub fn cast<U: Element<R, C> + CastFrom<T>>(self) -> row_major::Matrix<U, R, C> {
-        use row_major::Matrix;
-        row_major::call!(Matrix(<U, R, C>::cast_from::<T>(self.storage)))
-    }
 }
 impl<T: Element<R, C>, const R: usize, const C: usize> column_major::Matrix<T, R, C> {
-    /// A matrix with all elements set to zero.
-    pub const ZERO: Self = column_major::call!(Self(<T, R, C>::ZERO));
-
-    /// A matrix with all elements set to one.
-    pub const ONE: Self = column_major::call!(Self(<T, R, C>::ONE));
-
-    /// Constructs a matrix with every element set to `value`.
-    #[inline]
-    pub fn filled(value: T) -> column_major::Matrix<T, R, C> {
-        column_major::call!(Self(<T, R, C>::filled(value)))
-    }
-
     /// Constructs a matrix from its logical columns.
     #[inline]
     pub const fn from_columns(columns: [[T; R]; C]) -> Self {
@@ -439,25 +440,11 @@ impl<T: Element<R, C>, const R: usize, const C: usize> column_major::Matrix<T, R
     #[inline]
     pub fn to_column_vecs(self) -> [Vector<T, R>; C] { self.to_columns().map(Vector::from) }
 
-    /// Returns the transpose of this matrix in the same storage orientation.
-    #[inline]
-    pub fn transpose(self) -> column_major::Matrix<T, C, R> {
-        use column_major::Matrix;
-        column_major::call!(Matrix(<T, R, C>::transpose(self.storage)))
-    }
-
     /// Reinterprets the storage as a row-major matrix representing the transpose
     /// of `self`.
     #[inline]
     pub const fn to_row_major_transposed(self) -> row_major::Matrix<T, C, R> {
         row_major::Matrix { storage: self.storage }
-    }
-
-    /// Converts each matrix element to `U` using Rust's `as` conversion semantics.
-    #[inline]
-    pub fn cast<U: Element<R, C> + CastFrom<T>>(self) -> column_major::Matrix<U, R, C> {
-        use column_major::Matrix;
-        column_major::call!(Matrix(<U, R, C>::cast_from::<T>(self.storage)))
     }
 }
 
@@ -477,6 +464,7 @@ macro_rules! impl_binop {
     (
         docs: [$doc:literal, $assign_doc:literal],
         $mod:tt::$Tensor:tt,
+        $(layout:$L:ident,)?
         $(any:$T:tt,)? // self_tensor
         $(spec:$t:tt,)? // self_scalar
         $(rhs_tensor:$rhs_tensor:tt,)?
@@ -485,35 +473,35 @@ macro_rules! impl_binop {
         $trait:ident::$method:ident
         $(, $trait_assign:ident::$method_assign:ident)?
     ) => {
-        impl<$($T,)? $(const $N: usize),+> core::ops::$trait<
-            if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+> } else { $($T)? })
-        > for if_match!(($($T)?) { $mod::$Tensor<$($T)?, $($N),+> } else { $($t)? } )
+        impl<$($T,)? $(const $N: usize),+ $(, $L: MatrixLayout)?> core::ops::$trait<
+            if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+ $(, $L)?> } else { $($T)? })
+        > for if_match!(($($T)?) { $mod::$Tensor<$($T)?, $($N),+ $(, $L)?> } else { $($t)? } )
             where $($T)? $($t)?: Element<$($N),+> $(+ core::ops::$trait<Output = $T>)?
         {
-            type Output = $mod::$Tensor<$($T)? $($t)?, $($N),+>;
+            type Output = $mod::$Tensor<$($T)? $($t)?, $($N),+ $(, $L)?>;
             #[doc = $doc]
             #[inline]
             fn $method(
                 self,
-                rhs: if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+> } else { $($T)? } ),
+                rhs: if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+ $(, $L)?> } else { $($T)? } ),
             ) -> Self::Output {
                 use $mod::$Tensor;
-                let lhs = if_match!(($($T)?)          { self.storage } else { $Tensor::filled(self).storage });
-                let rhs = if_match!(($($rhs_tensor)?) { rhs.storage }  else { $Tensor::filled(rhs).storage });
+                let lhs = if_match!(($($T)?)          { self.storage } else { Self::Output::filled(self).storage });
+                let rhs = if_match!(($($rhs_tensor)?) { rhs.storage }  else { Self::Output::filled(rhs).storage });
                 $mod::call!($Tensor(<$($T)? $($t)?, $($N),+>::$method(lhs, rhs)))
             }
         }
         if_match!{ ($($trait_assign)?) {
-            impl<$($T,)? $(const $N: usize),+> core::ops::$($trait_assign)?<
-                if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+> } else { $($T)? })
-            > for $mod::$Tensor<$($T)?, $($N),+>
+            impl<$($T,)? $(const $N: usize),+ $(, $L: MatrixLayout)?> core::ops::$($trait_assign)?<
+                if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+ $(, $L)?> } else { $($T)? })
+            > for $mod::$Tensor<$($T)?, $($N),+ $(, $L)?>
                 where $($T)? $($t)?: Element<$($N),+> $(+ core::ops::$trait<Output = $T>)?
             {
                 #[doc = $assign_doc]
                 #[inline]
                 fn $($method_assign)?(
                     &mut self,
-                    rhs: if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+> } else { $($T)? }),
+                    rhs: if_match!(($($rhs_tensor)?) { $mod::$Tensor<$($T)? $($t)?, $($N),+ $(, $L)?> } else { $($T)? }),
                 ) {
                     *self = core::ops::$trait::$method(*self, rhs);
                 }
@@ -528,8 +516,7 @@ macro_rules! impl_binop_all {
         // reserved for the matrix product and division has no corresponding matrix operation.
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_tensor:_, [D], $trait::$method, $trait_assign::$method_assign);
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_scalar:_, [D], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, row_major::Matrix, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, column_major::Matrix, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
+        impl_binop!(docs: $docs, matrix::Matrix, layout:L, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
     };
     (@a [$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt, vector_only]) => {
         // This branch intentionally generates vector operations only; matrix multiplication uses
@@ -546,10 +533,8 @@ macro_rules! impl_binop_all {
     (@a [$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt]) => {
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_tensor:_, [D], $trait::$method, $trait_assign::$method_assign);
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_scalar:_, [D], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, row_major::Matrix, any:T, rhs_tensor:_, [R, C], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, row_major::Matrix, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, column_major::Matrix, any:T, rhs_tensor:_, [R, C], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, column_major::Matrix, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
+        impl_binop!(docs: $docs, matrix::Matrix, layout:L, any:T, rhs_tensor:_, [R, C], $trait::$method, $trait_assign::$method_assign);
+        impl_binop!(docs: $docs, matrix::Matrix, layout:L, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
     };
     // Generate scalar-left implementations only for concrete scalar types: the orphan rules do
     // not permit implementing an external operator trait for an arbitrary type parameter.
@@ -561,8 +546,7 @@ macro_rules! impl_binop_all {
     (@b [$($scalar:tt),+], [$docs:tt, $trait:tt::$method:tt] $(,$option:tt)?) => {
         $(
             impl_binop!(docs: $docs, vector::Vector,spec:$scalar,rhs_tensor:_,[D],$trait::$method);
-            impl_binop!(docs: $docs, row_major::Matrix,spec:$scalar,rhs_tensor:_,[R, C],$trait::$method);
-            impl_binop!(docs: $docs, column_major::Matrix,spec:$scalar,rhs_tensor:_,[R, C],$trait::$method);
+            impl_binop!(docs: $docs, matrix::Matrix, layout:L, spec:$scalar,rhs_tensor:_,[R, C],$trait::$method);
         )+
     };
     (arithmetic, [$([$generic_docs:tt, $float_docs:tt, $integer_docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt $(, $option:tt)?],)+]) => {
@@ -686,25 +670,15 @@ impl_binop_all!([i32, u32, i64, u64], [
     ],
 ]);
 
-impl<T: core::ops::Neg + Element<R, C>, const R: usize, const C: usize> core::ops::Neg
-    for row_major::Matrix<T, R, C>
+impl<T: core::ops::Neg + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::ops::Neg for crate::Matrix<T, R, C, L>
 {
     type Output = Self;
     /// Performs component-wise negation.
     ///
     /// For `i32` elements, negation wraps on overflow.
     #[inline]
-    fn neg(self) -> Self::Output { row_major::call!(Self(<T, R, C>::neg(self.storage))) }
-}
-impl<T: core::ops::Neg + Element<R, C>, const R: usize, const C: usize> core::ops::Neg
-    for column_major::Matrix<T, R, C>
-{
-    type Output = Self;
-    /// Performs component-wise negation.
-    ///
-    /// For `i32` elements, negation wraps on overflow.
-    #[inline]
-    fn neg(self) -> Self::Output { column_major::call!(Self(<T, R, C>::neg(self.storage))) }
+    fn neg(self) -> Self::Output { matrix::call!(Self(<T, R, C>::neg(self.storage))) }
 }
 impl<T: core::ops::Neg + Element<D>, const D: usize> core::ops::Neg for Vector<T, D> {
     type Output = Self;
@@ -754,22 +728,9 @@ impl_mask_binop! {
     ]
 }
 
-impl<T: FloatElement<N>, const N: usize> core::iter::Product for row_major::Matrix<T, N, N> {
-    #[inline]
-    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let mut iter = iter.into_iter();
-        if let Some(first) = iter.next() {
-            iter.fold(
-                first,
-                #[inline(always)]
-                |acc, x| acc * x,
-            )
-        } else {
-            Self::IDENTITY
-        }
-    }
-}
-impl<T: FloatElement<N>, const N: usize> core::iter::Product for column_major::Matrix<T, N, N> {
+impl<T: FloatElement<N>, const N: usize, L: MatrixLayout> core::iter::Product
+    for crate::Matrix<T, N, N, L>
+{
     #[inline]
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
@@ -802,25 +763,8 @@ impl<T: Element<D> + core::ops::Mul<Output = T>, const D: usize> core::iter::Pro
     }
 }
 
-impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usize> core::iter::Sum
-    for row_major::Matrix<T, R, C>
-{
-    #[inline]
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let mut iter = iter.into_iter();
-        if let Some(first) = iter.next() {
-            iter.fold(
-                first,
-                #[inline(always)]
-                |acc, x| acc + x,
-            )
-        } else {
-            Self::ZERO
-        }
-    }
-}
-impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usize> core::iter::Sum
-    for column_major::Matrix<T, R, C>
+impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usize, L: MatrixLayout>
+    core::iter::Sum for crate::Matrix<T, R, C, L>
 {
     #[inline]
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
@@ -852,12 +796,9 @@ impl<T: Element<D> + core::ops::Add<Output = T>, const D: usize> core::iter::Sum
     }
 }
 
-impl<T: Element<R, C>, const R: usize, const C: usize> Default for row_major::Matrix<T, R, C> {
-    /// Returns the zero matrix.
-    #[inline]
-    fn default() -> Self { Self::ZERO }
-}
-impl<T: Element<R, C>, const R: usize, const C: usize> Default for column_major::Matrix<T, R, C> {
+impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Default
+    for crate::Matrix<T, R, C, L>
+{
     /// Returns the zero matrix.
     #[inline]
     fn default() -> Self { Self::ZERO }
@@ -886,22 +827,16 @@ impl<T: core::fmt::Debug> core::fmt::Debug for CompactRow<'_, T> {
     }
 }
 
-impl<T: core::fmt::Debug + Element<R, C>, const R: usize, const C: usize> core::fmt::Debug
-    for row_major::Matrix<T, R, C>
+impl<T: core::fmt::Debug + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::fmt::Debug for crate::Matrix<T, R, C, L>
 {
     #[allow(clippy::missing_inline_in_public_items)]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let rows = self.to_rows();
-        f.debug_list().entries(rows.iter().map(|row| CompactRow(row.as_slice()))).finish()
-    }
-}
-impl<T: core::fmt::Debug + Element<R, C>, const R: usize, const C: usize> core::fmt::Debug
-    for column_major::Matrix<T, R, C>
-{
-    #[allow(clippy::missing_inline_in_public_items)]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let columns = self.to_columns();
-        f.debug_list().entries(columns.iter().map(|column| CompactRow(column.as_slice()))).finish()
+        matrix::call!(<T, R, C>::with_major_slices(self.storage, |major_vectors| {
+            f.debug_list()
+                .entries(major_vectors.iter().map(|vector| CompactRow(vector)))
+                .finish()
+        }))
     }
 }
 impl<T: core::fmt::Debug + Element<D>, const D: usize> core::fmt::Debug for Vector<T, D> {
@@ -920,30 +855,13 @@ impl<T: MaskElement<D>, const D: usize> core::fmt::Debug for Mask<T, D> {
 }
 
 #[allow(clippy::partialeq_ne_impl)] // Keep the dedicated SIMD `ne` reduction instead of negating `eq`.
-impl<T: PartialEq + Element<R, C>, const R: usize, const C: usize> PartialEq
-    for row_major::Matrix<T, R, C>
+impl<T: PartialEq + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> PartialEq
+    for crate::Matrix<T, R, C, L>
 {
     #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        row_major::call!(<T, R, C>::eq(self.storage, other.storage))
-    }
+    fn eq(&self, other: &Self) -> bool { matrix::call!(<T, R, C>::eq(self.storage, other.storage)) }
     #[inline]
-    fn ne(&self, other: &Self) -> bool {
-        row_major::call!(<T, R, C>::ne(self.storage, other.storage))
-    }
-}
-#[allow(clippy::partialeq_ne_impl)]
-impl<T: PartialEq + Element<R, C>, const R: usize, const C: usize> PartialEq
-    for column_major::Matrix<T, R, C>
-{
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        column_major::call!(<T, R, C>::eq(self.storage, other.storage))
-    }
-    #[inline]
-    fn ne(&self, other: &Self) -> bool {
-        column_major::call!(<T, R, C>::ne(self.storage, other.storage))
-    }
+    fn ne(&self, other: &Self) -> bool { matrix::call!(<T, R, C>::ne(self.storage, other.storage)) }
 }
 #[allow(clippy::partialeq_ne_impl)] // Keep the dedicated SIMD `ne` reduction instead of negating `eq`.
 impl<T: PartialEq + Element<D>, const D: usize> PartialEq for Vector<T, D> {
@@ -952,8 +870,10 @@ impl<T: PartialEq + Element<D>, const D: usize> PartialEq for Vector<T, D> {
     #[inline]
     fn ne(&self, other: &Self) -> bool { vector::call!(<T, D>::ne(self.storage, other.storage)) }
 }
-impl<T: Eq + Element<R, C>, const R: usize, const C: usize> Eq for row_major::Matrix<T, R, C> {}
-impl<T: Eq + Element<R, C>, const R: usize, const C: usize> Eq for column_major::Matrix<T, R, C> {}
+impl<T: Eq + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Eq
+    for crate::Matrix<T, R, C, L>
+{
+}
 impl<T: Eq + Element<D>, const D: usize> Eq for Vector<T, D> {}
 
 impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
@@ -1029,11 +949,9 @@ impl<T: FloatElement<D>, const D: usize> Vector<T, D> {
     }
 }
 
-impl<T: Element<R, C>, const R: usize, const C: usize> Clone for row_major::Matrix<T, R, C> {
-    #[inline]
-    fn clone(&self) -> Self { *self }
-}
-impl<T: Element<R, C>, const R: usize, const C: usize> Clone for column_major::Matrix<T, R, C> {
+impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Clone
+    for crate::Matrix<T, R, C, L>
+{
     #[inline]
     fn clone(&self) -> Self { *self }
 }
@@ -1045,8 +963,10 @@ impl<T: MaskElement<D>, const D: usize> Clone for Mask<T, D> {
     #[inline]
     fn clone(&self) -> Self { *self }
 }
-impl<T: Element<R, C>, const R: usize, const C: usize> Copy for row_major::Matrix<T, R, C> {}
-impl<T: Element<R, C>, const R: usize, const C: usize> Copy for column_major::Matrix<T, R, C> {}
+impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Copy
+    for crate::Matrix<T, R, C, L>
+{
+}
 impl<T: Element<D>, const D: usize> Copy for Vector<T, D> {}
 impl<T: MaskElement<D>, const D: usize> Copy for Mask<T, D> {}
 
@@ -1142,15 +1062,15 @@ impl<T: Element<4> + StoredVerbatim> core::ops::DerefMut for Vector<T, 4> {
     }
 }
 
-impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize>
-    core::ops::Index<(usize, usize)> for row_major::Matrix<T, R, C>
+impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize, L: MatrixLayout>
+    core::ops::Index<(usize, usize)> for crate::Matrix<T, R, C, L>
 {
     type Output = T;
     #[inline]
     fn index(&self, (i, j): (usize, usize)) -> &Self::Output {
         // `StoredVerbatim` guarantees that active storage lanes are referenceable;
         // the storage implementation returns `None` rather than a padding lane.
-        if let Some(value) = row_major::call!(<T, R, C>::index(&self.storage, (j, i))) {
+        if let Some(value) = matrix::call!(<T, R, C>::index(&self.storage, (i, j))) {
             value
         } else {
             std::hint::cold_path();
@@ -1160,45 +1080,14 @@ impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize>
         }
     }
 }
-impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize>
-    core::ops::IndexMut<(usize, usize)> for row_major::Matrix<T, R, C>
+impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize, L: MatrixLayout>
+    core::ops::IndexMut<(usize, usize)> for crate::Matrix<T, R, C, L>
 {
     #[inline]
     fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut Self::Output {
         // The reference is derived from the exclusive borrow of `self`, which
         // prevents another storage reference from overlapping its lifetime.
-        if let Some(value) = row_major::call!(<T, R, C>::index_mut(&mut self.storage, (j, i))) {
-            value
-        } else {
-            std::hint::cold_path();
-            panic!(
-                "matrix index out of bounds: the dimensions are {R}x{C} but the index is ({i}, {j})"
-            )
-        }
-    }
-}
-impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize>
-    core::ops::Index<(usize, usize)> for column_major::Matrix<T, R, C>
-{
-    type Output = T;
-    #[inline]
-    fn index(&self, (i, j): (usize, usize)) -> &Self::Output {
-        if let Some(value) = column_major::call!(<T, R, C>::index(&self.storage, (i, j))) {
-            value
-        } else {
-            std::hint::cold_path();
-            panic!(
-                "matrix index out of bounds: the dimensions are {R}x{C} but the index is ({i}, {j})"
-            )
-        }
-    }
-}
-impl<T: Element<R, C> + StoredVerbatim, const R: usize, const C: usize>
-    core::ops::IndexMut<(usize, usize)> for column_major::Matrix<T, R, C>
-{
-    #[inline]
-    fn index_mut(&mut self, (i, j): (usize, usize)) -> &mut Self::Output {
-        if let Some(value) = column_major::call!(<T, R, C>::index_mut(&mut self.storage, (i, j))) {
+        if let Some(value) = matrix::call!(<T, R, C>::index_mut(&mut self.storage, (i, j))) {
             value
         } else {
             std::hint::cold_path();
@@ -1277,4 +1166,65 @@ where
     fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::select_any_mask::<U>(self.storage, true_values.storage, false_values.storage)))
     }
+}
+
+/// Multiplies an `R × K` matrix by a `K × C` matrix with the `*` operator.
+///
+/// ```text
+/// ┌ a00 a01 a02 a03 ┐   ┌ b00 b01 b02 b03 ┐   ┌ c00 c01 c02 c03 ┐
+/// │ a10 a11 a12 a13 │ × │ b10 b11 b12 b13 │ = │ c10 c11 c12 c13 │
+/// │ a20 a21 a22 a23 │   │ b20 b21 b22 b23 │   │ c20 c21 c22 c23 │
+/// └ a30 a31 a32 a33 ┘   └ b30 b31 b32 b33 ┘   └ c30 c31 c32 c33 ┘
+/// ```
+///
+/// ```
+/// use algea::column_major::Matrix;
+///
+/// let a = Matrix::<f32, 2, 3>::from_columns([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]);
+/// let b = Matrix::<f32, 3, 2>::from_columns([[7.0, 9.0, 11.0], [8.0, 10.0, 12.0]]);
+/// assert_eq!((a * b).to_columns(), [[58.0, 139.0], [64.0, 154.0]]);
+/// ```
+impl<T: FloatElement, const R: usize, const K: usize, const C: usize, L: MatrixLayout>
+    core::ops::Mul<crate::Matrix<T, K, C, L>> for crate::Matrix<T, R, K, L>
+where
+    Dimension<R>: SupportedDimension,
+    Dimension<K>: SupportedDimension,
+    Dimension<C>: SupportedDimension,
+{
+    type Output = crate::Matrix<T, R, C, L>;
+    #[inline]
+    fn mul(self, rhs: crate::Matrix<T, K, C, L>) -> Self::Output {
+        use crate::Matrix;
+        matrix::call!(Matrix(<T, R, C>::matmul::<K>(self.storage, rhs.storage)))
+    }
+}
+
+impl<T: FloatElement<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::ops::MulAssign<crate::Matrix<T, C, C, L>> for crate::Matrix<T, R, C, L>
+{
+    #[inline]
+    fn mul_assign(&mut self, rhs: crate::Matrix<T, C, C, L>) { *self = *self * rhs; }
+}
+
+impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
+    /// The identity matrix.
+    pub const IDENTITY: Self = matrix::call!(Self(<T, D, D>::IDENTITY));
+
+    /// Returns the main diagonal as a vector.
+    #[inline]
+    pub fn diagonal(self) -> Vector<T, D> {
+        matrix::call!(Vector(<T, D, D>::diagonal(self.storage)))
+    }
+}
+
+impl<T: FloatElement<D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L>
+where
+    Dimension<D>: __internal::AtMost<4>,
+{
+    /// Returns the multiplicative inverse of the matrix.
+    #[inline]
+    pub fn inverse(self) -> Self { matrix::call!(Self(<T, D, D>::inverse(self.storage))) }
+    /// Returns the determinant of the matrix.
+    #[inline]
+    pub fn determinant(self) -> T { matrix::call!(<T, D, D>::determinant(self.storage)) }
 }

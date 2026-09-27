@@ -1,10 +1,4 @@
-use crate::{
-    Element,
-    FloatElement,
-    Vector,
-    private,
-    support::{Dimension, SupportedDimension},
-};
+use crate::{FloatElement, Vector};
 
 /// A fixed-size matrix stored as column vectors.
 ///
@@ -20,14 +14,7 @@ use crate::{
 ///     │ c0[3] c1[3] c2[3] c3[3] │
 ///     └                         ┘
 /// ```
-pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize> {
-    pub(crate) storage: private::ConstStorage<T, R, C>,
-}
-
-#[rustfmt::skip]
-#[allow(clippy::duplicate_mod)]
-#[path = "../row_major/impls.rs"]
-mod impls;
+pub type Matrix<T, const R: usize, const C: usize> = crate::Matrix<T, R, C, ColumnMajor>;
 
 macro_rules! call {
     (<$t:ty, $r:tt, $c:tt>::$f:ident $(::<$gen:tt>)? $(($($arg:expr),*))?) => {
@@ -41,37 +28,8 @@ macro_rules! call {
         $w { storage: $crate::column_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }
     };
 }
+use crate::marker::ColumnMajor;
 pub(crate) use call;
-
-/// Multiplies an `R × K` matrix by a `K × C` matrix with the `*` operator.
-///
-/// ```text
-/// ┌ a00 a01 a02 a03 ┐   ┌ b00 b01 b02 b03 ┐   ┌ c00 c01 c02 c03 ┐
-/// │ a10 a11 a12 a13 │ × │ b10 b11 b12 b13 │ = │ c10 c11 c12 c13 │
-/// │ a20 a21 a22 a23 │   │ b20 b21 b22 b23 │   │ c20 c21 c22 c23 │
-/// └ a30 a31 a32 a33 ┘   └ b30 b31 b32 b33 ┘   └ c30 c31 c32 c33 ┘
-/// ```
-///
-/// ```
-/// use algea::column_major::Matrix;
-///
-/// let a = Matrix::<f32, 2, 3>::from_columns([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]);
-/// let b = Matrix::<f32, 3, 2>::from_columns([[7.0, 9.0, 11.0], [8.0, 10.0, 12.0]]);
-/// assert_eq!((a * b).to_columns(), [[58.0, 139.0], [64.0, 154.0]]);
-/// ```
-impl<T: FloatElement, const R: usize, const K: usize, const C: usize>
-    core::ops::Mul<Matrix<T, K, C>> for Matrix<T, R, K>
-where
-    Dimension<R>: SupportedDimension,
-    Dimension<K>: SupportedDimension,
-    Dimension<C>: SupportedDimension,
-{
-    type Output = Matrix<T, R, C>;
-    #[inline]
-    fn mul(self, rhs: Matrix<T, K, C>) -> Self::Output {
-        call!(Matrix(<T, R, C>::matmul::<K>(self.storage, rhs.storage)))
-    }
-}
 
 /// Enables multiplication of an `R × C` matrix by a `C`-lane column vector with the
 /// `*` operator.
@@ -125,11 +83,4 @@ impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Matri
     fn mul(self, rhs: Matrix<T, 1, C>) -> Self::Output {
         call!(Matrix(<T, R, C>::matmul::<1>(self.storage, rhs.storage)))
     }
-}
-
-impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::MulAssign<Matrix<T, C, C>>
-    for Matrix<T, R, C>
-{
-    #[inline]
-    fn mul_assign(&mut self, rhs: Matrix<T, C, C>) { *self = *self * rhs; }
 }

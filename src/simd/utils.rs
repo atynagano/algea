@@ -579,8 +579,6 @@ mod _64bit_types {
             unsafe { core::mem::transmute(a) }
         }
         #[inline(always)]
-        pub(crate) const fn splat(a: f32) -> Self { Self::new([a; 2]) }
-        #[inline(always)]
         pub(crate) fn to_array(self) -> [f32; 2] {
             let mut arr = [0.; 2];
             unsafe { vst1_f32(arr.as_mut_ptr(), self.0) };

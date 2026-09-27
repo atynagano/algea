@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+use marker::MatrixLayout;
 pub use support::{Element, FloatElement, IntElement, MaskElement, SintElement, UintElement};
 
 #[doc(hidden)]
@@ -67,6 +68,14 @@ pub struct Vector<T: Element<D>, const D: usize> {
 pub struct Mask<T: MaskElement<D>, const D: usize> {
     // Mask lanes use the width of `T` and contain either all one bits or all zero bits.
     pub(crate) storage: utils::ConstMaskStorage<T, D>,
+}
+
+/// A fixed-size matrix whose storage orientation is selected by `L`.
+///
+/// The [`row_major::Matrix`] and [`column_major::Matrix`] aliases provide the
+/// customary public names with `L` fixed to one orientation.
+pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> {
+    pub(crate) storage: <L as private::SealedMatrixLayout>::StorageRxC<T, R, C>,
 }
 
 /// Constructs a vector by concatenating scalar and vector expressions.
@@ -170,6 +179,18 @@ macro_rules! impl_cast_from {
 /// Marker traits describing scalar lane capabilities.
 pub mod marker {
     use crate::{private, support::SupportedElement};
+
+    /// Selects the physical storage orientation of a [`Matrix`](crate::Matrix).
+    #[expect(private_bounds)]
+    pub trait MatrixLayout: private::SealedMatrixLayout {}
+
+    /// Column-major matrix storage.
+    pub enum ColumnMajor {}
+    /// Row-major matrix storage.
+    pub enum RowMajor {}
+
+    impl MatrixLayout for ColumnMajor {}
+    impl MatrixLayout for RowMajor {}
 
     // This models Rust `as` conversions rather than `std::simd::SimdCast`: conversions involving
     // `bool` or `char` can be one-way rather than forming a symmetric pair.
@@ -484,7 +505,7 @@ pub mod support {
 pub(crate) mod private {
     pub(crate) use crate::definitions::{SealedStorageElement, SealedSupportedDimension};
     use crate::{
-        marker::{Float, Int, Lane, StoredVerbatim},
+        marker::{ColumnMajor, Float, Int, Lane, RowMajor, StoredVerbatim},
         support::{Dimension, SupportedDimension, SupportedElement},
         utils::{self, ArithOps, CanonicalMask, DimMaskStorage},
     };
@@ -691,7 +712,7 @@ pub(crate) mod private {
         T: SealedSupportedElement,
         R: SealedSupportedDimension,
         C: SealedSupportedDimension = Dimension<1>,
-    >: Copy + ArithOps<Scalar = T>
+    >: ArithOps<Scalar = T>
     {
         const ZERO: Self = ArithOps::ZERO_;
         const ONE: Self = ArithOps::ONE_;
@@ -1083,6 +1104,185 @@ pub(crate) mod private {
         #[expect(dead_code)]
         fn try_inverse(_a: Self) -> Option<Self> { unimplemented!() }
         fn determinant(_a: Self) -> T { unimplemented!() }
+    }
+
+    pub(crate) trait SealedMatrixLayout: Sized {
+        type StorageRxC<T, const R: usize, const C: usize>: OrientedStorageOps<T, R, C, Self>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    impl SealedMatrixLayout for ColumnMajor {
+        type StorageRxC<T, const R: usize, const C: usize>
+            = ConstStorage<T, R, C>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    impl SealedMatrixLayout for RowMajor {
+        type StorageRxC<T, const R: usize, const C: usize>
+            = ConstStorage<T, C, R>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    pub(crate) trait OrientedStorageOps<T, const R: usize, const C: usize, L>: Copy
+    where
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+        L: SealedMatrixLayout,
+    {
+        const ZERO: Self;
+        const ONE: Self;
+        const IDENTITY: Self;
+
+        fn filled(value: T) -> Self;
+        fn transpose(a: Self) -> L::StorageRxC<T, C, R>;
+        fn cast_from<U: SealedSupportedElement>(_a: L::StorageRxC<U, R, C>) -> Self;
+        fn add(a: Self, b: Self) -> Self;
+        fn sub(a: Self, b: Self) -> Self;
+        fn mul(a: Self, b: Self) -> Self;
+        fn div(a: Self, b: Self) -> Self;
+        fn neg(a: Self) -> Self;
+        fn eq(a: Self, b: Self) -> bool;
+        fn ne(a: Self, b: Self) -> bool;
+        fn index(a: &Self, index: (usize, usize)) -> Option<&T>;
+        fn index_mut(a: &mut Self, index: (usize, usize)) -> Option<&mut T>;
+        fn with_major_slices<U>(a: Self, f: impl FnOnce(&[&[T]]) -> U) -> U;
+        fn matmul<const K: usize>(a: L::StorageRxC<T, R, K>, b: L::StorageRxC<T, K, C>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension;
+        fn diagonal<const D: usize>(a: L::StorageRxC<T, D, D>) -> ConstStorage<T, D>
+        where
+            Dimension<D>: SealedSupportedDimension;
+        fn inverse(a: Self) -> Self;
+        fn determinant(a: Self) -> T;
+    }
+
+    macro_rules! impl_oriented_storage_ops {
+        () => {
+            const ZERO: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ZERO;
+            const ONE: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ONE;
+            const IDENTITY: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::IDENTITY;
+
+            #[inline(always)]
+            fn filled(value: T) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::filled(value)
+            }
+            #[inline(always)]
+            fn transpose(a: Self) -> ConstStorage<T, C, R> {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::transpose(a)
+            }
+            #[inline(always)]
+            fn cast_from<U: SealedSupportedElement>(a: ConstStorage<U, R, C>) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::cast_from(a)
+            }
+            #[inline(always)]
+            fn add(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::add(a, b)
+            }
+            #[inline(always)]
+            fn sub(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::sub(a, b)
+            }
+            #[inline(always)]
+            fn mul(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::mul(a, b)
+            }
+            #[inline(always)]
+            fn div(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::div(a, b)
+            }
+            #[inline(always)]
+            fn neg(a: Self) -> Self { <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::neg(a) }
+            #[inline(always)]
+            fn eq(a: Self, b: Self) -> bool {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::eq(a, b)
+            }
+            #[inline(always)]
+            fn ne(a: Self, b: Self) -> bool {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ne(a, b)
+            }
+            fn with_major_slices<U>(a: Self, f: impl FnOnce(&[&[T]]) -> U) -> U {
+                let major_vectors: [[T; R]; C] =
+                    <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::to_array(a);
+                let slices: [&[T]; C] = major_vectors.each_ref().map(|vector| vector.as_slice());
+                f(&slices)
+            }
+            #[inline(always)]
+            fn diagonal<const D: usize>(a: ConstStorage<T, D, D>) -> ConstStorage<T, D>
+            where
+                Dimension<D>: SealedSupportedDimension,
+            {
+                <ConstStorage<T, D, D> as StorageOps<T, Dimension<D>, Dimension<D>>>::diagonal(a)
+            }
+            #[inline(always)]
+            fn inverse(a: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::inverse(a)
+            }
+            #[inline(always)]
+            fn determinant(a: Self) -> T {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::determinant(a)
+            }
+        };
+    }
+
+    impl<S, T, const R: usize, const C: usize> OrientedStorageOps<T, R, C, ColumnMajor> for S
+    where
+        S: StorageOps<T, Dimension<R>, Dimension<C>>,
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+    {
+        impl_oriented_storage_ops!();
+
+        #[inline(always)]
+        fn index(a: &Self, index: (usize, usize)) -> Option<&T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index(a, index)
+        }
+        #[inline(always)]
+        fn index_mut(a: &mut Self, index: (usize, usize)) -> Option<&mut T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index_mut(a, index)
+        }
+        #[inline(always)]
+        fn matmul<const K: usize>(a: ConstStorage<T, R, K>, b: ConstStorage<T, K, C>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension,
+        {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::matmul::<K>(a, b)
+        }
+    }
+    impl<S, T, const R: usize, const C: usize> OrientedStorageOps<T, C, R, RowMajor> for S
+    where
+        S: StorageOps<T, Dimension<R>, Dimension<C>>,
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+    {
+        impl_oriented_storage_ops!();
+
+        #[inline(always)]
+        fn index(a: &Self, (row, column): (usize, usize)) -> Option<&T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index(a, (column, row))
+        }
+        #[inline(always)]
+        fn index_mut(a: &mut Self, (row, column): (usize, usize)) -> Option<&mut T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index_mut(a, (column, row))
+        }
+        #[inline(always)]
+        fn matmul<const K: usize>(a: ConstStorage<T, K, C>, b: ConstStorage<T, R, K>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension,
+        {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::matmul::<K>(b, a)
+        }
     }
 
     #[repr(C)]
