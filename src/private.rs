@@ -638,7 +638,14 @@ where
     fn sub(a: Self, b: Self) -> Self;
     fn mul(a: Self, b: Self) -> Self;
     fn div(a: Self, b: Self) -> Self;
+    fn rem(a: Self, b: Self) -> Self;
     fn neg(a: Self) -> Self;
+    fn not(a: Self) -> Self;
+    fn bitand(a: Self, b: Self) -> Self;
+    fn bitor(a: Self, b: Self) -> Self;
+    fn bitxor(a: Self, b: Self) -> Self;
+    fn shl(a: Self, b: Self) -> Self;
+    fn shr(a: Self, b: Self) -> Self;
     fn eq(a: Self, b: Self) -> bool;
     fn ne(a: Self, b: Self) -> bool;
     fn index(a: &Self, index: (usize, usize)) -> Option<&T>;
@@ -689,7 +696,33 @@ macro_rules! impl_oriented_storage_ops {
             <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::div(a, b)
         }
         #[inline(always)]
+        fn rem(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::rem(a, b)
+        }
+        #[inline(always)]
         fn neg(a: Self) -> Self { <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::neg(a) }
+        #[inline(always)]
+        fn not(a: Self) -> Self { <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::not(a) }
+        #[inline(always)]
+        fn bitand(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::bitand(a, b)
+        }
+        #[inline(always)]
+        fn bitor(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::bitor(a, b)
+        }
+        #[inline(always)]
+        fn bitxor(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::bitxor(a, b)
+        }
+        #[inline(always)]
+        fn shl(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::shl(a, b)
+        }
+        #[inline(always)]
+        fn shr(a: Self, b: Self) -> Self {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::shr(a, b)
+        }
         #[inline(always)]
         fn eq(a: Self, b: Self) -> bool {
             <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::eq(a, b)
