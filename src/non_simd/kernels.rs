@@ -7,27 +7,24 @@ impl Float for f32 {}
 impl Float for f64 {}
 
 pub(crate) mod reduce {
+    #![allow(unused_parens)]
 
+    use crate::utils::{ArithOps, arith};
+
+    // TODO(integer-reductions): when a public integer API reaches this kernel, add debug-mode
+    // overflow tests through that API to verify that reduction does not panic.
     #[inline(always)]
-    pub(crate) fn sum<T: Copy + core::ops::Add<Output = T>, const N: usize>(v: [T; N]) -> T {
+    pub(crate) fn sum<T: ArithOps<Scalar = T>, const N: usize>(v: [T; N]) -> T {
         match N {
             1 => v[0],
-            2 => v[0] + v[1],
-            3 => v[0] + v[1] + v[2],
+            2 => arith!((v[0]) + (v[1])),
+            3 => arith!((arith!((v[0]) + (v[1]))) + (v[2])),
             // Preserve this addition tree to avoid the usual `hadd` latency and throughput cost;
             // revisit it only with representative benchmark or codegen evidence.
-            4 => (v[0] + v[2]) + (v[1] + v[3]),
+            4 => arith!((arith!((v[0]) + (v[2]))) + (arith!((v[1]) + (v[3])))),
             _ => unimplemented!(),
         }
     }
-}
-
-#[inline(always)]
-pub(crate) fn diagonal<T: Copy, const N: usize>(a: [[T; N]; N]) -> [[T; N]; 1] {
-    [core::array::from_fn(
-        #[inline(always)]
-        |i| a[i][i],
-    )]
 }
 
 #[inline(always)]
@@ -78,11 +75,31 @@ fn div<T: Float, const N: usize>(a: [T; N], b: [T; N]) -> [T; N] {
     )
 }
 
+#[inline(always)]
+fn transmute_array<T: Copy, const M: usize, const N: usize, const M2: usize, const N2: usize>(
+    a: [[T; M]; N],
+) -> [[T; M2]; N2] {
+    assert_eq!(M, M2);
+    assert_eq!(N, N2);
+    let a: &[[T; M2]; N2] = a.as_flattened().as_chunks::<M2>().0.try_into().unwrap();
+    *a
+}
+
 pub(crate) mod inverse {
     #![allow(unused_parens)]
 
-    use super::{Float, add, div, mul, permute, permute2};
+    use super::{Float, add, div, mul, permute, permute2, transmute_array};
     use crate::utils::arith;
+
+    pub(crate) fn inverse<T: Float, const M: usize, const N: usize>(a: [[T; M]; N]) -> [[T; M]; N] {
+        match (M, N) {
+            (1, 1) => transmute_array(_1x1(transmute_array(a))),
+            (2, 2) => transmute_array(_2x2(transmute_array(a))),
+            (3, 3) => transmute_array(_3x3(transmute_array(a))),
+            (4, 4) => transmute_array(_4x4(transmute_array(a))),
+            _ => unimplemented!(),
+        }
+    }
 
     #[inline(always)]
     fn matmul2x2x2<T: Float>(a: [T; 4], b: [T; 4]) -> [T; 4] {
@@ -124,6 +141,7 @@ pub(crate) mod inverse {
         [[c0[1], c1[1], c2[1]], [c0[2], c1[2], c2[2]], [c0[0], c1[0], c2[0]]]
     }
 
+    // TODO: Investigate sharing the 4x4 inverse implementation with the SIMD backend.
     #[inline(always)]
     pub(crate) fn _4x4<T: Float>(a: [[T; 4]; 4]) -> [[T; 4]; 4] {
         #[inline(always)]
@@ -191,8 +209,19 @@ pub(crate) mod inverse {
 pub(crate) mod determinant {
     #![allow(unused_parens)]
 
-    use super::{Float, add, mul, permute, permute2};
+    use super::{Float, add, mul, permute, permute2, transmute_array};
     use crate::utils::arith;
+
+    #[inline(always)]
+    pub(crate) fn determinant<T: Float, const M: usize, const N: usize>(a: [[T; M]; N]) -> T {
+        match (M, N) {
+            (1, 1) => a[0][0],
+            (2, 2) => _2x2(transmute_array(a)),
+            (3, 3) => _3x3(transmute_array(a)),
+            (4, 4) => _4x4(transmute_array(a)),
+            _ => unimplemented!(),
+        }
+    }
 
     #[inline(always)]
     pub(crate) fn _2x2<T: Float>([a, b]: [[T; 2]; 2]) -> T {
@@ -312,6 +341,8 @@ pub(crate) mod matmul {
         // Match the SIMD addition order where doing so has no performance cost, because a
         // different order can amplify numerical differences. Bit-identical results across
         // platforms are not guaranteed; FMA contraction and its rounding may still differ.
+        // When this kernel is generalized to integer matrices, multiplication and addition must
+        // use explicit wrapping semantics so scalar debug builds match SIMD and release builds.
         match (R, K, C) {
             // x, x + y, (x + y) + z
             (_, 1..=3, _) => core::array::from_fn(
@@ -372,26 +403,5 @@ pub(crate) mod matmul {
             ),
             _ => unimplemented!(),
         }
-    }
-
-    // These aliases are used by row_major and column_major modules
-    macro_rules! impl_mat_mul_mat {
-        ([$($a:literal),*]; $b:tt; $c:tt) => {
-            $(impl_mat_mul_mat!(@a $a; $b; $c);)*
-        };
-        (@a $a:literal; [$($b:literal),*]; $c:tt) => {
-            $(impl_mat_mul_mat!(@ab $a; $b; $c);)*
-        };
-        (@ab $a:literal; $b:literal; [$($c:literal),*]) => {
-            $(paste::paste!(pub(crate) use super::matmul as [<matmul $a x $b x $c>];);)*
-        };
-    }
-
-    pub(crate) mod f32 {
-        impl_mat_mul_mat!([1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
-    }
-
-    pub(crate) mod f64 {
-        impl_mat_mul_mat!([1, 2, 3, 4]; [1, 2, 3, 4]; [1, 2, 3, 4]);
     }
 }

@@ -1,4 +1,15 @@
-use crate::private::{Indices2, Indices3, Indices4, SealedElement, SwizzleDispatch};
+use crate::{
+    private::{
+        ConstStorage,
+        Indices2,
+        Indices3,
+        Indices4,
+        SealedSupportedDimension,
+        SealedSupportedElement,
+        SwizzleDispatch,
+    },
+    support::Dimension,
+};
 
 // `SwizzleDispatch::dispatch` is never actually called on this backend: `swizzle2`/`swizzle3`/
 // `swizzle4` in `non_simd.rs` swizzle directly by indexing the `[[T; M]; N]` array (e.g.
@@ -9,9 +20,11 @@ use crate::private::{Indices2, Indices3, Indices4, SealedElement, SwizzleDispatc
 impl<T, const M: usize, const N: usize, const I0: usize, const I1: usize> SwizzleDispatch<T, M, N>
     for Indices2<I0, I1>
 {
-    fn dispatch(_v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+    fn dispatch(_v: ConstStorage<T, M>) -> ConstStorage<T, N>
     where
-        T: SealedElement<M, 1> + SealedElement<N, 1>,
+        T: SealedSupportedElement,
+        Dimension<M>: SealedSupportedDimension,
+        Dimension<N>: SealedSupportedDimension,
     {
         unimplemented!()
     }
@@ -19,9 +32,11 @@ impl<T, const M: usize, const N: usize, const I0: usize, const I1: usize> Swizzl
 impl<T, const M: usize, const N: usize, const I0: usize, const I1: usize, const I2: usize>
     SwizzleDispatch<T, M, N> for Indices3<I0, I1, I2>
 {
-    fn dispatch(_v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+    fn dispatch(_v: ConstStorage<T, M>) -> ConstStorage<T, N>
     where
-        T: SealedElement<M, 1> + SealedElement<N, 1>,
+        T: SealedSupportedElement,
+        Dimension<M>: SealedSupportedDimension,
+        Dimension<N>: SealedSupportedDimension,
     {
         unimplemented!()
     }
@@ -36,9 +51,11 @@ impl<
     const I3: usize,
 > SwizzleDispatch<T, M, N> for Indices4<I0, I1, I2, I3>
 {
-    fn dispatch(_v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+    fn dispatch(_v: ConstStorage<T, M>) -> ConstStorage<T, N>
     where
-        T: SealedElement<M, 1> + SealedElement<N, 1>,
+        T: SealedSupportedElement,
+        Dimension<M>: SealedSupportedDimension,
+        Dimension<N>: SealedSupportedDimension,
     {
         unimplemented!()
     }

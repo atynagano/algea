@@ -2,6 +2,7 @@ use super::mask::i32::*;
 use crate::{
     private,
     simd::utils::{compute_i32x2, f32x2, i32x2, u32x2},
+    support::Dimension,
     utils::{ArithOps, CanonicalMask, MaskOps, Store},
 };
 use wide::{f32x4, i32x4, u32x4};
@@ -41,23 +42,43 @@ fn compact_two_lane_storage_has_expected_layout() {
     assert_eq!(core::mem::align_of::<u32x2>(), 8);
 }
 
+macro_rules! mask_all {
+    ($m:tt, $n:tt, $mask:expr) => {
+        <private::ConstStorage<i32, $m, $n> as private::StorageOps<
+            i32,
+            Dimension<$m>,
+            Dimension<$n>,
+        >>::all(canonical($mask))
+    };
+}
+
+macro_rules! mask_any {
+    ($m:tt, $n:tt, $mask:expr) => {
+        <private::ConstStorage<i32, $m, $n> as private::StorageOps<
+            i32,
+            Dimension<$m>,
+            Dimension<$n>,
+        >>::any(canonical($mask))
+    };
+}
+
 macro_rules! assert_mask_query {
     ($m:tt, $n:tt, $all_true:expr, $all_false:expr, $mixed:expr) => {{
-        assert!(<i32 as private::SealedElement<$m, $n>>::all(canonical($all_true)));
-        assert!(<i32 as private::SealedElement<$m, $n>>::any(canonical($all_true)));
-        assert!(!<i32 as private::SealedElement<$m, $n>>::all(canonical($all_false)));
-        assert!(!<i32 as private::SealedElement<$m, $n>>::any(canonical($all_false)));
-        assert!(!<i32 as private::SealedElement<$m, $n>>::all(canonical($mixed)));
-        assert!(<i32 as private::SealedElement<$m, $n>>::any(canonical($mixed)));
+        assert!(mask_all!($m, $n, $all_true));
+        assert!(mask_any!($m, $n, $all_true));
+        assert!(!mask_all!($m, $n, $all_false));
+        assert!(!mask_any!($m, $n, $all_false));
+        assert!(!mask_all!($m, $n, $mixed));
+        assert!(mask_any!($m, $n, $mixed));
     }};
 }
 
 #[test]
 fn all_and_any_cover_all_16_storage_shapes() {
-    assert!(<i32 as private::SealedElement<1, 1>>::all(canonical(T)));
-    assert!(<i32 as private::SealedElement<1, 1>>::any(canonical(T)));
-    assert!(!<i32 as private::SealedElement<1, 1>>::all(canonical(F)));
-    assert!(!<i32 as private::SealedElement<1, 1>>::any(canonical(F)));
+    assert!(mask_all!(1, 1, T));
+    assert!(mask_any!(1, 1, T));
+    assert!(!mask_all!(1, 1, F));
+    assert!(!mask_any!(1, 1, F));
     assert_mask_query!(
         2,
         1,

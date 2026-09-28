@@ -1,4 +1,4 @@
-use crate::{__internal, Element, Vector, api::vector::call};
+use crate::{__internal, Element, Vector, api::vector::call, support::Dimension};
 
 macro_rules! impl_swizzle_method {
     ($name:ident => [$index:literal]) => {
@@ -44,7 +44,7 @@ macro_rules! impl_swizzles {
         #[cfg_attr(not(doc), doc(hidden))]
         impl<T: Element<D>, const D: usize> Vector<T, D>
         where
-            __internal::Dimension<D>: __internal::AtLeast<$min>,
+            Dimension<D>: __internal::AtLeast<$min>,
         {
             $(impl_swizzle_method!($name => [$($index),+]);)*
         }
@@ -54,7 +54,7 @@ macro_rules! impl_swizzles {
 #[cfg_attr(not(doc), doc(hidden))]
 impl<T: Element<D>, const D: usize> Vector<T, D>
 where
-    __internal::Dimension<D>: __internal::AtLeast<1>,
+    Dimension<D>: __internal::AtLeast<1>,
 {
     // TODO(api-cleanup): Decide whether x(), y(), z(), and w() should return T instead of
     // Vector<T, 1> before restoring one-lane swizzles.

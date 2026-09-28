@@ -175,3 +175,33 @@ macro_rules! all_vector_matrix_mul_assign {
 
 all_vector_matrix_mul_assign!(f32, vector_matrix_mul_assign);
 all_vector_matrix_mul_assign!(f64, f64_vector_matrix_mul_assign);
+
+macro_rules! matrix_mul_assign_test {
+    ($name:ident, $module:ident, $constructor:ident, $extractor:ident, $lhs:expr, $rhs:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let mut matrix = $module::Matrix::<f32, 2, 3>::$constructor($lhs);
+            matrix *= $module::Matrix::<f32, 3, 3>::$constructor($rhs);
+            assert_eq!(matrix.$extractor(), $expected);
+        }
+    };
+}
+
+matrix_mul_assign_test!(
+    row_major_matrix_mul_assign,
+    row_major,
+    from_rows,
+    to_rows,
+    [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+    [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0], [13.0, 14.0, 15.0]],
+    [[66.0, 72.0, 78.0], [156.0, 171.0, 186.0]]
+);
+matrix_mul_assign_test!(
+    column_major_matrix_mul_assign,
+    column_major,
+    from_columns,
+    to_columns,
+    [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]],
+    [[7.0, 10.0, 13.0], [8.0, 11.0, 14.0], [9.0, 12.0, 15.0]],
+    [[66.0, 156.0], [72.0, 171.0], [78.0, 186.0]]
+);

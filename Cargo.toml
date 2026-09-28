@@ -35,6 +35,20 @@ nalgebra = "0.35.0"
 name = "benchmarks"
 harness = false
 
+[[example]]
+name = "codegen"
+path = "codegen/lib.rs"
+crate-type = ["rlib"]
+test = false
+bench = false
+
+[profile.codegen]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+debug = false
+incremental = false
+
 [lints.rust]
 missing_docs = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(algea_force_simd, values(none(), "true", "false"))'] }

@@ -11,11 +11,95 @@ use crate::{
     Vector,
     marker::{Float, Int, Lane},
     private,
-    private::{Indices2, Indices3, Indices4, SwizzleDispatch, SwizzleDispatchAny},
-    utils::{ArithOps, CanonicalMask, Load, MaskStorage, Store, if_},
+    private::{
+        ConstStorage,
+        Indices2,
+        Indices3,
+        Indices4,
+        SealedSupportedElement,
+        StorageOps,
+        SwizzleDispatch,
+        SwizzleDispatchAny,
+    },
+    support::Dimension,
+    utils::{ArithOps, CanonicalMask, ConstMaskStorage, Load, Store, if_},
 };
+use definitions::{SealedStorageElement, SealedSupportedDimension};
 use utils::{Simd2Ext, f32x2, i32x2, u32x2};
 use wide::{f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
+
+pub(crate) mod definitions {
+    use super::SealedSimdElement;
+    use crate::{
+        private::{SealedSupportedElement, StorageOps},
+        support::Dimension,
+    };
+
+    pub(crate) trait SealedSupportedDimension: Sized {
+        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension>: StorageOps<T, Self, C>;
+        type Storage1xN<T: SealedSupportedElement>: StorageOps<T, Dimension<1>, Self>;
+        type Storage2xN<T: SealedSupportedElement>: StorageOps<T, Dimension<2>, Self>;
+        type Storage3xN<T: SealedSupportedElement>: StorageOps<T, Dimension<3>, Self>;
+        type Storage4xN<T: SealedSupportedElement>: StorageOps<T, Dimension<4>, Self>;
+    }
+
+    impl SealedSupportedDimension for Dimension<1> {
+        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension> = C::Storage1xN<T>;
+        type Storage1xN<T: SealedSupportedElement> = <T as SealedSimdElement<1, 1>>::Storage;
+        type Storage2xN<T: SealedSupportedElement> = <T as SealedSimdElement<2, 1>>::Storage;
+        type Storage3xN<T: SealedSupportedElement> = <T as SealedSimdElement<3, 1>>::Storage;
+        type Storage4xN<T: SealedSupportedElement> = <T as SealedSimdElement<4, 1>>::Storage;
+    }
+    impl SealedSupportedDimension for Dimension<2> {
+        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension> = C::Storage2xN<T>;
+        type Storage1xN<T: SealedSupportedElement> = <T as SealedSimdElement<1, 2>>::Storage;
+        type Storage2xN<T: SealedSupportedElement> = <T as SealedSimdElement<2, 2>>::Storage;
+        type Storage3xN<T: SealedSupportedElement> = <T as SealedSimdElement<3, 2>>::Storage;
+        type Storage4xN<T: SealedSupportedElement> = <T as SealedSimdElement<4, 2>>::Storage;
+    }
+    impl SealedSupportedDimension for Dimension<3> {
+        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension> = C::Storage3xN<T>;
+        type Storage1xN<T: SealedSupportedElement> = <T as SealedSimdElement<1, 3>>::Storage;
+        type Storage2xN<T: SealedSupportedElement> = <T as SealedSimdElement<2, 3>>::Storage;
+        type Storage3xN<T: SealedSupportedElement> = <T as SealedSimdElement<3, 3>>::Storage;
+        type Storage4xN<T: SealedSupportedElement> = <T as SealedSimdElement<4, 3>>::Storage;
+    }
+    impl SealedSupportedDimension for Dimension<4> {
+        type StorageNxC<T: SealedSupportedElement, C: SealedSupportedDimension> = C::Storage4xN<T>;
+        type Storage1xN<T: SealedSupportedElement> = <T as SealedSimdElement<1, 4>>::Storage;
+        type Storage2xN<T: SealedSupportedElement> = <T as SealedSimdElement<2, 4>>::Storage;
+        type Storage3xN<T: SealedSupportedElement> = <T as SealedSimdElement<3, 4>>::Storage;
+        type Storage4xN<T: SealedSupportedElement> = <T as SealedSimdElement<4, 4>>::Storage;
+    }
+
+    pub(crate) trait SealedStorageElement:
+        SealedSimdElement<1, 1>
+        + SealedSimdElement<2, 1>
+        + SealedSimdElement<3, 1>
+        + SealedSimdElement<4, 1>
+        + SealedSimdElement<1, 2>
+        + SealedSimdElement<2, 2>
+        + SealedSimdElement<3, 2>
+        + SealedSimdElement<4, 2>
+        + SealedSimdElement<1, 3>
+        + SealedSimdElement<2, 3>
+        + SealedSimdElement<3, 3>
+        + SealedSimdElement<4, 3>
+        + SealedSimdElement<1, 4>
+        + SealedSimdElement<2, 4>
+        + SealedSimdElement<3, 4>
+        + SealedSimdElement<4, 4>
+    {
+    }
+}
+
+pub(crate) trait SealedSimdElement<const R: usize, const C: usize> {
+    type Storage: StorageOps<Self, Dimension<R>, Dimension<C>>
+    where
+        Self: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension;
+}
 
 macro_rules! arg_or_value {
     ($arg:ident) => {
@@ -93,7 +177,7 @@ macro_rules! reduce_array {
 macro_rules! impl_layout {
     ((
         size: [$m:tt, $n:tt],
-        self: $self_ty:ident,
+        self: $t:ident,
         storage: $primitive:tt x $len:tt,
         // How many of each physical `$primitive` unit's lanes hold real elements versus
         // padding. Not yet consumed here; `map2`/`any`/`all`/etc. still rely on `$len` alone
@@ -107,7 +191,7 @@ macro_rules! impl_layout {
             paste::paste! {
                 #[inline(always)]
                 fn [<mask $bits x $m x $n _all>](
-                    mask: CanonicalMask<<<$self_ty as private::SealedElement<$m, $n>>::Storage as Load>::Output>
+                    mask: CanonicalMask<<<$t as SealedSimdElement<$m, $n>>::Storage as Load>::Output>
                 ) -> bool {
                     let mask = mask.into_parts();
                     let mask = unpack_array!(ref: &mask; $len);
@@ -120,7 +204,7 @@ macro_rules! impl_layout {
                 }
                 #[inline(always)]
                 fn [<mask $bits x $m x $n _any>](
-                    mask: CanonicalMask<<<$self_ty as private::SealedElement<$m, $n>>::Storage as Load>::Output>
+                    mask: CanonicalMask<<<$t as SealedSimdElement<$m, $n>>::Storage as Load>::Output>
                 ) -> bool {
                     let mask = mask.into_parts();
                     let mask = unpack_array!(ref: &mask; $len);
@@ -134,14 +218,13 @@ macro_rules! impl_layout {
             }
         }}
 
-        impl private::SealedElement<$m, $n> for $self_ty {
+        impl SealedSimdElement<$m, $n> for $t {
             type Storage = unpack_array!([$primitive; $len]);
+        }
 
-            const ZERO: Self::Storage = unpack_array!([($primitive::ZERO_); $len]);
-            const ONE: Self::Storage = unpack_array!([($primitive::ONE_); $len]);
-
+        impl private::StorageOps<$t, Dimension<$m>, Dimension<$n>> for unpack_array!([$primitive; $len]) {
             #[inline(always)]
-            fn map2(mut a: Self::Storage, b: Self::Storage, mut f: impl FnMut(Self, Self) -> Self) -> Self::Storage {
+            fn map2(mut a: Self, b: Self, mut f: impl FnMut($t, $t) -> $t) -> Self {
                 let array_a = unpack_array!(mut: &mut a; $len);
                 let array_b = unpack_array!(ref: &b; $len);
                 let valid = [$($valid),+];
@@ -155,64 +238,81 @@ macro_rules! impl_layout {
                 a
             }
             #[inline(always)]
-            fn index(a: &Self::Storage, index: (usize, usize)) -> Option<&Self> { paste::paste!(kernels::index::[<_ $bits bit>]::[<_ $m x $n>])(a, index) }
+            fn index(a: &Self, index: (usize, usize)) -> Option<&$t> {
+                paste::paste!(kernels::index::[<_ $bits bit>]::[<_ $m x $n>])(a, index)
+            }
             #[inline(always)]
-            fn index_mut(a: &mut Self::Storage, index: (usize, usize)) -> Option<&mut Self> { paste::paste!(kernels::index_mut::[<_ $bits bit>]::[<_ $m x $n>])(a, index) }
+            fn index_mut(a: &mut Self, index: (usize, usize)) -> Option<&mut $t> {
+                paste::paste!(kernels::index_mut::[<_ $bits bit>]::[<_ $m x $n>])(a, index)
+            }
+
             // `Vector::as_array` and `Vector::as_mut_array` are the only callers, and both
             // name a one-column shape.
             if_! { $n == 1 {
                 #[inline(always)]
-                fn as_array_first(a: &Self::Storage) -> &[Self; $m] { unpack_array!(ref: a; $len)[0].as_array_().first_chunk().unwrap() }
+                fn as_array_first(a: &Self) -> &[$t; $m] {
+                    unpack_array!(ref: a; $len)[0].as_array_().first_chunk().unwrap()
+                }
                 #[inline(always)]
-                fn as_mut_array_first(a: &mut Self::Storage) -> &mut [Self; $m] { unpack_array!(mut: a; $len)[0].as_mut_array_().first_chunk_mut().unwrap() }
+                fn as_mut_array_first(a: &mut Self) -> &mut [$t; $m] {
+                    unpack_array!(mut: a; $len)[0].as_mut_array_().first_chunk_mut().unwrap()
+                }
             }}
             #[inline(always)]
-            fn to_array(a: Self::Storage) -> [[Self; $m]; $n] { paste::paste!(kernels::to_array::[<_ $bits bit>]::[<_ $m x $n>])(a) }
+            fn to_array(a: Self) -> [[$t; $m]; $n] {
+                paste::paste!(kernels::to_array::[<_ $bits bit>]::[<_ $m x $n>])(a)
+            }
+            // TODO(codegen-optimization): Evaluate direct `to_vecs` extraction for the public
+            // matrix-to-vector conversions, which currently construct vectors through arrays.
             #[inline(always)]
-            fn from_array(a: [[Self; $m]; $n]) -> Self::Storage { paste::paste!(kernels::from_array::$self_ty::[<_ $m x $n>])(a) }
+            fn from_array(a: [[$t; $m]; $n]) -> Self {
+                // TODO: Dispatch this kernel by `$bits` instead of `$t`.
+                paste::paste!(kernels::from_array::$t::[<_ $m x $n>])(a)
+            }
             #[inline(always)]
-            fn from_vecs(a: [Vector<Self, $m>; $n]) -> Self::Storage { paste::paste!(kernels::from_vecs::$self_ty:: [<_ $m x $n>])(a) }
+            fn from_vecs(a: [Vector<$t, $m>; $n]) -> Self {
+                // TODO: Dispatch this kernel by `$bits` instead of `$t`.
+                paste::paste!(kernels::from_vecs::$t:: [<_ $m x $n>])(a)
+            }
             #[inline(always)]
-            fn cast_from_f32(a: <f32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_f32(a: <f32 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_f32_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from_i32(a: <i32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_i32(a: <i32 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_i32_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from_u32(a: <u32 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_u32(a: <u32 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_u32_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from_f64(a: <f64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_f64(a: <f64 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_f64_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from_i64(a: <i64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_i64(a: <i64 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_i64_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from_u64(a: <u64 as private::SealedElement<$m, $n>>::Storage) -> Self::Storage {
+            fn cast_from_u64(a: <u64 as SealedSimdElement<$m, $n>>::Storage) -> Self {
                 let a = RelayoutStorage::<$m, $n, $bits>::relayout_storage(a);
                 unpack_array!([(a) ArithOps::cast_from_u64_; [$($valid),+]])
             }
             #[inline(always)]
-            fn cast_from<U: private::SealedElement<$m, $n>>(
-                a: <U as private::SealedElement<$m, $n>>::Storage,
-            ) -> Self::Storage {
+            fn cast_from<U: SealedSupportedElement>(a: ConstStorage<U, $m, $n>) -> Self {
                 match U::TYPE {
-                    private::Type::F32 => <Self as private::SealedElement<$m, $n>>::cast_from_f32(<U as private::SealedElement<$m, $n>>::substantiate_f32(a)),
-                    private::Type::F64 => <Self as private::SealedElement<$m, $n>>::cast_from_f64(<U as private::SealedElement<$m, $n>>::substantiate_f64(a)),
-                    private::Type::I32 => <Self as private::SealedElement<$m, $n>>::cast_from_i32(<U as private::SealedElement<$m, $n>>::substantiate_i32(a)),
-                    private::Type::I64 => <Self as private::SealedElement<$m, $n>>::cast_from_i64(<U as private::SealedElement<$m, $n>>::substantiate_i64(a)),
-                    private::Type::U32 => <Self as private::SealedElement<$m, $n>>::cast_from_u32(<U as private::SealedElement<$m, $n>>::substantiate_u32(a)),
-                    private::Type::U64 => <Self as private::SealedElement<$m, $n>>::cast_from_u64(<U as private::SealedElement<$m, $n>>::substantiate_u64(a)),
+                    private::Type::F32 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_f32(ConstStorage::<U, $m, $n>::substantiate_f32(a)),
+                    private::Type::F64 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_f64(ConstStorage::<U, $m, $n>::substantiate_f64(a)),
+                    private::Type::I32 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_i32(ConstStorage::<U, $m, $n>::substantiate_i32(a)),
+                    private::Type::I64 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_i64(ConstStorage::<U, $m, $n>::substantiate_i64(a)),
+                    private::Type::U32 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_u32(ConstStorage::<U, $m, $n>::substantiate_u32(a)),
+                    private::Type::U64 => <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::cast_from_u64(ConstStorage::<U, $m, $n>::substantiate_u64(a)),
                 }
             }
 
@@ -223,39 +323,33 @@ macro_rules! impl_layout {
             if_! { $n == 1 {
                 #[inline(always)]
                 fn substantiate_mask(
-                    mask: MaskStorage<Self, $m, $n>,
-                ) -> MaskStorage<<Self as Lane>::Mask, $m, $n>
-                where
-                    Self: Lane<Mask: private::SealedElement<$m, $n>>,
-                {
+                    mask: CanonicalMask<<Self as ArithOps>::Mask>,
+                ) -> ConstMaskStorage<<$t as Lane>::Mask, $m, $n> {
                     mask
                 }
                 #[inline(always)]
                 fn select_mask(
-                    mask: MaskStorage<<Self as Lane>::Mask, $m, $n>,
-                    true_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                    false_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<$m, $n>>::Storage {
+                    mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>,
+                    true_values: Self,
+                    false_values: Self,
+                ) -> Self {
                     unpack_array!([(mask=mask.load_mask().into_parts(), t=true_values.load(), f=false_values.load()) ArithOps::select_; $len]).store()
                 }
                 #[inline(always)]
-                fn select_any_mask<Mask>(
-                    mask: MaskStorage<Mask, $m, $n>,
-                    true_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                    false_values: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<$m, $n>>::Storage
-                where
-                    Mask: private::SealedElement<$m, $n>,
-                {
-                    <Self as private::SealedElement<$m, $n>>::select_mask(
-                        paste::paste!(<Mask as private::SealedElement<$m, $n>>::[<cast_i $bits>](mask)),
+                fn select_any_mask<Mask: SealedSupportedElement>(
+                    mask: ConstMaskStorage<Mask, $m, $n>,
+                    true_values: Self,
+                    false_values: Self,
+                ) -> Self {
+                    <Self as private::StorageOps<$t, Dimension<$m>, Dimension<$n>>>::select_mask(
+                        paste::paste!(<Mask as SealedSimdElement<$m, $n>>::Storage::[<cast_i $bits>](mask)),
                         true_values,
                         false_values,
                     )
                 }
 
                 #[inline(always)]
-                fn each_clamp<F: private::Fmt>(a: Self::Storage, min: Self::Storage, max: Self::Storage) -> Self::Storage {
+                fn each_clamp<F: private::Fmt>(a: Self, min: Self, max: Self) -> Self {
                     let a = a.load();
                     let min = min.load();
                     let max = max.load();
@@ -265,56 +359,114 @@ macro_rules! impl_layout {
                         valid_all,
                         "each element in `min` must be less than or equal to the corresponding element in `max`. \
                         min = {min:?}, max = {max:?}",
-                        min = F::fmt::<Self, $m, $n>(min),
-                        max = F::fmt::<Self, $m, $n>(max),
+                        min = F::fmt::<$t, $m, $n>(min),
+                        max = F::fmt::<$t, $m, $n>(max),
                     );
                     unpack_array!([(a, min, max) ArithOps::clamp_noexcept_; $len]).store()
                 }
             }}
             #[inline(always)]
-            fn eq(a: Self::Storage, b: Self::Storage) -> bool {
+            fn eq(a: Self, b: Self) -> bool {
                 // let mask = unpack_array!([(a=a.load(), b=b.load()) ArithOps::eq_; $len]);
                 let mask = ArithOps::eq_(a.load(), b.load());
                 paste::paste!([<mask $bits x $m x $n _all>])(mask)
             }
             #[inline(always)]
-            fn ne(a: Self::Storage, b: Self::Storage) -> bool {
+            fn ne(a: Self, b: Self) -> bool {
                 // let mask = unpack_array!([(a=a.load(), b=b.load()) ArithOps::ne_; $len]);
                 let mask = ArithOps::ne_(a.load(), b.load());
                 paste::paste!([<mask $bits x $m x $n _any>])(mask)
             }
             #[inline(always)]
-            fn transpose(
-                a: <Self as private::SealedElement<$m, $n>>::Storage,
-            ) -> <Self as private::SealedElement<$n, $m>>::Storage {
-                paste::paste!(crate::kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
+            fn transpose(a: Self) -> ConstStorage<$t, $n, $m> {
+                paste::paste!(kernels::transpose::[<_ $bits bit>]::[<transpose $m x $n>])(a)
+            }
+
+            if_! { $m == 1 {
+                #[inline(always)]
+                fn substantiate_1x(a: Self) -> ConstStorage<$t, 1, $n> { a }
+            }}
+            if_! { $m == 2 {
+                #[inline(always)]
+                fn substantiate_2x(a: Self) -> ConstStorage<$t, 2, $n> { a }
+            }}
+            if_! { $m == 3 {
+                #[inline(always)]
+                fn substantiate_3x(a: Self) -> ConstStorage<$t, 3, $n> { a }
+            }}
+            if_! { $m == 4 {
+                #[inline(always)]
+                fn substantiate_4x(a: Self) -> ConstStorage<$t, 4, $n> { a }
+            }}
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn substantiate_x1(a: Self) -> ConstStorage<$t, $m, 1> { a }
+            }}
+            if_! { $n == 2 {
+                #[inline(always)]
+                fn substantiate_x2(a: Self) -> ConstStorage<$t, $m, 2> { a }
+            }}
+            if_! { $n == 3 {
+                #[inline(always)]
+                fn substantiate_x3(a: Self) -> ConstStorage<$t, $m, 3> { a }
+            }}
+            if_! { $n == 4 {
+                #[inline(always)]
+                fn substantiate_x4(a: Self) -> ConstStorage<$t, $m, 4> { a }
+            }}
+            #[inline(always)]
+            fn matmul<const K: usize>(a: ConstStorage<$t, $m, K>, b: ConstStorage<$t, K, $n>) -> Self
+            where Dimension<K>: SealedSupportedDimension {
+                match K {
+                    1 => {
+                        let a = private::StorageOps::substantiate_x1(a).load();
+                        let b = private::StorageOps::substantiate_1x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x1x $n>])(a, b).store()
+                    },
+                    2 => {
+                        let a = private::StorageOps::substantiate_x2(a).load();
+                        let b = private::StorageOps::substantiate_2x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x2x $n>])(a, b).store()
+                    },
+                    3 => {
+                        let a = private::StorageOps::substantiate_x3(a).load();
+                        let b = private::StorageOps::substantiate_3x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x3x $n>])(a, b).store()
+                    },
+                    4 => {
+                        let a = private::StorageOps::substantiate_x4(a).load();
+                        let b = private::StorageOps::substantiate_4x(b).load();
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]::[<matmul $m x4x $n>])(a, b).store()
+                    },
+                    _ => unimplemented!()
+                }
             }
             if_! { $signed $int == signed int {
                 #[inline(always)]
-                fn from_mask(mask: MaskStorage<Self, $m, $n>) -> Self::Storage { mask.into_inner() }
+                fn from_mask(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> Self { mask.into_inner() }
                 #[inline(always)]
-                fn all(mask: MaskStorage<Self, $m, $n>) -> bool {
+                fn all(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> bool {
                     paste::paste!([<mask $bits x $m x $n _all>])(mask.load_mask())
                 }
                 #[inline(always)]
-                fn any(mask: MaskStorage<Self, $m, $n>) -> bool {
+                fn any(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> bool {
                     paste::paste!([<mask $bits x $m x $n _any>])(mask.load_mask())
                 }
                 #[inline(always)]
-                fn to_bool_array(mask: MaskStorage<Self, $m, $n>) -> [[bool; $m]; $n] {
-                    paste::paste!(kernels::mask::$self_ty::[<to_array_ $m x $n>](mask.load_mask()))
+                fn to_bool_array(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> [[bool; $m]; $n] {
+                    paste::paste!(kernels::mask::$t::[<to_array_ $m x $n>](mask.load_mask()))
                 }
                 #[inline(always)]
-                fn from_bool_array(a: [[bool; $m]; $n]) -> MaskStorage<Self, $m, $n> {
-                    CanonicalMask::store_mask(paste::paste!(kernels::mask::$self_ty::[<from_array_ $m x $n>](a)))
+                fn from_bool_array(a: [[bool; $m]; $n]) -> ConstMaskStorage<<$t as Lane>::Mask, $m, $n> {
+                    CanonicalMask::store_mask(paste::paste!(kernels::mask::$t::[<from_array_ $m x $n>](a)))
                 }
                 // `Vector::cast_signed`, `Vector::cast_unsigned` and `Vector::abs_diff`
                 // are the only callers, and all name a one-column shape.
                 if_! { $n == 1 {
                     #[inline(always)]
-                    fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage { a }
+                    fn cast_signed(a: Self) -> ConstStorage<<$t as Int>::Signed, $m, $n> { a }
                     #[inline(always)]
-                    fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage {
+                    fn cast_unsigned(a: Self) -> ConstStorage<<$t as Int>::Unsigned, $m, $n> {
                         unpack_array!([(a) $primitive::cast_unsigned; $len])
                     }
                 }}
@@ -324,36 +476,42 @@ macro_rules! impl_layout {
                 // are the only callers, and all name a one-column shape.
                 if_! { $n == 1 {
                     #[inline(always)]
-                    fn cast_signed(a: Self::Storage) -> <<Self as Int>::Signed as private::SealedElement<$m, $n>>::Storage {
+                    fn cast_signed(a: Self) -> ConstStorage<<$t as Int>::Signed, $m, $n> {
                         unpack_array!([(a) $primitive::cast_signed; $len])
                     }
                     #[inline(always)]
-                    fn cast_unsigned(a: Self::Storage) -> <<Self as Int>::Unsigned as private::SealedElement<$m, $n>>::Storage { a }
+                    fn cast_unsigned(a: Self) -> ConstStorage<<$t as Int>::Unsigned, $m, $n> { a }
                 }}
             }}
             if_! { $int == int {
                 #[inline(always)]
-                fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                fn div(a: Self, b: Self) -> Self {
                     // The reduction kernel is named directly rather than reached through `each_eq`
-                    // and `SealedElement::any`, which would store the comparison at the element's
+                    // and `StorageOps::any`, which would store the comparison at the element's
                     // width and load it back to fold it.
                     let mask = ArithOps::eq_(b.load(), ArithOps::ZERO_);
                     assert!(
                         !paste::paste!([<mask $bits x $m x $n _any>])(mask),
                         "attempt to divide by zero",
                     );
-                    <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_div(y))
+                    <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(
+                        a, b,
+                        #[inline(always)] |x, y| x.wrapping_div(y)
+                    )
                 }
                 // `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and `Shr` are generated for vectors only.
                 if_! { $n == 1 {
                     #[inline(always)]
-                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    fn rem(a: Self, b: Self) -> Self {
                         let mask = ArithOps::eq_(b.load(), ArithOps::ZERO_);
                         assert!(
                             !paste::paste!([<mask $bits x $m x $n _any>])(mask),
                             "attempt to calculate the remainder with a divisor of zero",
                         );
-                        <Self as private::SealedElement<$m, $n>>::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))
+                        <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(
+                            a, b,
+                            #[inline(always)] |x, y| x.wrapping_rem(y)
+                        )
                     }
                 }}
             }}
@@ -362,72 +520,194 @@ macro_rules! impl_layout {
                 // both name a one-column shape.
                 if_! { $n == 1 {
                     #[inline(always)]
-                    fn from_bits(
-                        a: <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage,
-                    ) -> Self::Storage {
+                    fn from_bits(a: ConstStorage<<$t as Float>::Bits, $m, $n>) -> Self {
                         unpack_array!([(a) $primitive::from_bits; $len])
                     }
                     #[allow(clippy::wrong_self_convention)]
                     #[inline(always)]
-                    fn to_bits(
-                        a: Self::Storage,
-                    ) -> <<Self as Float>::Bits as private::SealedElement<$m, $n>>::Storage {
+                    fn to_bits(a: Self) -> ConstStorage<<$t as Float>::Bits, $m, $n> {
                         unpack_array!([(a) $primitive::to_bits; $len])
                     }
                 }}
                 // `Rem` is generated for vectors only.
                 if_! { $n == 1 {
                     #[inline(always)]
-                    fn rem(a: Self::Storage, b: Self::Storage) -> Self::Storage {
+                    fn rem(a: Self, b: Self) -> Self {
                         // TODO(codegen-optimization): Vectorize `fmodf` only with exact special-value
                         // and error-bound tests; `std::simd::Simd<f32, N>` delegates to Windows UCRT
                         // scalar `fmodf` calls on x86-64, while libm provides a possible implementation.
-                        <Self as private::SealedElement<$m, $n>>::map2(a, b, core::ops::Rem::rem)
+                        <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(a, b, core::ops::Rem::rem)
                     }
                 }}
             }}
             if_! { $n == 1 and $m != 1 {
                 #[inline(always)]
-                fn swizzle2<const I0: usize, const I1: usize>(
-                    a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<2, 1>>::Storage
+                fn swizzle2<const I0: usize, const I1: usize>(a: Self) -> ConstStorage<$t, 2, 1>
                 where
                     Indices2<I0, I1>: SwizzleDispatchAny<2>,
                 {
-                    <Indices2<I0, I1> as SwizzleDispatch<Self, $m, 2>>::dispatch(a)
+                    <Indices2<I0, I1> as SwizzleDispatch<$t, $m, 2>>::dispatch(a)
                 }
                 #[inline(always)]
-                fn swizzle3<const I0: usize, const I1: usize, const I2: usize>(
-                    a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<3, 1>>::Storage
+                fn swizzle3<const I0: usize, const I1: usize, const I2: usize>(a: Self) -> ConstStorage<$t, 3, 1>
                 where
                     Indices3<I0, I1, I2>: SwizzleDispatchAny<3>,
                 {
-                    <Indices3<I0, I1, I2> as SwizzleDispatch<Self, $m, 3>>::dispatch(a)
+                    <Indices3<I0, I1, I2> as SwizzleDispatch<$t, $m, 3>>::dispatch(a)
                 }
                 #[inline(always)]
-                fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-                    a: <Self as private::SealedElement<$m, $n>>::Storage,
-                ) -> <Self as private::SealedElement<4, 1>>::Storage
+                fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(a: Self) -> ConstStorage<$t, 4, 1>
                 where
                     Indices4<I0, I1, I2, I3>: SwizzleDispatchAny<4>,
                 {
-                    <Indices4<I0, I1, I2, I3> as SwizzleDispatch<Self, $m, 4>>::dispatch(a)
+                    <Indices4<I0, I1, I2, I3> as SwizzleDispatch<$t, $m, 4>>::dispatch(a)
                 }
             }}
 
-            // These do not read the shape, so one shape carries them for every shape and
-            // `__internal::__Concat2` names that one. The shape has to match the call
-            // site exactly: a call naming a shape that does not carry them falls through
-            // to the trait's scalar default and loses the swizzle.
+            if_! { $n == 1 {
+                #[inline(always)]
+                fn reduce_sum(a: Self) -> $t { kernels::reduce::sum::<Self, $m>(a) }
+                if_! { $float == float {
+                    #[inline(always)]
+                    fn dot(a: Self, b: Self) -> $t {
+                        paste::paste!(kernels::matmul::[<_ $bits bit>]:: [<matmul1x $m x1>] (a.load(), b.load()).store())
+                    }
+                }}
+            }}
             if_! { $m == 1 and $n == 1 {
+                if_! { $signed $int == signed int {
+                    #[inline(always)]
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
+                        u64::from(mask.into_inner() < 0)
+                    }
+                }}
+            }}
+            if_! { $m == 2 and $n == 1 {
+                if_! { $signed $int == signed int {
+                    #[inline(always)]
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
+                        // TODO(to-bitmask-lane-width): NEON and the 64-bit types hold two
+                        // lanes outright, so masking is only needed elsewhere.
+                        u64::from(mask.into_inner().load().to_bitmask() & 0b11)
+                    }
+                }}
+                const POS_X: Self = $primitive::new([1 as _, 0 as _]);
+                const POS_Y: Self = $primitive::new([0 as _, 1 as _]);
+                if_! { $signed == signed {
+                    const NEG_X: Self = $primitive::new([-1 as _, 0 as _]);
+                    const NEG_Y: Self = $primitive::new([0 as _, -1 as _]);
+                }}
+            }}
+            if_! { $m == 3 and $n == 1 {
+                if_! { $signed $int == signed int {
+                    #[inline(always)]
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
+                        u64::from(mask.into_inner().to_bitmask() & 0b111)
+                    }
+                }}
+                const POS_X: Self = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
+                const POS_Y: Self = $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]);
+                const POS_Z: Self = $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]);
+                if_! { $signed == signed {
+                    const NEG_X: Self = $primitive::new([-1 as _, 0 as _, 0 as _, 0 as _]);
+                    const NEG_Y: Self = $primitive::new([0 as _, -1 as _, 0 as _, 0 as _]);
+                    const NEG_Z: Self = $primitive::new([0 as _, 0 as _, -1 as _, 0 as _]);
+                }}
+            }}
+            if_! { $m == 4 and $n == 1 {
+                if_! { $signed $int == signed int {
+                    #[inline(always)]
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
+                        u64::from(mask.into_inner().to_bitmask())
+                    }
+                }}
+                const POS_X: Self = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
+                const POS_Y: Self = $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]);
+                const POS_Z: Self = $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]);
+                const POS_W: Self = $primitive::new([0 as _, 0 as _, 0 as _, 1 as _]);
+                if_! { $signed == signed {
+                    const NEG_X: Self = $primitive::new([-1 as _, 0 as _, 0 as _, 0 as _]);
+                    const NEG_Y: Self = $primitive::new([0 as _, -1 as _, 0 as _, 0 as _]);
+                    const NEG_Z: Self = $primitive::new([0 as _, 0 as _, -1 as _, 0 as _]);
+                    const NEG_W: Self = $primitive::new([0 as _, 0 as _, 0 as _, -1 as _]);
+                }}
+            }}
+            if_! { $m == 1 and $n == 1 {
+                const IDENTITY: Self = 1 as _;
+                #[inline(always)]
+                fn diagonal(a: Self) -> Self { a }
+                if_! { $float == float {
+                    #[inline(always)]
+                    fn inverse(a: Self) -> Self { kernels::inverse::$t::_1x1(a) }
+                    #[inline(always)]
+                    fn determinant(a: Self) -> $t { a }
+                }}
+            }}
+            if_! { $m == 2 and $n == 2 {
+                const IDENTITY: Self = $primitive::new([1 as _, 0 as _, 0 as _, 1 as _]);
+                #[inline(always)]
+                fn diagonal(a: Self) -> ConstStorage<$t, $m> {
+                    kernels::diagonal::diagonal2x2(a).store()
+                }
+                if_! { $float == float {
+                    #[inline(always)]
+                    fn inverse(a: Self) -> Self { kernels::inverse::$t::_2x2(a) }
+                    #[inline(always)]
+                    fn determinant(a: Self) -> $t { kernels::determinant::$t::_2x2(a) }
+                }}
+            }}
+            if_! { $m == 3 and $n == 3 {
+                const IDENTITY: Self = [
+                    $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]),
+                    $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]),
+                    $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]),
+                ];
+                #[inline(always)]
+                fn diagonal(a: Self) -> ConstStorage<$t, $m> {
+                    kernels::diagonal::diagonal3x3(a).store()
+                }
+                if_! { $float == float {
+                    #[inline(always)]
+                    fn inverse(a: Self) -> Self { kernels::inverse::$t::_3x3(a) }
+                    #[inline(always)]
+                    fn determinant(a: Self) -> $t { kernels::determinant::$t::_3x3(a) }
+                }}
+            }}
+            if_! { $m == 4 and $n == 4 {
+                const IDENTITY: Self = [
+                    $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]),
+                    $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]),
+                    $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]),
+                    $primitive::new([0 as _, 0 as _, 0 as _, 1 as _]),
+                ];
+                #[inline(always)]
+                fn diagonal(a: Self) -> ConstStorage<$t, $m> {
+                    kernels::diagonal::diagonal4x4(a).store()
+                }
+                if_! { $float == float {
+                    #[inline(always)]
+                    fn inverse(a: Self) -> Self { kernels::inverse::$t::_4x4(a) }
+                    #[inline(always)]
+                    fn determinant(a: Self) -> $t { kernels::determinant::$t::_4x4(a) }
+                }}
+            }}
+
+            $($item)*
+        }
+
+        // These methods depend only on the scalar type, so the 1x1 layout expansion emits
+        // the sole `SealedSupportedElement` implementation for each scalar type.
+        if_! { $m == 1 and $n == 1 {
+            impl SealedStorageElement for $t {}
+
+            impl private::SealedSupportedElement for $t {
                 #[inline(always)]
                 fn vector_concat_1_1(
-                    a: <Self as private::SealedElement<1, 1>>::Storage,
-                    b: <Self as private::SealedElement<1, 1>>::Storage,
-                ) -> <Self as private::SealedElement<2, 1>>::Storage {
-                    let [[a]] = <Self as private::SealedElement<1, 1>>::to_array(a);
-                    let [[b]] = <Self as private::SealedElement<1, 1>>::to_array(b);
+                    a: <Self as SealedSimdElement<1, 1>>::Storage,
+                    b: <Self as SealedSimdElement<1, 1>>::Storage,
+                ) -> <Self as SealedSimdElement<2, 1>>::Storage {
+                    let [[a]] = crate::api::vector::call!(<Self, 1>::to_array(a));
+                    let [[b]] = crate::api::vector::call!(<Self, 1>::to_array(b));
                     // NEON can swizzle straight from a 64-bit (2-lane) width without first widening
                     // to 128-bit, but this path stays shared with SSE (which has no such shortcut)
                     // for implementation simplicity, leaving that codegen-level optimization to LLVM
@@ -436,34 +716,34 @@ macro_rules! impl_layout {
                     // the same instruction count as a hand-written 64-bit-first version would need.
                     let zero = <Self as crate::utils::ArithOps>::ZERO_;
                     crate::simd::utils::swizzle!(
-                        <Self as private::SealedElement<4, 1>>::Storage::new([a, zero, zero, zero]),
-                        <Self as private::SealedElement<4, 1>>::Storage::new([b, zero, zero, zero]),
+                        <Self as SealedSimdElement<4, 1>>::Storage::new([a, zero, zero, zero]),
+                        <Self as SealedSimdElement<4, 1>>::Storage::new([b, zero, zero, zero]),
                         [0, 4]
                     ).store()
                 }
                 #[inline(always)]
                 fn vector_concat_1_2(
-                    a: <Self as private::SealedElement<1, 1>>::Storage,
-                    b: <Self as private::SealedElement<2, 1>>::Storage,
-                ) -> <Self as private::SealedElement<3, 1>>::Storage {
-                    let [[a]] = <Self as private::SealedElement<1, 1>>::to_array(a);
+                    a: <Self as SealedSimdElement<1, 1>>::Storage,
+                    b: <Self as SealedSimdElement<2, 1>>::Storage,
+                ) -> <Self as SealedSimdElement<3, 1>>::Storage {
+                    let [[a]] = crate::api::vector::call!(<Self, 1>::to_array(a));
                     let zero = <Self as crate::utils::ArithOps>::ZERO_;
                     // See the comment in `vector_concat_1_1`: NEON could combine `a`/`b` at their
                     // natural (64-bit) width without widening to 128-bit first, but this path stays
                     // shared with SSE for implementation simplicity and leaves that optimization to
                     // LLVM, which generates equivalent code either way for these fixed patterns.
                     crate::simd::utils::swizzle!(
-                        <Self as private::SealedElement<4, 1>>::Storage::new([a, zero, zero, zero]),
+                        <Self as SealedSimdElement<4, 1>>::Storage::new([a, zero, zero, zero]),
                         b.load().widen(),
                         [0, 4, 5]
                     )
                 }
                 #[inline(always)]
                 fn vector_concat_2_1(
-                    a: <Self as private::SealedElement<2, 1>>::Storage,
-                    b: <Self as private::SealedElement<1, 1>>::Storage,
-                ) -> <Self as private::SealedElement<3, 1>>::Storage {
-                    let [[b]] = <Self as private::SealedElement<1, 1>>::to_array(b);
+                    a: <Self as SealedSimdElement<2, 1>>::Storage,
+                    b: <Self as SealedSimdElement<1, 1>>::Storage,
+                ) -> <Self as SealedSimdElement<3, 1>>::Storage {
+                    let [[b]] = crate::api::vector::call!(<Self, 1>::to_array(b));
                     let zero = <Self as crate::utils::ArithOps>::ZERO_;
                     // See the comment in `vector_concat_1_1`: NEON could combine `a`/`b` at their
                     // natural (64-bit) width without widening to 128-bit first, but this path stays
@@ -471,142 +751,12 @@ macro_rules! impl_layout {
                     // LLVM, which generates equivalent code either way for these fixed patterns.
                     crate::simd::utils::swizzle!(
                         a.load().widen(),
-                        <Self as private::SealedElement<4, 1>>::Storage::new([b, zero, zero, zero]),
+                        <Self as SealedSimdElement<4, 1>>::Storage::new([b, zero, zero, zero]),
                         [0, 1, 4]
                     )
                 }
-            }}
-
-            if_! { $n == 1 {
-                #[inline(always)]
-                fn reduce_sum(a: Self::Storage) -> Self { kernels::reduce::sum::<Self::Storage, $m>(a) }
-                if_! { $float == float {
-                    #[inline(always)]
-                    fn dot(a: Self::Storage, b: Self::Storage) -> Self {
-                        paste::paste!(kernels::matmul::$self_ty:: [<matmul1x $m x1>] (a.load(), b.load()).store())
-                    }
-                }}
-            }}
-            if_! { $m == 1 and $n == 1 {
-                if_! { $signed $int == signed int {
-                    #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner() < 0)
-                    }
-                }}
-            }}
-            if_! { $m == 2 and $n == 1 {
-                if_! { $signed $int == signed int {
-                    #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self, $m, $n>) -> u64 {
-                        // TODO(to-bitmask-lane-width): NEON and the 64-bit types hold two
-                        // lanes outright, so masking is only needed elsewhere.
-                        u64::from(mask.into_inner().load().to_bitmask() & 0b11)
-                    }
-                }}
-                const POS_X: Self::Storage = $primitive::new([1 as _, 0 as _]);
-                const POS_Y: Self::Storage = $primitive::new([0 as _, 1 as _]);
-                if_! { $signed == signed {
-                    const NEG_X: Self::Storage = $primitive::new([-1 as _, 0 as _]);
-                    const NEG_Y: Self::Storage = $primitive::new([0 as _, -1 as _]);
-                }}
-            }}
-            if_! { $m == 3 and $n == 1 {
-                if_! { $signed $int == signed int {
-                    #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner().to_bitmask() & 0b111)
-                    }
-                }}
-                const POS_X: Self::Storage = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
-                const POS_Y: Self::Storage = $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]);
-                const POS_Z: Self::Storage = $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]);
-                if_! { $signed == signed {
-                    const NEG_X: Self::Storage = $primitive::new([-1 as _, 0 as _, 0 as _, 0 as _]);
-                    const NEG_Y: Self::Storage = $primitive::new([0 as _, -1 as _, 0 as _, 0 as _]);
-                    const NEG_Z: Self::Storage = $primitive::new([0 as _, 0 as _, -1 as _, 0 as _]);
-                }}
-            }}
-            if_! { $m == 4 and $n == 1 {
-                if_! { $signed $int == signed int {
-                    #[inline(always)]
-                    fn to_bitmask(mask: MaskStorage<Self, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner().to_bitmask())
-                    }
-                }}
-                const POS_X: Self::Storage = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
-                const POS_Y: Self::Storage = $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]);
-                const POS_Z: Self::Storage = $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]);
-                const POS_W: Self::Storage = $primitive::new([0 as _, 0 as _, 0 as _, 1 as _]);
-                if_! { $signed == signed {
-                    const NEG_X: Self::Storage = $primitive::new([-1 as _, 0 as _, 0 as _, 0 as _]);
-                    const NEG_Y: Self::Storage = $primitive::new([0 as _, -1 as _, 0 as _, 0 as _]);
-                    const NEG_Z: Self::Storage = $primitive::new([0 as _, 0 as _, -1 as _, 0 as _]);
-                    const NEG_W: Self::Storage = $primitive::new([0 as _, 0 as _, 0 as _, -1 as _]);
-                }}
-            }}
-            if_! { $m == 1 and $n == 1 {
-                const IDENTITY: Self::Storage = 1 as _;
-                #[inline(always)]
-                fn diagonal(a: Self::Storage) -> Self::Storage { a }
-                if_! { $float == float {
-                    #[inline(always)]
-                    fn inverse(a: Self::Storage) -> Self::Storage { kernels::inverse::$self_ty::_1x1(a) }
-                    #[inline(always)]
-                    fn determinant(a: Self::Storage) -> Self { a }
-                }}
-            }}
-            if_! { $m == 2 and $n == 2 {
-                const IDENTITY: Self::Storage = $primitive::new([1 as _, 0 as _, 0 as _, 1 as _]);
-                #[inline(always)]
-                fn diagonal(a: Self::Storage) -> <Self as private::SealedElement<2, 1>>::Storage {
-                    kernels::diagonal::diagonal2x2(a).store()
-                }
-                if_! { $float == float {
-                    #[inline(always)]
-                    fn inverse(a: Self::Storage) -> Self::Storage { kernels::inverse::$self_ty::_2x2(a) }
-                    #[inline(always)]
-                    fn determinant(a: Self::Storage) -> Self { kernels::determinant::$self_ty::_2x2(a) }
-                }}
-            }}
-            if_! { $m == 3 and $n == 3 {
-                const IDENTITY: Self::Storage = [
-                    $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]),
-                    $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]),
-                    $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]),
-                ];
-                #[inline(always)]
-                fn diagonal(a: Self::Storage) -> <Self as private::SealedElement<3, 1>>::Storage {
-                    kernels::diagonal::diagonal3x3(a).store()
-                }
-                if_! { $float == float {
-                    #[inline(always)]
-                    fn inverse(a: Self::Storage) -> Self::Storage { kernels::inverse::$self_ty::_3x3(a) }
-                    #[inline(always)]
-                    fn determinant(a: Self::Storage) -> Self { kernels::determinant::$self_ty::_3x3(a) }
-                }}
-            }}
-            if_! { $m == 4 and $n == 4 {
-                const IDENTITY: Self::Storage = [
-                    $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]),
-                    $primitive::new([0 as _, 1 as _, 0 as _, 0 as _]),
-                    $primitive::new([0 as _, 0 as _, 1 as _, 0 as _]),
-                    $primitive::new([0 as _, 0 as _, 0 as _, 1 as _]),
-                ];
-                #[inline(always)]
-                fn diagonal(a: Self::Storage) -> <Self as private::SealedElement<4, 1>>::Storage {
-                    kernels::diagonal::diagonal4x4(a).store()
-                }
-                if_! { $float == float {
-                    #[inline(always)]
-                    fn inverse(a: Self::Storage) -> Self::Storage { kernels::inverse::$self_ty::_4x4(a) }
-                    #[inline(always)]
-                    fn determinant(a: Self::Storage) -> Self { kernels::determinant::$self_ty::_4x4(a) }
-                }}
-            }}
-
-            $($item)*
-        }
+            }
+        }}
     };
 }
 
@@ -620,7 +770,7 @@ macro_rules! impl_layouts_f32 {
             feature: [float, not_int, signed, 32],
         ) => {
             #[inline(always)]
-            fn substantiate_f32(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_f32(a: Self) -> Self { a }
             $($item)*
         });)*
     };
@@ -635,7 +785,7 @@ macro_rules! impl_layouts_f64 {
             feature: [float, not_int, signed, 64],
         ) => {
             #[inline(always)]
-            fn substantiate_f64(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_f64(a: Self) -> Self { a }
             $($item)*
         });)*
     };
@@ -650,28 +800,25 @@ macro_rules! impl_layouts_i32 {
             feature: [not_float, int, signed, 32],
         ) => {
             #[inline(always)]
-            fn substantiate_i32(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_i32(a: Self) -> Self { a }
 
             if_! { $n == 1 {
                 #[inline(always)]
-                fn cast_i32(mask: MaskStorage<Self, $m, $n>) -> MaskStorage<i32, $m, $n> { mask }
+                fn cast_i32(mask: ConstMaskStorage<i32, $m, $n>) -> ConstMaskStorage<i32, $m, $n> { mask }
                 #[inline(always)]
-                fn cast_i64(mask: MaskStorage<Self, $m, $n>) -> MaskStorage<i64, $m, $n> { mask.cast_i64() }
+                fn cast_i64(mask: ConstMaskStorage<i32, $m, $n>) -> ConstMaskStorage<i64, $m, $n> { mask.cast_i64() }
                 #[inline(always)]
-                fn mask_select_any<Mask>(
-                    mask: MaskStorage<Mask, $m, $n>,
-                    true_values: MaskStorage<Self, $m, $n>,
-                    false_values: MaskStorage<Self, $m, $n>,
-                ) -> MaskStorage<Self, $m, $n>
-                where
-                    Mask: private::SealedElement<$m, $n>,
-                {
+                fn mask_select_any<Mask: SealedSupportedElement>(
+                    mask: ConstMaskStorage<Mask, $m, $n>,
+                    true_values: ConstMaskStorage<i32, $m, $n>,
+                    false_values: ConstMaskStorage<i32, $m, $n>,
+                ) -> ConstMaskStorage<i32, $m, $n> {
                     // TODO(mask-representation): this casts before loading, which for a 64-bit
                     // mask means narrowing to the two-lane storage type and immediately loading
                     // it back. Deferred: picking the cheaper order per lane width and target
-                    // would mean exposing `Load` through `SealedElement`, which is not worth it
+                    // would mean exposing `Load` through `SealedSimdElement`, which is not worth it
                     // for the one instruction it might save.
-                    let mask = <Mask as private::SealedElement<$m, $n>>::cast_i32(mask)
+                    let mask = <Mask as SealedSimdElement<$m, $n>>::Storage::cast_i32(mask)
                         .load_mask()
                         .select(true_values.load_mask(), false_values.load_mask());
                     CanonicalMask::store_mask(mask)
@@ -691,24 +838,20 @@ macro_rules! impl_layouts_i64 {
             feature: [not_float, int, signed, 64],
         ) => {
             #[inline(always)]
-            fn substantiate_i64(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_i64(a: Self) -> Self { a }
 
             if_! { $n == 1 {
                 #[inline(always)]
-                fn cast_i32(mask: MaskStorage<Self, $m, $n>) -> MaskStorage<i32, $m, $n> { mask.cast_i32() }
+                fn cast_i32(mask: ConstMaskStorage<i64, $m, $n>) -> ConstMaskStorage<i32, $m, $n> { mask.cast_i32() }
                 #[inline(always)]
-                fn cast_i64(mask: MaskStorage<Self, $m, $n>) -> MaskStorage<i64, $m, $n> { mask }
+                fn cast_i64(mask: ConstMaskStorage<i64, $m, $n>) -> ConstMaskStorage<i64, $m, $n> { mask }
                 #[inline(always)]
-                fn mask_select_any<Mask>(
-                    mask: MaskStorage<Mask, $m, $n>,
-                    true_values: MaskStorage<Self, $m, $n>,
-                    false_values: MaskStorage<Self, $m, $n>,
-                ) -> MaskStorage<Self, $m, $n>
-                where
-                    Mask: private::SealedElement<$m, $n>,
-                {
-                    <Mask as private::SealedElement<$m, $n>>::cast_i64(mask)
-                        .select(true_values, false_values)
+                fn mask_select_any<Mask: SealedSupportedElement>(
+                    mask: ConstMaskStorage<Mask, $m, $n>,
+                    true_values: ConstMaskStorage<i64, $m, $n>,
+                    false_values: ConstMaskStorage<i64, $m, $n>,
+                ) -> ConstMaskStorage<i64, $m, $n> {
+                    <Mask as SealedSimdElement<$m, $n>>::Storage::cast_i64(mask).select(true_values, false_values)
                 }
             }}
             $($item)*
@@ -725,7 +868,7 @@ macro_rules! impl_layouts_u32 {
             feature: [not_float, int, unsigned, 32],
         ) => {
             #[inline(always)]
-            fn substantiate_u32(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_u32(a: Self) -> Self { a }
             $($item)*
         });)*
     };
@@ -740,7 +883,7 @@ macro_rules! impl_layouts_u64 {
             feature: [not_float, int, unsigned, 64],
         ) => {
             #[inline(always)]
-            fn substantiate_u64(a: Self::Storage) -> Self::Storage { a }
+            fn substantiate_u64(a: Self) -> Self { a }
             $($item)*
         });)*
     };

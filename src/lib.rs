@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+use marker::MatrixLayout;
 pub use support::{Element, FloatElement, IntElement, MaskElement, SintElement, UintElement};
 
 #[doc(hidden)]
@@ -23,11 +24,11 @@ cfg_select! {
     // Keep this cfg name in sync if the crate is renamed.
     algea_force_simd = "true" => {
         mod simd;
-        use simd::kernels;
+        use simd::{definitions, kernels};
     }
     algea_force_simd = "false" => {
         mod non_simd;
-        use non_simd::kernels;
+        use non_simd::{definitions, kernels};
     }
     any(
         target_feature = "sse2",
@@ -35,11 +36,11 @@ cfg_select! {
         target_feature = "simd128",
     ) => {
         mod simd;
-        use simd::kernels;
+        use simd::{definitions, kernels};
     }
     _ => {
         mod non_simd;
-        use non_simd::kernels;
+        use non_simd::{definitions, kernels};
     }
 }
 
@@ -48,11 +49,11 @@ cfg_select! {
 /// A fixed-size, orientation-independent vector.
 ///
 /// In column-major expressions it acts as a column vector; in row-major
-/// expressions it acts as a row vector. Types other than `f32`, `i32`, and `u32`
-/// do not currently implement [`Element`].
+/// expressions it acts as a row vector. The supported lane types are `f32`, `f64`,
+/// `i32`, `i64`, `u32`, and `u64`.
 ///
 pub struct Vector<T: Element<D>, const D: usize> {
-    pub(crate) storage: <T as private::SealedElement<D, 1>>::Storage,
+    pub(crate) storage: private::ConstStorage<T, D>,
 }
 
 /// A lane mask represented by signed integer lanes.
@@ -66,7 +67,15 @@ pub struct Vector<T: Element<D>, const D: usize> {
 /// ```
 pub struct Mask<T: MaskElement<D>, const D: usize> {
     // Mask lanes use the width of `T` and contain either all one bits or all zero bits.
-    pub(crate) storage: utils::MaskStorage<T, D>,
+    pub(crate) storage: utils::ConstMaskStorage<T, D>,
+}
+
+/// A fixed-size matrix whose storage orientation is selected by `L`.
+///
+/// The [`row_major::Matrix`] and [`column_major::Matrix`] aliases provide the
+/// customary public names with `L` fixed to one orientation.
+pub struct Matrix<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> {
+    pub(crate) storage: <L as private::SealedMatrixLayout>::StorageRxC<T, R, C>,
 }
 
 /// Constructs a vector by concatenating scalar and vector expressions.
@@ -169,7 +178,19 @@ macro_rules! impl_cast_from {
 
 /// Marker traits describing scalar lane capabilities.
 pub mod marker {
-    use crate::private;
+    use crate::{private, support::SupportedElement};
+
+    /// Selects the physical storage orientation of a [`Matrix`](crate::Matrix).
+    #[expect(private_bounds)]
+    pub trait MatrixLayout: private::SealedMatrixLayout {}
+
+    /// Column-major matrix storage.
+    pub enum ColumnMajor {}
+    /// Row-major matrix storage.
+    pub enum RowMajor {}
+
+    impl MatrixLayout for ColumnMajor {}
+    impl MatrixLayout for RowMajor {}
 
     // This models Rust `as` conversions rather than `std::simd::SimdCast`: conversions involving
     // `bool` or `char` can be one-way rather than forming a symmetric pair.
@@ -298,8 +319,10 @@ pub mod marker {
     #[expect(private_bounds)]
     pub trait Lane: Copy + private::Sealed {
         /// The signed integer scalar used to represent mask lanes.
-        type Mask;
+        type Mask: MaskLane + SupportedElement;
     }
+    /// Marks a signed integer lane that serves as its own comparison mask type.
+    pub trait MaskLane: Sint + Lane<Mask = Self> {}
     // The required bound depends on the shape, so it cannot be expressed as
     // `Float: HasBits<Bits: SimdElement<D>>`; `FloatElement<D>` carries it instead.
     impl_marker_trait!(Lane for [
@@ -310,145 +333,152 @@ pub mod marker {
         u32 { type Mask = i32; },
         u64 { type Mask = i64; },
     ]);
+    impl_marker_trait!(MaskLane for [i32, i64]);
 }
 
 /// Dimension-dependent traits used to express supported vector and matrix types.
 pub mod support {
-    use crate::{Vector, column_major, marker::*, private, row_major};
+    use crate::{Vector, marker::*, private};
 
-    /// Marks a scalar supported by both matrix storage orientations for the given
-    /// shape.
+    /// Marks a scalar lane supported by the library's vectors and matrices.
     #[expect(private_bounds)]
-    pub trait SupportedMatrixElement<const R: usize, const C: usize>:
-        private::SealedElement<R, C> + private::SealedElement<C, R>
+    pub trait SupportedElement: Lane + private::SealedSupportedElement {}
+
+    /// Marks a dimension supported by the library's vectors and matrices.
+    #[expect(private_bounds)]
+    pub trait SupportedDimension: private::SealedSupportedDimension {}
+
+    /// Represents a vector or matrix dimension as a type.
+    pub enum Dimension<const D: usize> {}
+
+    impl_marker_trait!(SupportedElement for [f32, f64, i32, i64, u32, u64]);
+    impl_marker_trait! {
+        SupportedDimension for [
+            Dimension<1> {},
+            Dimension<2> {},
+            Dimension<3> {},
+            Dimension<4> {},
+        ]
+    }
+    /// Marks a scalar lane supported for the given vector dimension or matrix
+    /// shape.
+    ///
+    /// `D0` is the vector length when `D1` is left at its default. For matrices,
+    /// `D0` and `D1` are the row and column counts.
+    #[expect(private_bounds)]
+    pub trait Element<const D0: usize = 1, const D1: usize = 1>:
+        SupportedElement
+        + private::SealedDimensionWitness<
+            D0,
+            Dimension = Dimension<D0>,
+            Dimension: SupportedDimension,
+        > + private::SealedDimensionWitness<
+            D1,
+            Dimension = Dimension<D1>,
+            Dimension: SupportedDimension,
+        >
     {
     }
-    macro_rules! impl_element {
-        ([$($t:ty),+], $r:tt) => {
-            $(impl_element!{ type=$t, $r, $r })+
-        };
-        (type=$t:ty, [$($r:literal),+], $c:tt) => {
-            $(impl_element!{ type=$t, row=$r, $c })+
-        };
-        (type=$t:ty, row=$r:literal, [$($c:literal),+]) => {
-            $(impl SupportedMatrixElement<$r, $c> for $t {})+
-        };
+    /// Marks a signed integer scalar supported as a mask for the given shape.
+    #[expect(private_bounds)]
+    pub trait MaskElement<const D0: usize = 1, const D1: usize = 1>:
+        SupportedElement
+        + MaskLane
+        + private::SealedDimensionWitness<
+            D0,
+            Dimension = Dimension<D0>,
+            Dimension: SupportedDimension,
+        > + private::SealedDimensionWitness<
+            D1,
+            Dimension = Dimension<D1>,
+            Dimension: SupportedDimension,
+        >
+    {
     }
-    impl_element!([f32, f64, i32, i64, u32, u64], [1, 2, 3, 4]);
-
-    macro_rules! impl_element2 {
-        ({$($acc:tt)*}, $r:tt,) => {
-            impl_element2! { @a { $($acc)* }, $r, $r }
-        };
-        (@a {$($acc:tt)*}, [], $c:tt) => {
-            $($acc)* {}
-        };
-        (@a {$($acc:tt)*}, [$r0:expr $(, $r:expr)*], $c:tt) => {
-            impl_element2! { @b {$($acc)*}, $r0, [$($r),*], $c }
-        };
-        (@b {$($acc:tt)*}, $r0:expr, $r:tt, [$($c:expr),*]) => {
-            impl_element2!{ @a {
-                $($acc)* $(+ SupportedMatrixElement<$r0, $c>)*
-            }, $r, [$($c),*] }
-        };
+    /// Marks a floating-point scalar supported for the given shape, including
+    /// its corresponding integer representation.
+    pub trait FloatElement<const D0: usize = 1, const D1: usize = 1>:
+        Element<D0, D1> + Float<Bits: SupportedElement + Uint<Signed: SupportedElement>>
+    {
     }
-    macro_rules! impl_element3 {
-        ({$($acc:tt)*}, $dims:tt $(,)?) => {
-            impl_element3! { @a {$($acc)*}, $dims, $dims, $dims }
-        };
-        (@a {$($acc:tt)*}, [], $bs:tt, $cs:tt) => {
-            $($acc)* {}
-        };
-        (@a {$($acc:tt)*}, [$a:expr $(, $as:expr)*], $bs:tt, $cs:tt) => {
-            impl_element3! { @b {$($acc)*}, $a, [$($as),*], $bs, $bs, $cs}
-        };
-        (@b {$($acc:tt)*}, $a:tt, $as:tt, [], $bs:tt, $cs:tt) => {
-            impl_element3! { @a {$($acc)*}, $as, $bs, $cs }
-        };
-        (@b {$($acc:tt)*}, $a:expr, $as:tt, [$b:expr $(, $bs_remaining:expr)*], $bs:tt, [$($c:expr),*]) => {
-            impl_element3! { @b {
-                    $($acc)* $(+ row_major::MatrixProduct<$a, $b, $c> + column_major::MatrixProduct<$a, $b, $c>)*
-                }, $a, $as, [$($bs_remaining),*], $bs, [$($c),*]
-            }
-        };
-    }
-
-    impl_element2! {{
-        /// Marks a scalar lane supported for the given vector dimension or matrix
-        /// shape.
-        ///
-        /// `D0` is the vector length when `D1` is left at its default. For matrices,
-        /// `D0` and `D1` are the row and column counts.
-        pub trait Element<const D0: usize = 1, const D1: usize = 1>:
-            Lane<Mask: MaskElement<D0, D1>>
-        }, [1, 2, 3, 4, D0, D1],
-    }
-    impl_element2! {{
-        impl<T, const D0: usize, const D1: usize> Element<D0, D1> for T
-            where T: Lane<Mask: MaskElement<D0, D1>>
-        }, [1, 2, 3, 4, D0, D1],
-    }
-
-    // TODO(mask-representation): Reconsider the `SintElement` requirement if a future mask lane
-    // has no signed-integer representation.
-    // `Element` cannot be a supertrait here because that creates a recursive trait dependency.
-    impl_element2! {{
-        /// Marks a signed integer scalar supported as a mask for the given shape.
-        pub trait MaskElement<const D0: usize = 1, const D1: usize = 1>:
-            Sint + Lane<Mask = Self>
-        }, [1, 2, 3, 4, D0, D1],
-    }
-    impl_element2! {{
-        impl<T, const D0: usize, const D1: usize> MaskElement<D0, D1> for T
-            where T: Sint + Lane<Mask = Self>
-        }, [1, 2, 3, 4, D0, D1],
-    }
-
-    impl_element3! {{
-        /// Marks a floating-point scalar supported for the given shape, including
-        /// its corresponding integer representation.
-        pub trait FloatElement<const D0: usize = 1, const D1: usize = 1>:
-            Element<D0, D1> + Float<Bits: Uint<Signed: Element<D0, D1>> + Element<D0, D1>>
-        }, [1, 2, 3, 4, D0, D1]
-    }
-    impl_element3! {{
-        impl<T, const D0: usize, const D1: usize> FloatElement<D0, D1> for T
-            where T: Element<D0, D1> + Float<Bits: Uint<Signed: Element<D0, D1>> + Element<D0, D1>>
-        }, [1, 2, 3, 4, D0, D1]
-    }
-
     // `Mask` could be fixed to an integer type's signed counterpart, but doing the same through a
     // float's bit type would overconstrain this marker, so the association remains explicit.
     /// Marks an integer scalar supported for the given shape.
     pub trait IntElement<const D0: usize = 1, const D1: usize = 1>:
-        Int<Signed: SintElement<D0, D1>, Unsigned: UintElement<D0, D1>> + Element<D0, D1>
+        Element<D0, D1>
+        + Int<
+            Signed: SupportedElement + Sint<Unsigned: SupportedElement>,
+            Unsigned: SupportedElement + Uint<Signed: SupportedElement>,
+        >
     {
     }
     /// Marks a signed integer scalar supported for the given shape.
     pub trait SintElement<const D0: usize = 1, const D1: usize = 1>:
-        Sint<Unsigned: Element<D0, D1>> + Element<D0, D1>
+        Element<D0, D1> + Sint<Unsigned: SupportedElement>
     {
     }
     /// Marks an unsigned integer scalar supported for the given shape.
     pub trait UintElement<const D0: usize = 1, const D1: usize = 1>:
-        Uint<Signed: Element<D0, D1>> + Element<D0, D1>
+        Element<D0, D1> + Uint<Signed: SupportedElement>
     {
     }
-    impl<T, const D0: usize, const D1: usize> IntElement<D0, D1> for T where
-        T: Int<Signed: SintElement<D0, D1>, Unsigned: UintElement<D0, D1>> + Element<D0, D1>
+
+    impl<T, const D0: usize, const D1: usize> Element<D0, D1> for T
+    where
+        T: SupportedElement,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
     {
     }
-    impl<T, const D0: usize, const D1: usize> SintElement<D0, D1> for T where
-        T: Sint<Unsigned: Element<D0, D1>> + Element<D0, D1>
+    impl<T, const D0: usize, const D1: usize> MaskElement<D0, D1> for T
+    where
+        T: SupportedElement + MaskLane,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
     {
     }
-    impl<T, const D0: usize, const D1: usize> UintElement<D0, D1> for T where
-        T: Uint<Signed: Element<D0, D1>> + Element<D0, D1>
+    impl<T, const D0: usize, const D1: usize> FloatElement<D0, D1> for T
+    where
+        T: SupportedElement + Float<Bits: SupportedElement + Uint<Signed: SupportedElement>>,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
+    {
+    }
+    impl<T, const D0: usize, const D1: usize> IntElement<D0, D1> for T
+    where
+        T: SupportedElement
+            + Int<
+                Signed: SupportedElement + Sint<Unsigned: SupportedElement>,
+                Unsigned: SupportedElement + Uint<Signed: SupportedElement>,
+            >,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
+    {
+    }
+    impl<T, const D0: usize, const D1: usize> SintElement<D0, D1> for T
+    where
+        T: SupportedElement + Sint<Unsigned: SupportedElement>,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
+    {
+    }
+    impl<T, const D0: usize, const D1: usize> UintElement<D0, D1> for T
+    where
+        T: SupportedElement + Uint<Signed: SupportedElement>,
+        Dimension<D0>: SupportedDimension,
+        Dimension<D1>: SupportedDimension,
     {
     }
 
     mod integer_element_compile_checks {
         use super::*;
+
+        fn _assert_element_mask_relationship<T: Element>() {
+            _assert_mask_element_relationship::<T::Mask>();
+        }
+        fn _assert_mask_element_relationship<T: MaskElement>() {
+            _assert_element_mask_relationship::<T>();
+        }
 
         fn _assert_unsigned_cast_relationships<T: UintElement>(a: Vector<T, 1>) {
             // Verify that signed and unsigned casts preserve the corresponding element bounds.
@@ -473,15 +503,21 @@ pub mod support {
 }
 
 pub(crate) mod private {
+    pub(crate) use crate::definitions::{SealedStorageElement, SealedSupportedDimension};
     use crate::{
-        marker::{Float, Lane, StoredVerbatim},
-        utils::{self, CanonicalMask, MaskStorage},
+        marker::{ColumnMajor, Float, Int, Lane, RowMajor, StoredVerbatim},
+        support::{Dimension, SupportedDimension, SupportedElement},
+        utils::{self, ArithOps, CanonicalMask, DimMaskStorage},
     };
 
     pub(crate) trait Fmt {
-        fn fmt<T: SealedElement<M, N> + core::fmt::Debug, const M: usize, const N: usize>(
-            storage: impl utils::Store<T::Storage>,
-        ) -> impl core::fmt::Debug;
+        fn fmt<T, const M: usize, const N: usize>(
+            storage: impl utils::Store<ConstStorage<T, M, N>>,
+        ) -> impl core::fmt::Debug
+        where
+            T: SealedSupportedElement + core::fmt::Debug,
+            Dimension<M>: SealedSupportedDimension,
+            Dimension<N>: SealedSupportedDimension;
     }
 
     pub(crate) enum VectorFmt {}
@@ -494,9 +530,11 @@ pub(crate) mod private {
         // The non-SIMD backend never calls this (see `src/non_simd/utils.rs`), so it is unused
         // under that backend.
         #[allow(dead_code)]
-        fn dispatch(v: <T as SealedElement<M, 1>>::Storage) -> <T as SealedElement<N, 1>>::Storage
+        fn dispatch(v: ConstStorage<T, M>) -> ConstStorage<T, N>
         where
-            T: SealedElement<M, 1> + SealedElement<N, 1>;
+            T: SealedSupportedElement,
+            Dimension<M>: SealedSupportedDimension,
+            Dimension<N>: SealedSupportedDimension;
     }
     pub(crate) trait SwizzleDispatchAny<const N: usize>:
         SwizzleDispatch<f32, 2, N>
@@ -543,10 +581,15 @@ pub(crate) mod private {
 
     impl Fmt for VectorFmt {
         #[inline(never)]
-        fn fmt<T: SealedElement<M, N> + core::fmt::Debug, const M: usize, const N: usize>(
-            storage: impl utils::Store<T::Storage>,
-        ) -> impl core::fmt::Debug {
-            let array = T::to_array(storage.store());
+        fn fmt<T, const M: usize, const N: usize>(
+            storage: impl utils::Store<ConstStorage<T, M, N>>,
+        ) -> impl core::fmt::Debug
+        where
+            T: SealedSupportedElement + core::fmt::Debug,
+            Dimension<M>: SealedSupportedDimension,
+            Dimension<N>: SealedSupportedDimension,
+        {
+            let array = ConstStorage::<T, M, N>::to_array(storage.store());
             assert_eq!(array.len(), 1);
             array.into_iter().next().unwrap()
         }
@@ -566,7 +609,7 @@ pub(crate) mod private {
     // overlap; consolidate them once their marker bounds and all backend call
     // sites can be unified without broadening the public API.
     pub(crate) trait Sealed: Sized {
-        // Scalar implementations used through `SealedElement` must override `TYPE`
+        // Scalar implementations used through `SealedSupportedElement` must override `TYPE`
         // so that it exactly identifies the concrete scalar type. Non-scalar
         // implementations used only to seal helper traits may keep this default;
         // evaluating it then fails during const evaluation.
@@ -602,171 +645,179 @@ pub(crate) mod private {
         },
     ]);
 
-    // M, N describe the row and column dimensions of the private column-major storage.
-    pub(crate) trait SealedElement<const M: usize, const N: usize>: Sealed {
-        // The storage answers for its own arithmetic. Naming `Load` here instead -- so that the
-        // defaults below could read `op(a.load(), b.load()).store()` -- would put the width
-        // conversion in this trait's bounds and in every default's body. Where storage and compute
-        // widths differ, which on x86 is the two-lane shapes alone, the storage type's own
-        // `ArithOps` performs the conversion and nothing else has to know.
-        type Storage: Copy + utils::ArithOps<Scalar = Self>;
+    // TODO: Revisit this witness after Rust issue #100177; the new trait solver may allow a
+    // simpler formulation.
+    pub(crate) trait SealedDimensionWitness<const D: usize>: SupportedElement {
+        type Dimension;
+    }
+    impl<T, const D: usize> SealedDimensionWitness<D> for T
+    where
+        T: SupportedElement,
+        Dimension<D>: SupportedDimension,
+    {
+        type Dimension = Dimension<D>;
+    }
 
-        const ZERO: Self::Storage;
-        const ONE: Self::Storage;
-        // Defaults are traps for operation and shape combinations that are not
-        // exposed by the public marker bounds. Implementations in `simd` and
-        // `non_simd` override every member reachable by a released API; tests
-        // cover all supported scalar types and dimensions.
-        const IDENTITY: Self::Storage = unimplemented!();
-        const POS_X: Self::Storage = unimplemented!();
-        const POS_Y: Self::Storage = unimplemented!();
-        const POS_Z: Self::Storage = unimplemented!();
-        const POS_W: Self::Storage = unimplemented!();
-        const NEG_X: Self::Storage = unimplemented!();
-        const NEG_Y: Self::Storage = unimplemented!();
-        const NEG_Z: Self::Storage = unimplemented!();
-        const NEG_W: Self::Storage = unimplemented!();
+    pub(crate) trait DimensionTypes {
+        type Array<T>;
+        type Vector<T>
+        where
+            T: SupportedElement,
+            Self: SupportedDimension;
+    }
+    impl<const D: usize> DimensionTypes for Dimension<D> {
+        type Array<T> = [T; D];
+        type Vector<T>
+            = crate::Vector<T, D>
+        where
+            T: SupportedElement,
+            Self: SupportedDimension;
+    }
 
-        fn map2(
-            a: Self::Storage,
-            b: Self::Storage,
-            f: impl FnMut(Self, Self) -> Self,
-        ) -> Self::Storage;
-        fn index(_a: &Self::Storage, _index: (usize, usize)) -> Option<&Self> { unimplemented!() }
-        fn index_mut(_a: &mut Self::Storage, _index: (usize, usize)) -> Option<&mut Self> {
+    pub(crate) type DimStorage<T, R, C = Dimension<1>> =
+        <R as SealedSupportedDimension>::StorageNxC<T, C>;
+    pub(crate) type ConstStorage<T, const R: usize, const C: usize = 1> =
+        DimStorage<T, Dimension<R>, Dimension<C>>;
+    pub(crate) type DimArray<T, D> = <D as DimensionTypes>::Array<T>;
+    pub(crate) type DimVector<T, D> = <D as DimensionTypes>::Vector<T>;
+
+    pub(crate) trait SealedSupportedElement: Sealed + SealedStorageElement {
+        fn vector_concat_1_1(
+            a: ConstStorage<Self, 1>,
+            b: ConstStorage<Self, 1>,
+        ) -> ConstStorage<Self, 2> {
+            let [[a]] = crate::api::vector::call!(<Self, 1>::to_array(a));
+            let [[b]] = crate::api::vector::call!(<Self, 1>::to_array(b));
+            crate::api::vector::call!(<Self, 2>::from_array([[a, b]]))
+        }
+        fn vector_concat_1_2(
+            a: ConstStorage<Self, 1>,
+            b: ConstStorage<Self, 2>,
+        ) -> ConstStorage<Self, 3> {
+            let [[a]] = crate::api::vector::call!(<Self, 1>::to_array(a));
+            let [[b, c]] = crate::api::vector::call!(<Self, 2>::to_array(b));
+            crate::api::vector::call!(<Self, 3>::from_array([[a, b, c]]))
+        }
+        fn vector_concat_2_1(
+            a: ConstStorage<Self, 2>,
+            b: ConstStorage<Self, 1>,
+        ) -> ConstStorage<Self, 3> {
+            let [[a0, a1]] = crate::api::vector::call!(<Self, 2>::to_array(a));
+            let [[b0]] = crate::api::vector::call!(<Self, 1>::to_array(b));
+            crate::api::vector::call!(<Self, 3>::from_array([[a0, a1, b0]]))
+        }
+    }
+
+    pub(crate) trait StorageOps<
+        T: SealedSupportedElement,
+        R: SealedSupportedDimension,
+        C: SealedSupportedDimension = Dimension<1>,
+    >: ArithOps<Scalar = T>
+    {
+        const ZERO: Self = ArithOps::ZERO_;
+        const ONE: Self = ArithOps::ONE_;
+        const IDENTITY: Self = unimplemented!();
+        const POS_X: Self = unimplemented!();
+        const POS_Y: Self = unimplemented!();
+        const POS_Z: Self = unimplemented!();
+        const POS_W: Self = unimplemented!();
+        const NEG_X: Self = unimplemented!();
+        const NEG_Y: Self = unimplemented!();
+        const NEG_Z: Self = unimplemented!();
+        const NEG_W: Self = unimplemented!();
+
+        fn map2(a: Self, b: Self, f: impl FnMut(T, T) -> T) -> Self;
+        fn index(_a: &Self, _index: (usize, usize)) -> Option<&T> { unimplemented!() }
+        fn index_mut(_a: &mut Self, _index: (usize, usize)) -> Option<&mut T> { unimplemented!() }
+        //noinspection RsSelfConvention
+        fn as_array_first(_a: &Self) -> &DimArray<T, R>
+        where
+            R: DimensionTypes,
+        {
             unimplemented!()
         }
         //noinspection RsSelfConvention
-        fn as_array_first(_a: &Self::Storage) -> &[Self; M] { unimplemented!() }
-        //noinspection RsSelfConvention
-        fn as_mut_array_first(_a: &mut Self::Storage) -> &mut [Self; M] { unimplemented!() }
-        //noinspection RsSelfConvention
-        fn to_array(a: Self::Storage) -> [[Self; M]; N];
-        fn from_array(array: [[Self; M]; N]) -> Self::Storage;
-        fn from_vecs(array: [crate::Vector<Self, M>; N]) -> <Self as SealedElement<M, N>>::Storage
+        fn as_mut_array_first(_a: &mut Self) -> &mut DimArray<T, R>
         where
-            Self: crate::Element<M>;
+            R: DimensionTypes,
+        {
+            unimplemented!()
+        }
+        //noinspection RsSelfConvention
+        fn to_array(_a: Self) -> DimArray<DimArray<T, R>, C>
+        where
+            R: DimensionTypes,
+            C: DimensionTypes,
+        {
+            unimplemented!()
+        }
+        fn from_array(_a: DimArray<DimArray<T, R>, C>) -> Self
+        where
+            R: DimensionTypes,
+            C: DimensionTypes,
+        {
+            unimplemented!()
+        }
+        fn from_vecs(_a: DimArray<DimVector<T, R>, C>) -> Self
+        where
+            T: SupportedElement,
+            R: DimensionTypes + SupportedDimension,
+            C: DimensionTypes,
+        {
+            unimplemented!()
+        }
         #[inline(always)]
-        fn filled(value: Self) -> Self::Storage {
+        fn filled(value: T) -> Self {
             // Named rather than inferred: `filled_` takes only the scalar, so nothing else
             // pins which type produces the storage.
-            utils::ArithOps::filled_(value)
+            ArithOps::filled_(value)
         }
-        fn substantiate_f32(_a: Self::Storage) -> <f32 as SealedElement<M, N>>::Storage
-        where
-            f32: SealedElement<M, N>,
-        {
+        fn substantiate_f32(_a: Self) -> DimStorage<f32, R, C> { unimplemented!() }
+        fn substantiate_f64(_a: Self) -> DimStorage<f64, R, C> { unimplemented!() }
+        fn substantiate_i32(_a: Self) -> DimStorage<i32, R, C> { unimplemented!() }
+        fn substantiate_i64(_a: Self) -> DimStorage<i64, R, C> { unimplemented!() }
+        fn substantiate_u32(_a: Self) -> DimStorage<u32, R, C> { unimplemented!() }
+        fn substantiate_u64(_a: Self) -> DimStorage<u64, R, C> { unimplemented!() }
+        fn cast_from_f32(_a: DimStorage<f32, R, C>) -> Self { unimplemented!() }
+        fn cast_from_f64(_a: DimStorage<f64, R, C>) -> Self { unimplemented!() }
+        fn cast_from_i32(_a: DimStorage<i32, R, C>) -> Self { unimplemented!() }
+        fn cast_from_i64(_a: DimStorage<i64, R, C>) -> Self { unimplemented!() }
+        fn cast_from_u32(_a: DimStorage<u32, R, C>) -> Self { unimplemented!() }
+        fn cast_from_u64(_a: DimStorage<u64, R, C>) -> Self { unimplemented!() }
+        fn cast_from<U: SealedSupportedElement>(_a: DimStorage<U, R, C>) -> Self {
             unimplemented!()
         }
-        fn substantiate_f64(_a: Self::Storage) -> <f64 as SealedElement<M, N>>::Storage
-        where
-            f64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn substantiate_i32(_a: Self::Storage) -> <i32 as SealedElement<M, N>>::Storage
-        where
-            i32: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn substantiate_i64(_a: Self::Storage) -> <i64 as SealedElement<M, N>>::Storage
-        where
-            i64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn substantiate_u32(_a: Self::Storage) -> <u32 as SealedElement<M, N>>::Storage
-        where
-            u32: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn substantiate_u64(_a: Self::Storage) -> <u64 as SealedElement<M, N>>::Storage
-        where
-            u64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_f32(_a: <f32 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            f32: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_f64(_a: <f64 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            f64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_i32(_a: <i32 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            i32: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_i64(_a: <i64 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            i64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_u32(_a: <u32 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            u32: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from_u64(_a: <u64 as SealedElement<M, N>>::Storage) -> Self::Storage
-        where
-            u64: SealedElement<M, N>,
-        {
-            unimplemented!()
-        }
-        fn cast_from<U: SealedElement<M, N>>(
-            a: <U as SealedElement<M, N>>::Storage,
-        ) -> Self::Storage;
 
-        fn cast_signed(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self::Signed as SealedElement<M, N>>::Storage
+        fn cast_signed(_a: Self) -> DimStorage<<T as Int>::Signed, R, C>
         where
-            Self: crate::IntElement<M, N>,
+            T: Int<Signed: SealedSupportedElement>,
         {
             unimplemented!()
         }
-        fn cast_unsigned(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self::Unsigned as SealedElement<M, N>>::Storage
+        fn cast_unsigned(_a: Self) -> DimStorage<<T as Int>::Unsigned, R, C>
         where
-            Self: crate::IntElement<M, N>,
+            T: Int<Unsigned: SealedSupportedElement>,
         {
             unimplemented!()
         }
-        fn swizzle2<const I0: usize, const I1: usize>(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<2, 1>>::Storage
+        fn swizzle2<const I0: usize, const I1: usize>(_a: Self) -> ConstStorage<T, 2, 1>
         where
-            Self: SealedElement<2, 1>,
             Indices2<I0, I1>: SwizzleDispatchAny<2>,
         {
             unimplemented!()
         }
         fn swizzle3<const I0: usize, const I1: usize, const I2: usize>(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<3, 1>>::Storage
+            _a: Self,
+        ) -> ConstStorage<T, 3, 1>
         where
-            Self: SealedElement<3, 1>,
             Indices3<I0, I1, I2>: SwizzleDispatchAny<3>,
         {
             unimplemented!()
         }
         fn swizzle4<const I0: usize, const I1: usize, const I2: usize, const I3: usize>(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<4, 1>>::Storage
+            _a: Self,
+        ) -> ConstStorage<T, 4, 1>
         where
-            Self: SealedElement<4, 1>,
             Indices4<I0, I1, I2, I3>: SwizzleDispatchAny<4>,
         {
             unimplemented!()
@@ -778,171 +829,168 @@ pub(crate) mod private {
         /// both mask with `i32x4` -- but only an implementation, where the element type is
         /// concrete, can see that. The comparison defaults below leave this one step to the
         /// backend and keep the comparison itself in one body.
-        fn substantiate_mask(_mask: MaskStorage<Self, M, N>) -> MaskStorage<Self::Mask, M, N>
+        // TODO: Could proving `Self = DimStorage<T, R, C>` simplify this implementation?
+        // In particular, could it establish equality between their `ArithOps::Mask` types?
+        fn substantiate_mask(
+            _mask: CanonicalMask<<Self as ArithOps>::Mask>,
+        ) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
             unimplemented!()
         }
         /// Unwraps a mask into the vector storage of the same element type, for `Mask::to_vector`.
         ///
         /// Implemented for the mask element types alone, where the two are the same type.
-        fn from_mask(_mask: MaskStorage<Self, M, N>) -> Self::Storage { unimplemented!() }
+        fn from_mask(_mask: DimMaskStorage<T::Mask, R, C>) -> Self
+        where
+            T: Lane<Mask: SealedSupportedElement>,
+        {
+            unimplemented!()
+        }
         fn select_mask(
-            _mask: MaskStorage<Self::Mask, M, N>,
-            _true_values: <Self as SealedElement<M, N>>::Storage,
-            _false_values: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<M, N>>::Storage
+            _mask: DimMaskStorage<T::Mask, R, C>,
+            _true_values: Self,
+            _false_values: Self,
+        ) -> Self
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
             unimplemented!()
         }
-        fn select_any_mask<Mask>(
-            _mask: MaskStorage<Mask, M, N>,
-            _true_values: <Self as SealedElement<M, N>>::Storage,
-            _false_values: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<M, N>>::Storage
+        fn select_any_mask<Mask: SealedSupportedElement>(
+            _mask: DimMaskStorage<Mask, R, C>,
+            _true_values: Self,
+            _false_values: Self,
+        ) -> Self
         where
-            Mask: SealedElement<M, N>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
             unimplemented!()
         }
         #[expect(dead_code)]
-        fn select_u64(
-            _mask: u64,
-            _true_values: Self::Storage,
-            _false_values: Self::Storage,
-        ) -> Self::Storage {
+        fn select_u64(_mask: u64, _true_values: Self, _false_values: Self) -> Self {
             unimplemented!()
         }
 
-        fn cast_i32(_mask: MaskStorage<Self, M, N>) -> MaskStorage<i32, M, N>
-        where
-            i32: SealedElement<M, N>,
-        {
+        fn cast_i32(_mask: DimMaskStorage<T, R, C>) -> DimMaskStorage<i32, R, C> {
             unimplemented!()
         }
-        fn cast_i64(_mask: MaskStorage<Self, M, N>) -> MaskStorage<i64, M, N>
-        where
-            i64: SealedElement<M, N>,
-        {
+        fn cast_i64(_mask: DimMaskStorage<T, R, C>) -> DimMaskStorage<i64, R, C> {
             unimplemented!()
         }
 
         #[allow(clippy::wrong_self_convention)]
-        fn to_bool_array(_mask: MaskStorage<Self, M, N>) -> [[bool; M]; N] { unimplemented!() }
-        fn from_bool_array(_array: [[bool; M]; N]) -> MaskStorage<Self, M, N> { unimplemented!() }
-        fn all(_mask: MaskStorage<Self, M, N>) -> bool { unimplemented!() }
-        fn any(_mask: MaskStorage<Self, M, N>) -> bool { unimplemented!() }
+        fn to_bool_array(_mask: DimMaskStorage<T, R, C>) -> DimArray<DimArray<bool, R>, C>
+        where
+            R: DimensionTypes,
+            C: DimensionTypes,
+        {
+            unimplemented!()
+        }
+        fn from_bool_array(_array: DimArray<DimArray<bool, R>, C>) -> DimMaskStorage<T, R, C>
+        where
+            R: DimensionTypes,
+            C: DimensionTypes,
+        {
+            unimplemented!()
+        }
+        fn all(_mask: DimMaskStorage<T, R, C>) -> bool { unimplemented!() }
+        fn any(_mask: DimMaskStorage<T, R, C>) -> bool { unimplemented!() }
         #[allow(clippy::wrong_self_convention)]
         #[expect(dead_code)]
-        fn to_bitmask(_mask: MaskStorage<Self, M, N>) -> u64 { unimplemented!() }
+        fn to_bitmask(_mask: DimMaskStorage<T, R, C>) -> u64 { unimplemented!() }
 
         // The four operations below take a mask and return a mask of the same element type, so
         // widening and narrowing both happen here and the backends need no hook. The comparisons
         // further down cannot do the same: they take `Self` and return `Self::Mask`, and nothing
         // at this level relates the two storage types, which is what `substantiate_mask` is for.
         #[inline(always)]
-        fn mask_not(mask: MaskStorage<Self, M, N>) -> MaskStorage<Self, M, N> {
+        fn mask_not(mask: DimMaskStorage<T, R, C>) -> DimMaskStorage<T, R, C> {
             CanonicalMask::store_mask(!mask.load_mask())
         }
         #[inline(always)]
         fn mask_bitand(
-            a: MaskStorage<Self, M, N>,
-            b: MaskStorage<Self, M, N>,
-        ) -> MaskStorage<Self, M, N> {
+            a: DimMaskStorage<T, R, C>,
+            b: DimMaskStorage<T, R, C>,
+        ) -> DimMaskStorage<T, R, C> {
             CanonicalMask::store_mask(a.load_mask() & b.load_mask())
         }
         #[inline(always)]
         fn mask_bitor(
-            a: MaskStorage<Self, M, N>,
-            b: MaskStorage<Self, M, N>,
-        ) -> MaskStorage<Self, M, N> {
+            a: DimMaskStorage<T, R, C>,
+            b: DimMaskStorage<T, R, C>,
+        ) -> DimMaskStorage<T, R, C> {
             CanonicalMask::store_mask(a.load_mask() | b.load_mask())
         }
         #[inline(always)]
         fn mask_bitxor(
-            a: MaskStorage<Self, M, N>,
-            b: MaskStorage<Self, M, N>,
-        ) -> MaskStorage<Self, M, N> {
+            a: DimMaskStorage<T, R, C>,
+            b: DimMaskStorage<T, R, C>,
+        ) -> DimMaskStorage<T, R, C> {
             CanonicalMask::store_mask(a.load_mask() ^ b.load_mask())
         }
-        fn mask_select_any<Mask>(
-            _mask: MaskStorage<Mask, M, N>,
-            _true_values: MaskStorage<Self, M, N>,
-            _false_values: MaskStorage<Self, M, N>,
-        ) -> MaskStorage<Self, M, N>
-        where
-            Mask: SealedElement<M, N>,
-        {
+        fn mask_select_any<Mask: SealedSupportedElement>(
+            _mask: DimMaskStorage<Mask, R, C>,
+            _true_values: DimMaskStorage<T, R, C>,
+            _false_values: DimMaskStorage<T, R, C>,
+        ) -> DimMaskStorage<T, R, C> {
             unimplemented!()
         }
 
-        fn each_eq(a: Self::Storage, b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_eq(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::eq_(a, b))
+            Self::substantiate_mask(ArithOps::eq_(a, b))
         }
-        fn each_ne(_a: Self::Storage, _b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_ne(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::ne_(_a, _b))
+            Self::substantiate_mask(ArithOps::ne_(a, b))
         }
-        fn each_lt(a: Self::Storage, b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_lt(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::lt_(a, b))
+            Self::substantiate_mask(ArithOps::lt_(a, b))
         }
-        fn each_le(a: Self::Storage, b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_le(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::le_(a, b))
+            Self::substantiate_mask(ArithOps::le_(a, b))
         }
-        fn each_gt(a: Self::Storage, b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_gt(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::gt_(a, b))
+            Self::substantiate_mask(ArithOps::gt_(a, b))
         }
-        fn each_ge(a: Self::Storage, b: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn each_ge(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::ge_(a, b))
+            Self::substantiate_mask(ArithOps::ge_(a, b))
         }
-
         #[expect(dead_code)]
-        fn is_nan(_a: Self::Storage) -> MaskStorage<Self::Mask, M, N>
+        fn is_nan(_a: Self) -> DimMaskStorage<T::Mask, R, C>
         where
-            Self: Lane<Mask: SealedElement<M, N>>,
+            T: Lane<Mask: SealedSupportedElement>,
         {
-            Self::substantiate_mask(utils::ArithOps::is_nan_(_a))
+            Self::substantiate_mask(ArithOps::is_nan_(_a))
         }
 
-        // Defaulted like the other lane-wise operations: `src/api.rs` exposes these on `Vector`
-        // alone, so the backends implement them for a one-column shape only.
+        // The public API exposes these on `Vector` alone, but the `each_max` and `each_min`
+        // defaults cover every supported storage shape.
         #[inline(always)]
-        fn each_max(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::max_(a, b)
-        }
+        fn each_max(a: Self, b: Self) -> Self { ArithOps::max_(a, b) }
         #[inline(always)]
-        fn each_min(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::min_(a, b)
-        }
-        fn each_clamp<F: Fmt>(
-            _a: Self::Storage,
-            _min: Self::Storage,
-            _max: Self::Storage,
-        ) -> Self::Storage {
-            unimplemented!()
-        }
-        fn eq(a: Self::Storage, b: Self::Storage) -> bool;
-        fn ne(a: Self::Storage, b: Self::Storage) -> bool;
+        fn each_min(a: Self, b: Self) -> Self { ArithOps::min_(a, b) }
+        fn each_clamp<F: Fmt>(_a: Self, _min: Self, _max: Self) -> Self { unimplemented!() }
+        fn eq(a: Self, b: Self) -> bool;
+        fn ne(a: Self, b: Self) -> bool;
         // The lane-wise operations below have one body for every backend and every shape: the
         // unit's operation applied to each unit, which `ArithOps for [T; N]` in `utils.rs`
         // expresses once. They stay named here rather than moving to the call sites so that the
@@ -955,146 +1003,286 @@ pub(crate) mod private {
         // aggregates that Rust passes in a general-purpose register: leaving a call boundary in
         // between costs the broadcast its `vbroadcastss`.
         #[inline(always)]
-        fn add(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::add_noexcept_(a, b)
-        }
+        fn add(a: Self, b: Self) -> Self { ArithOps::add_noexcept_(a, b) }
         #[inline(always)]
-        fn sub(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::sub_noexcept_(a, b)
-        }
+        fn sub(a: Self, b: Self) -> Self { ArithOps::sub_noexcept_(a, b) }
         #[inline(always)]
-        fn mul(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::mul_noexcept_(a, b)
-        }
+        fn mul(a: Self, b: Self) -> Self { ArithOps::mul_noexcept_(a, b) }
         // Integer division overrides this to reject a zero divisor first.
         #[inline(always)]
-        fn div(a: Self::Storage, b: Self::Storage) -> Self::Storage { utils::ArithOps::div_(a, b) }
+        fn div(a: Self, b: Self) -> Self { ArithOps::div_(a, b) }
         // TODO(integer-vector): separate sqrt and isqrt semantics in public traits.
         #[inline(always)]
-        fn sqrt(a: Self::Storage) -> Self::Storage { utils::ArithOps::sqrt_(a) }
-        fn transpose(
-            a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<N, M>>::Storage
-        where
-            Self: SealedElement<N, M>;
+        fn sqrt(a: Self) -> Self { ArithOps::sqrt_(a) }
+        fn transpose(a: Self) -> DimStorage<T, C, R>;
 
-        fn from_bits(_a: <<Self as Float>::Bits as SealedElement<M, N>>::Storage) -> Self::Storage
+        #[allow(dead_code)]
+        fn substantiate_1x(_a: Self) -> DimStorage<T, Dimension<1>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_2x(_a: Self) -> DimStorage<T, Dimension<2>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_3x(_a: Self) -> DimStorage<T, Dimension<3>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_4x(_a: Self) -> DimStorage<T, Dimension<4>, C> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x1(_a: Self) -> DimStorage<T, R, Dimension<1>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x2(_a: Self) -> DimStorage<T, R, Dimension<2>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x3(_a: Self) -> DimStorage<T, R, Dimension<3>> { unimplemented!() }
+        #[allow(dead_code)]
+        fn substantiate_x4(_a: Self) -> DimStorage<T, R, Dimension<4>> { unimplemented!() }
+        // TODO(integer-products): After the numeric element semantics are defined, generalize
+        // matrix products to integers, retain non-FMA integer kernels, and add debug-mode
+        // overflow tests through every public product operation.
+        fn matmul<const K: usize>(
+            _a: DimStorage<T, R, Dimension<K>>,
+            _b: DimStorage<T, Dimension<K>, C>,
+        ) -> Self
         where
-            Self: Float<Bits: SealedElement<M, N>>,
+            Dimension<K>: SealedSupportedDimension,
+        {
+            unimplemented!()
+        }
+
+        fn from_bits(_a: DimStorage<<T as Float>::Bits, R, C>) -> Self
+        where
+            T: Float<Bits: SealedSupportedElement>,
         {
             unimplemented!()
         }
         #[allow(clippy::wrong_self_convention)]
-        fn to_bits(_a: Self::Storage) -> <<Self as Float>::Bits as SealedElement<M, N>>::Storage
+        fn to_bits(_a: Self) -> DimStorage<<T as Float>::Bits, R, C>
         where
-            Self: Float<Bits: SealedElement<M, N>>,
+            T: Float<Bits: SealedSupportedElement>,
         {
             unimplemented!()
         }
         #[inline(always)]
-        fn floor(a: Self::Storage) -> Self::Storage { utils::ArithOps::floor_(a) }
+        fn floor(a: Self) -> Self { ArithOps::floor_(a) }
         #[inline(always)]
-        fn ceil(a: Self::Storage) -> Self::Storage { utils::ArithOps::ceil_(a) }
+        fn ceil(a: Self) -> Self { ArithOps::ceil_(a) }
         #[inline(always)]
-        fn round(a: Self::Storage) -> Self::Storage { utils::ArithOps::round_(a) }
+        fn round(a: Self) -> Self { ArithOps::round_(a) }
         #[inline(always)]
-        fn round_ties_even(a: Self::Storage) -> Self::Storage {
-            utils::ArithOps::round_ties_even_(a)
-        }
+        fn round_ties_even(a: Self) -> Self { ArithOps::round_ties_even_(a) }
         #[inline(always)]
-        fn trunc(a: Self::Storage) -> Self::Storage { utils::ArithOps::trunc_(a) }
+        fn trunc(a: Self) -> Self { ArithOps::trunc_(a) }
         #[inline(always)]
-        fn fract(a: Self::Storage) -> Self::Storage { utils::ArithOps::fract_(a) }
+        fn fract(a: Self) -> Self { ArithOps::fract_(a) }
         #[inline(always)]
-        fn neg(a: Self::Storage) -> Self::Storage { utils::ArithOps::neg_noexcept_(a) }
+        fn neg(a: Self) -> Self { ArithOps::neg_noexcept_(a) }
         #[inline(always)]
-        fn abs(a: Self::Storage) -> Self::Storage { utils::ArithOps::abs_noexcept_(a) }
+        fn abs(a: Self) -> Self { ArithOps::abs_noexcept_(a) }
         // No public operation reaches this yet; the vocabulary is here for when one does.
         #[expect(dead_code)]
         #[inline(always)]
-        fn signum(a: Self::Storage) -> Self::Storage { utils::ArithOps::signum_(a) }
-        fn rem(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
+        fn signum(a: Self) -> Self { ArithOps::signum_(a) }
+        fn rem(_a: Self, _b: Self) -> Self { unimplemented!() }
         #[inline(always)]
-        fn not(a: Self::Storage) -> Self::Storage { utils::ArithOps::not_(a) }
+        fn not(a: Self) -> Self { ArithOps::not_(a) }
         #[inline(always)]
-        fn bitand(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::bitand_(a, b)
-        }
+        fn bitand(a: Self, b: Self) -> Self { ArithOps::bitand_(a, b) }
         #[inline(always)]
-        fn bitor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::bitor_(a, b)
-        }
+        fn bitor(a: Self, b: Self) -> Self { ArithOps::bitor_(a, b) }
         #[inline(always)]
-        fn bitxor(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::bitxor_(a, b)
-        }
+        fn bitxor(a: Self, b: Self) -> Self { ArithOps::bitxor_(a, b) }
         #[inline(always)]
-        fn shl(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::shl_noexcept_(a, b)
-        }
+        fn shl(a: Self, b: Self) -> Self { ArithOps::shl_noexcept_(a, b) }
         #[inline(always)]
-        fn shr(a: Self::Storage, b: Self::Storage) -> Self::Storage {
-            utils::ArithOps::shr_noexcept_(a, b)
-        }
+        fn shr(a: Self, b: Self) -> Self { ArithOps::shr_noexcept_(a, b) }
 
-        fn reduce_sum(_a: Self::Storage) -> Self { unimplemented!() }
+        fn reduce_sum(_a: Self) -> T { unimplemented!() }
         #[inline(always)]
-        fn dot(a: Self::Storage, b: Self::Storage) -> Self { Self::reduce_sum(Self::mul(a, b)) }
-        #[expect(dead_code)]
-        fn cross(_a: Self::Storage, _b: Self::Storage) -> Self::Storage { unimplemented!() }
+        fn dot(a: Self, b: Self) -> T { Self::reduce_sum(Self::mul(a, b)) }
 
-        fn vector_concat_1_1(
-            a: <Self as SealedElement<1, 1>>::Storage,
-            b: <Self as SealedElement<1, 1>>::Storage,
-        ) -> <Self as SealedElement<2, 1>>::Storage
-        where
-            Self: SealedElement<1, 1> + SealedElement<2, 1>,
-        {
-            let [[a]] = <Self as SealedElement<1, 1>>::to_array(a);
-            let [[b]] = <Self as SealedElement<1, 1>>::to_array(b);
-            SealedElement::<2, 1>::from_array([[a, b]])
-        }
-
-        fn vector_concat_1_2(
-            a: <Self as SealedElement<1, 1>>::Storage,
-            b: <Self as SealedElement<2, 1>>::Storage,
-        ) -> <Self as SealedElement<3, 1>>::Storage
-        where
-            Self: SealedElement<1, 1> + SealedElement<2, 1> + SealedElement<3, 1>,
-        {
-            let [[a]] = <Self as SealedElement<1, 1>>::to_array(a);
-            let [[b, c]] = <Self as SealedElement<2, 1>>::to_array(b);
-            SealedElement::<3, 1>::from_array([[a, b, c]])
-        }
-
-        fn vector_concat_2_1(
-            a: <Self as SealedElement<2, 1>>::Storage,
-            b: <Self as SealedElement<1, 1>>::Storage,
-        ) -> <Self as SealedElement<3, 1>>::Storage
-        where
-            Self: SealedElement<1, 1> + SealedElement<2, 1> + SealedElement<3, 1>,
-        {
-            let [[a0, a1]] = <Self as SealedElement<2, 1>>::to_array(a);
-            let [[b0]] = <Self as SealedElement<1, 1>>::to_array(b);
-            SealedElement::<3, 1>::from_array([[a0, a1, b0]])
-        }
-
-        fn diagonal(
-            _a: <Self as SealedElement<M, N>>::Storage,
-        ) -> <Self as SealedElement<N, 1>>::Storage
-        where
-            Self: SealedElement<N, 1>,
-        {
-            unimplemented!()
-        }
-
+        fn diagonal(_a: Self) -> DimStorage<T, R> { unimplemented!() }
         // Only regular 1x1 through 4x4 square shapes are supported; shapes of 5x5 or larger are
         // outside the planned scope. Floating-point and boolean forms are reversible, while
         // integer and integer-backed mask forms are not.
-        fn inverse(_a: Self::Storage) -> Self::Storage { unimplemented!() }
+        fn inverse(_a: Self) -> Self { unimplemented!() }
         #[expect(dead_code)]
-        fn try_inverse(_a: Self::Storage) -> Option<Self::Storage> { unimplemented!() }
-        fn determinant(_a: Self::Storage) -> Self { unimplemented!() }
+        fn try_inverse(_a: Self) -> Option<Self> { unimplemented!() }
+        fn determinant(_a: Self) -> T { unimplemented!() }
+    }
+
+    pub(crate) trait SealedMatrixLayout: Sized {
+        type StorageRxC<T, const R: usize, const C: usize>: OrientedStorageOps<T, R, C, Self>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    impl SealedMatrixLayout for ColumnMajor {
+        type StorageRxC<T, const R: usize, const C: usize>
+            = ConstStorage<T, R, C>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    impl SealedMatrixLayout for RowMajor {
+        type StorageRxC<T, const R: usize, const C: usize>
+            = ConstStorage<T, C, R>
+        where
+            T: SealedSupportedElement,
+            Dimension<R>: SealedSupportedDimension,
+            Dimension<C>: SealedSupportedDimension;
+    }
+
+    pub(crate) trait OrientedStorageOps<T, const R: usize, const C: usize, L>: Copy
+    where
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+        L: SealedMatrixLayout,
+    {
+        const ZERO: Self;
+        const ONE: Self;
+        const IDENTITY: Self;
+
+        fn filled(value: T) -> Self;
+        fn transpose(a: Self) -> L::StorageRxC<T, C, R>;
+        fn cast_from<U: SealedSupportedElement>(_a: L::StorageRxC<U, R, C>) -> Self;
+        fn add(a: Self, b: Self) -> Self;
+        fn sub(a: Self, b: Self) -> Self;
+        fn mul(a: Self, b: Self) -> Self;
+        fn div(a: Self, b: Self) -> Self;
+        fn neg(a: Self) -> Self;
+        fn eq(a: Self, b: Self) -> bool;
+        fn ne(a: Self, b: Self) -> bool;
+        fn index(a: &Self, index: (usize, usize)) -> Option<&T>;
+        fn index_mut(a: &mut Self, index: (usize, usize)) -> Option<&mut T>;
+        fn with_major_slices<U>(a: Self, f: impl FnOnce(&[&[T]]) -> U) -> U;
+        fn matmul<const K: usize>(a: L::StorageRxC<T, R, K>, b: L::StorageRxC<T, K, C>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension;
+        fn diagonal<const D: usize>(a: L::StorageRxC<T, D, D>) -> ConstStorage<T, D>
+        where
+            Dimension<D>: SealedSupportedDimension;
+        fn inverse(a: Self) -> Self;
+        fn determinant(a: Self) -> T;
+    }
+
+    macro_rules! impl_oriented_storage_ops {
+        () => {
+            const ZERO: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ZERO;
+            const ONE: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ONE;
+            const IDENTITY: Self = <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::IDENTITY;
+
+            #[inline(always)]
+            fn filled(value: T) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::filled(value)
+            }
+            #[inline(always)]
+            fn transpose(a: Self) -> ConstStorage<T, C, R> {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::transpose(a)
+            }
+            #[inline(always)]
+            fn cast_from<U: SealedSupportedElement>(a: ConstStorage<U, R, C>) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::cast_from(a)
+            }
+            #[inline(always)]
+            fn add(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::add(a, b)
+            }
+            #[inline(always)]
+            fn sub(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::sub(a, b)
+            }
+            #[inline(always)]
+            fn mul(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::mul(a, b)
+            }
+            #[inline(always)]
+            fn div(a: Self, b: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::div(a, b)
+            }
+            #[inline(always)]
+            fn neg(a: Self) -> Self { <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::neg(a) }
+            #[inline(always)]
+            fn eq(a: Self, b: Self) -> bool {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::eq(a, b)
+            }
+            #[inline(always)]
+            fn ne(a: Self, b: Self) -> bool {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::ne(a, b)
+            }
+            fn with_major_slices<U>(a: Self, f: impl FnOnce(&[&[T]]) -> U) -> U {
+                let major_vectors: [[T; R]; C] =
+                    <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::to_array(a);
+                let slices: [&[T]; C] = major_vectors.each_ref().map(|vector| vector.as_slice());
+                f(&slices)
+            }
+            #[inline(always)]
+            fn diagonal<const D: usize>(a: ConstStorage<T, D, D>) -> ConstStorage<T, D>
+            where
+                Dimension<D>: SealedSupportedDimension,
+            {
+                <ConstStorage<T, D, D> as StorageOps<T, Dimension<D>, Dimension<D>>>::diagonal(a)
+            }
+            #[inline(always)]
+            fn inverse(a: Self) -> Self {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::inverse(a)
+            }
+            #[inline(always)]
+            fn determinant(a: Self) -> T {
+                <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::determinant(a)
+            }
+        };
+    }
+
+    impl<S, T, const R: usize, const C: usize> OrientedStorageOps<T, R, C, ColumnMajor> for S
+    where
+        S: StorageOps<T, Dimension<R>, Dimension<C>>,
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+    {
+        impl_oriented_storage_ops!();
+
+        #[inline(always)]
+        fn index(a: &Self, index: (usize, usize)) -> Option<&T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index(a, index)
+        }
+        #[inline(always)]
+        fn index_mut(a: &mut Self, index: (usize, usize)) -> Option<&mut T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index_mut(a, index)
+        }
+        #[inline(always)]
+        fn matmul<const K: usize>(a: ConstStorage<T, R, K>, b: ConstStorage<T, K, C>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension,
+        {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::matmul::<K>(a, b)
+        }
+    }
+    impl<S, T, const R: usize, const C: usize> OrientedStorageOps<T, C, R, RowMajor> for S
+    where
+        S: StorageOps<T, Dimension<R>, Dimension<C>>,
+        T: SealedSupportedElement,
+        Dimension<R>: SealedSupportedDimension,
+        Dimension<C>: SealedSupportedDimension,
+    {
+        impl_oriented_storage_ops!();
+
+        #[inline(always)]
+        fn index(a: &Self, (row, column): (usize, usize)) -> Option<&T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index(a, (column, row))
+        }
+        #[inline(always)]
+        fn index_mut(a: &mut Self, (row, column): (usize, usize)) -> Option<&mut T> {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::index_mut(a, (column, row))
+        }
+        #[inline(always)]
+        fn matmul<const K: usize>(a: ConstStorage<T, K, C>, b: ConstStorage<T, R, K>) -> Self
+        where
+            Dimension<K>: SealedSupportedDimension,
+        {
+            <Self as StorageOps<T, Dimension<R>, Dimension<C>>>::matmul::<K>(b, a)
+        }
     }
 
     #[repr(C)]
