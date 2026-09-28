@@ -499,21 +499,18 @@ macro_rules! impl_layout {
                         #[inline(always)] |x, y| x.wrapping_div(y)
                     )
                 }
-                // `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl` and `Shr` are generated for vectors only.
-                if_! { $n == 1 {
-                    #[inline(always)]
-                    fn rem(a: Self, b: Self) -> Self {
-                        let mask = ArithOps::eq_(b.load(), ArithOps::ZERO_);
-                        assert!(
-                            !paste::paste!([<mask $bits x $m x $n _any>])(mask),
-                            "attempt to calculate the remainder with a divisor of zero",
-                        );
-                        <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(
-                            a, b,
-                            #[inline(always)] |x, y| x.wrapping_rem(y)
-                        )
-                    }
-                }}
+                #[inline(always)]
+                fn rem(a: Self, b: Self) -> Self {
+                    let mask = ArithOps::eq_(b.load(), ArithOps::ZERO_);
+                    assert!(
+                        !paste::paste!([<mask $bits x $m x $n _any>])(mask),
+                        "attempt to calculate the remainder with a divisor of zero",
+                    );
+                    <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(
+                        a, b,
+                        #[inline(always)] |x, y| x.wrapping_rem(y)
+                    )
+                }
             }}
             if_! { $float == float {
                 // `Vector::from_bits` and `Vector::to_bits` are the only callers, and
@@ -529,16 +526,13 @@ macro_rules! impl_layout {
                         unpack_array!([(a) $primitive::to_bits; $len])
                     }
                 }}
-                // `Rem` is generated for vectors only.
-                if_! { $n == 1 {
-                    #[inline(always)]
-                    fn rem(a: Self, b: Self) -> Self {
-                        // TODO(codegen-optimization): Vectorize `fmodf` only with exact special-value
-                        // and error-bound tests; `std::simd::Simd<f32, N>` delegates to Windows UCRT
-                        // scalar `fmodf` calls on x86-64, while libm provides a possible implementation.
-                        <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(a, b, core::ops::Rem::rem)
-                    }
-                }}
+                #[inline(always)]
+                fn rem(a: Self, b: Self) -> Self {
+                    // TODO(codegen-optimization): Vectorize `fmodf` only with exact special-value
+                    // and error-bound tests; `std::simd::Simd<f32, N>` delegates to Windows UCRT
+                    // scalar `fmodf` calls on x86-64, while libm provides a possible implementation.
+                    <Self as StorageOps<$t, Dimension<$m>, Dimension<$n>>>::map2(a, b, core::ops::Rem::rem)
+                }
             }}
             if_! { $n == 1 and $m != 1 {
                 #[inline(always)]

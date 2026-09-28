@@ -383,8 +383,6 @@ macro_rules! impl_layout {
                     );
                     Self::map2(a, b, #[inline(always)] |x, y| x.wrapping_div(y))
                 }
-                // The public `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, and `Shr` operations are
-                // generated for vectors only; these storage methods cover every shape.
                 #[inline(always)]
                 fn rem(a: Self, b: Self) -> Self {
                     let mask = ArithOps::eq_(b, ArithOps::ZERO_);
@@ -408,8 +406,6 @@ macro_rules! impl_layout {
                     map1(a, $t::to_bits)
                 }
                 // TODO(integer-vector): split div/sqrt requirements for integer and float element traits.
-                // The public `Rem` operation is generated for vectors only; this storage method
-                // covers every shape.
                 #[inline(always)]
                 fn rem(a: Self, b: Self) -> Self { map2(a, b, core::ops::Rem::rem) }
             }}

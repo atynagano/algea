@@ -518,12 +518,6 @@ macro_rules! impl_binop_all {
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_scalar:_, [D], $trait::$method, $trait_assign::$method_assign);
         impl_binop!(docs: $docs, matrix::Matrix, layout:L, any:T, rhs_scalar:_, [R, C], $trait::$method, $trait_assign::$method_assign);
     };
-    (@a [$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt, vector_only]) => {
-        // This branch intentionally generates vector operations only; matrix multiplication uses
-        // the matrix-product implementation and matrix division is not defined.
-        impl_binop!(docs: $docs, vector::Vector, any:T, rhs_tensor:_, [D], $trait::$method, $trait_assign::$method_assign);
-        impl_binop!(docs: $docs, vector::Vector, any:T, rhs_scalar:_, [D], $trait::$method, $trait_assign::$method_assign);
-    };
     (@a [$docs:tt, $trait:tt::$method:tt, $trait_assign:tt::$method_assign:tt, vector_and_mask]) => {
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_tensor:_, [D], $trait::$method, $trait_assign::$method_assign);
         impl_binop!(docs: $docs, vector::Vector, any:T, rhs_scalar:_, [D], $trait::$method, $trait_assign::$method_assign);
@@ -633,42 +627,61 @@ impl_binop_all!(arithmetic, [
             "Performs component-wise remainder assignment.\n\nThe result uses wrapping integer remainder semantics.\n\n# Panics\n\nPanics if any active divisor element is zero."
         ],
         Rem::rem,
-        RemAssign::rem_assign,
-        vector_only
+        RemAssign::rem_assign
     ],
 ]);
 impl_binop_all!([i32, u32, i64, u64], [
     [
         ["Performs component-wise bitwise AND.", "Performs component-wise bitwise AND assignment."],
         BitAnd::bitand,
-        BitAndAssign::bitand_assign,
-        vector_only
+        BitAndAssign::bitand_assign
     ],
     [
         ["Performs component-wise bitwise OR.", "Performs component-wise bitwise OR assignment."],
         BitOr::bitor,
-        BitOrAssign::bitor_assign,
-        vector_only
+        BitOrAssign::bitor_assign
     ],
     [
         ["Performs component-wise bitwise XOR.", "Performs component-wise bitwise XOR assignment."],
         BitXor::bitxor,
-        BitXorAssign::bitxor_assign,
-        vector_only
+        BitXorAssign::bitxor_assign
     ],
     [
         ["Performs component-wise left shift.", "Performs component-wise left-shift assignment."],
         Shl::shl,
-        ShlAssign::shl_assign,
-        vector_only
+        ShlAssign::shl_assign
     ],
     [
         ["Performs component-wise right shift.", "Performs component-wise right-shift assignment."],
         Shr::shr,
-        ShrAssign::shr_assign,
-        vector_only
+        ShrAssign::shr_assign
     ],
 ]);
+
+impl<T: core::ops::Mul<Output = T> + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    crate::Matrix<T, R, C, L>
+{
+    /// Performs component-wise multiplication.
+    #[inline]
+    pub fn each_mul(self, rhs: Self) -> Self {
+        matrix::call!(Self(<T, R, C>::mul(self.storage, rhs.storage)))
+    }
+}
+impl<T: core::ops::Div<Output = T> + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    crate::Matrix<T, R, C, L>
+{
+    /// Performs component-wise division.
+    ///
+    /// Integer division rounds toward zero and wraps on overflow.
+    ///
+    /// # Panics
+    ///
+    /// For integer element types, panics if any active divisor element is zero.
+    #[inline]
+    pub fn each_div(self, rhs: Self) -> Self {
+        matrix::call!(Self(<T, R, C>::div(self.storage, rhs.storage)))
+    }
+}
 
 impl<T: core::ops::Neg + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
     core::ops::Neg for crate::Matrix<T, R, C, L>
@@ -693,6 +706,13 @@ impl<T: core::ops::Not + Element<D>, const D: usize> core::ops::Not for Vector<T
     type Output = Self;
     #[inline]
     fn not(self) -> Self::Output { vector::call!(Self(<T, D>::not(self.storage))) }
+}
+impl<T: core::ops::Not + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::ops::Not for crate::Matrix<T, R, C, L>
+{
+    type Output = Self;
+    #[inline]
+    fn not(self) -> Self::Output { matrix::call!(Self(<T, R, C>::not(self.storage))) }
 }
 impl<T: MaskElement<D>, const D: usize> core::ops::Not for Mask<T, D> {
     type Output = Self;
