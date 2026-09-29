@@ -842,6 +842,26 @@ impl<T: MaskElement<D>, const D: usize> Default for Mask<T, D> {
     fn default() -> Self { Self::splat(false) }
 }
 
+impl<T: core::hash::Hash + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::hash::Hash for crate::Matrix<T, R, C, L>
+{
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // The layout is part of the matrix type, so each layout may hash its own major vectors.
+        matrix::call!(<T, R, C>::with_major_slices(self.storage, |major_vectors| {
+            major_vectors.hash(state)
+        }))
+    }
+}
+impl<T: core::hash::Hash + Element<D>, const D: usize> core::hash::Hash for Vector<T, D> {
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
+}
+impl<T: core::hash::Hash + MaskElement<D>, const D: usize> core::hash::Hash for Mask<T, D> {
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
+}
+
 struct CompactRow<'a, T>(&'a [T]);
 
 impl<T: core::fmt::Debug> core::fmt::Debug for CompactRow<'_, T> {
