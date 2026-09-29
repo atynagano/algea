@@ -1237,10 +1237,12 @@ impl<T: Float + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
     fn mul_assign(&mut self, rhs: crate::Matrix<T, C, C, L>) { *self = *self * rhs; }
 }
 
-impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
+impl<T: Num + Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
     /// The identity matrix.
     pub const IDENTITY: Self = matrix::call!(Self(<T, D, D>::IDENTITY));
+}
 
+impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
     /// Returns the main diagonal as a vector.
     #[inline]
     pub fn diagonal(self) -> Vector<T, D> {
