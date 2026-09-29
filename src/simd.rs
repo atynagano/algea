@@ -9,9 +9,8 @@ pub(crate) mod utils;
 
 use crate::{
     Vector,
-    marker::{Float, Int, Lane},
-    private,
     private::{
+        self,
         ConstStorage,
         Indices2,
         Indices3,
@@ -21,7 +20,7 @@ use crate::{
         SwizzleDispatch,
         SwizzleDispatchAny,
     },
-    support::Dimension,
+    support::{Dimension, Float, Int, SupportedElement},
     utils::{ArithOps, CanonicalMask, ConstMaskStorage, Load, Store, if_},
 };
 use definitions::{SealedStorageElement, SealedSupportedDimension};
@@ -324,12 +323,12 @@ macro_rules! impl_layout {
                 #[inline(always)]
                 fn substantiate_mask(
                     mask: CanonicalMask<<Self as ArithOps>::Mask>,
-                ) -> ConstMaskStorage<<$t as Lane>::Mask, $m, $n> {
+                ) -> ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n> {
                     mask
                 }
                 #[inline(always)]
                 fn select_mask(
-                    mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>,
+                    mask: ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n>,
                     true_values: Self,
                     false_values: Self,
                 ) -> Self {
@@ -443,21 +442,21 @@ macro_rules! impl_layout {
             }
             if_! { $signed $int == signed int {
                 #[inline(always)]
-                fn from_mask(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> Self { mask.into_inner() }
+                fn from_mask(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n>) -> Self { mask.into_inner() }
                 #[inline(always)]
-                fn all(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> bool {
+                fn all(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n>) -> bool {
                     paste::paste!([<mask $bits x $m x $n _all>])(mask.load_mask())
                 }
                 #[inline(always)]
-                fn any(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> bool {
+                fn any(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n>) -> bool {
                     paste::paste!([<mask $bits x $m x $n _any>])(mask.load_mask())
                 }
                 #[inline(always)]
-                fn to_bool_array(mask: ConstMaskStorage<<$t as Lane>::Mask, $m, $n>) -> [[bool; $m]; $n] {
+                fn to_bool_array(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n>) -> [[bool; $m]; $n] {
                     paste::paste!(kernels::mask::$t::[<to_array_ $m x $n>](mask.load_mask()))
                 }
                 #[inline(always)]
-                fn from_bool_array(a: [[bool; $m]; $n]) -> ConstMaskStorage<<$t as Lane>::Mask, $m, $n> {
+                fn from_bool_array(a: [[bool; $m]; $n]) -> ConstMaskStorage<<$t as SupportedElement>::Mask, $m, $n> {
                     CanonicalMask::store_mask(paste::paste!(kernels::mask::$t::[<from_array_ $m x $n>](a)))
                 }
                 // `Vector::cast_signed`, `Vector::cast_unsigned` and `Vector::abs_diff`

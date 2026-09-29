@@ -2,9 +2,8 @@ pub(crate) mod kernels;
 mod utils;
 
 use crate::{
-    marker::{Float, Int, Lane},
     private::{self, ConstStorage, DimArray, DimVector, SealedSupportedElement},
-    support::{Dimension, SupportedDimension},
+    support::{Dimension, Float, Int, SupportedDimension, SupportedElement},
     utils::{ArithOps, CanonicalMask, ConstMaskStorage, MaskOps, if_, impl_default_load},
 };
 use definitions::SealedStorageElement;
@@ -248,7 +247,7 @@ macro_rules! impl_layout {
 
             #[inline(always)]
             fn select_mask(
-                mask: ConstMaskStorage<<$t as Lane>::Mask, M, N>,
+                mask: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>,
                 true_values: Self,
                 false_values: Self,
             ) -> Self {
@@ -273,7 +272,7 @@ macro_rules! impl_layout {
             #[inline(always)]
             fn substantiate_mask(
                 mask: CanonicalMask<<Self as ArithOps>::Mask>,
-            ) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> {
+            ) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> {
                 mask
             }
             // Lane-wise comparisons and the clamp. `src/api.rs` exposes these on `Vector` alone, so a
@@ -284,7 +283,7 @@ macro_rules! impl_layout {
             fn each_clamp<F: private::Fmt>(a: Self, min: Self, max: Self) -> Self {
                 let valid = Self::each_le(min, max);
                 assert!(
-                    ConstStorage::<<$t as Lane>::Mask, M, N>::all(valid),
+                    ConstStorage::<<$t as SupportedElement>::Mask, M, N>::all(valid),
                     "each element in `min` must be less than or equal to the corresponding element in `max`. \
                     min = {min:?}, max = {max:?}",
                     min = F::fmt::<$t, M, N>(min),
@@ -314,32 +313,32 @@ macro_rules! impl_layout {
 
             if_! { $signed $int == signed int {
                 #[inline(always)]
-                fn from_mask(mask: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> Self { mask.into_inner() }
+                fn from_mask(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> Self { mask.into_inner() }
                 #[inline(always)]
-                fn all(mask: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> bool {
+                fn all(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> bool {
                     mask.into_inner().as_flattened().iter().copied().all($t::is_negative)
                 }
                 #[inline(always)]
-                fn any(mask: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> bool {
+                fn any(mask: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> bool {
                     mask.into_inner().as_flattened().iter().copied().any($t::is_negative)
                 }
                 #[inline(always)]
-                fn mask_not(a: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> { !a }
+                fn mask_not(a: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> { !a }
                 #[inline(always)]
-                fn mask_bitand(a: ConstMaskStorage<<$t as Lane>::Mask, M, N>, b: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> { a & b }
+                fn mask_bitand(a: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>, b: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> { a & b }
                 #[inline(always)]
-                fn mask_bitor(a: ConstMaskStorage<<$t as Lane>::Mask, M, N>, b: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> { a | b }
+                fn mask_bitor(a: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>, b: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> { a | b }
                 #[inline(always)]
-                fn mask_bitxor(a: ConstMaskStorage<<$t as Lane>::Mask, M, N>, b: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> { a ^ b }
+                fn mask_bitxor(a: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>, b: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> { a ^ b }
                 #[inline(always)]
-                fn to_bool_array(a: ConstMaskStorage<<$t as Lane>::Mask, M, N>) -> ConstArray<ConstArray<bool, M>, N> {
+                fn to_bool_array(a: ConstMaskStorage<<$t as SupportedElement>::Mask, M, N>) -> ConstArray<ConstArray<bool, M>, N> {
                     a.into_inner().map(
                         #[inline(always)]
                         |column| column.map($t::is_negative)
                     )
                 }
                 #[inline(always)]
-                fn from_bool_array(a: ConstArray<ConstArray<bool, M>, N>) -> ConstMaskStorage<<$t as Lane>::Mask, M, N> {
+                fn from_bool_array(a: ConstArray<ConstArray<bool, M>, N>) -> ConstMaskStorage<<$t as SupportedElement>::Mask, M, N> {
                     CanonicalMask::from_parts(a.map(
                         #[inline(always)]
                         |column| CanonicalMask::from_parts(column.map(CanonicalMask::<$t>::new)),
@@ -378,7 +377,7 @@ macro_rules! impl_layout {
                 fn div(a: Self, b: Self) -> Self {
                     let mask = ArithOps::eq_(b, ArithOps::ZERO_);
                     assert!(
-                        !ConstStorage::<<$t as Lane>::Mask, M, N>::any(mask),
+                        !ConstStorage::<<$t as SupportedElement>::Mask, M, N>::any(mask),
                         "attempt to divide by zero",
                     );
                     Self::map2(a, b, #[inline(always)] |x, y| x.wrapping_div(y))
@@ -387,7 +386,7 @@ macro_rules! impl_layout {
                 fn rem(a: Self, b: Self) -> Self {
                     let mask = ArithOps::eq_(b, ArithOps::ZERO_);
                     assert!(
-                        !ConstStorage::<<$t as Lane>::Mask, M, N>::any(mask),
+                        !ConstStorage::<<$t as SupportedElement>::Mask, M, N>::any(mask),
                         "attempt to calculate the remainder with a divisor of zero",
                     );
                     Self::map2(a, b, #[inline(always)] |x, y| x.wrapping_rem(y))

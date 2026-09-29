@@ -1,4 +1,7 @@
-use crate::{FloatElement, Vector};
+use crate::{
+    Vector,
+    support::{ColumnMajor, Element, Float},
+};
 
 /// A fixed-size matrix stored as column vectors.
 ///
@@ -28,7 +31,6 @@ macro_rules! call {
         $w { storage: $crate::column_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }
     };
 }
-use crate::marker::ColumnMajor;
 pub(crate) use call;
 
 /// Enables multiplication of an `R × C` matrix by a `C`-lane column vector with the
@@ -48,7 +50,7 @@ pub(crate) use call;
 /// let vector = Vector::<f32, 2>::from([2.0, 3.0]);
 /// assert_eq!((matrix * vector).to_array(), [29.0, 34.0, 39.0]);
 /// ```
-impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
+impl<T: Float + Element<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
     for Matrix<T, R, C>
 {
     type Output = Vector<T, R>;
@@ -75,7 +77,7 @@ impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Vecto
 /// let row = Matrix::<f32, 1, 3>::from_columns([[4.0], [5.0], [6.0]]);
 /// assert_eq!((column * row).to_columns(), [[8.0, 12.0], [10.0, 15.0], [12.0, 18.0]]);
 /// ```
-impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, 1, C>>
+impl<T: Float + Element<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, 1, C>>
     for Vector<T, R>
 {
     type Output = Matrix<T, R, C>;

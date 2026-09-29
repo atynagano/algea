@@ -81,7 +81,7 @@ macro_rules! rounding_tests {
 
             fn assert_dimension<const D: usize>(input: [$t; D])
             where
-                $t: algea::FloatElement<D>,
+                $t: algea::support::Float + algea::Element<D>,
             {
                 let rounded = Vector::<$t, D>::from(input).round().to_array();
                 let ties_even = Vector::<$t, D>::from(input).round_ties_even().to_array();

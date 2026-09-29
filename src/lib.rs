@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use marker::MatrixLayout;
-pub use support::{Element, FloatElement, IntElement, MaskElement, SintElement, UintElement};
+pub use support::{Element, MaskElement};
 
 #[doc(hidden)]
 pub mod __internal;
@@ -170,6 +169,7 @@ macro_rules! impl_marker_trait {
         )+
     };
 }
+use crate::support::MatrixLayout;
 pub(crate) use impl_marker_trait;
 
 macro_rules! impl_cast_from {
@@ -179,8 +179,8 @@ macro_rules! impl_cast_from {
 }
 
 /// Marker traits describing scalar lane capabilities.
-pub mod marker {
-    use crate::{private, support::SupportedElement};
+pub mod support {
+    use crate::private;
 
     /// Selects the physical storage orientation of a [`Matrix`](crate::Matrix).
     #[expect(private_bounds)]
@@ -210,10 +210,8 @@ pub mod marker {
     // TODO(extra-type-support): Separate comparison bounds from numeric operations before adding
     // `char`, which is ordered but not numeric.
     /// Groups the scalar arithmetic operations required by numeric lanes.
-    #[expect(private_bounds)]
-    pub trait NumOps:
-        Sized
-        + private::Sealed
+    pub trait Num:
+        SupportedElement
         + core::cmp::PartialEq
         + core::cmp::PartialOrd
         + core::ops::Add<Output = Self>
@@ -223,22 +221,9 @@ pub mod marker {
         + core::ops::Rem<Output = Self>
     {
     }
-    impl<T> NumOps for T where
-        T: private::Sealed
-            + core::cmp::PartialEq
-            + core::cmp::PartialOrd
-            + core::ops::Add<Output = T>
-            + core::ops::Sub<Output = T>
-            + core::ops::Mul<Output = T>
-            + core::ops::Div<Output = T>
-            + core::ops::Rem<Output = T>
-    {
-    }
     /// Groups the scalar bitwise operations required by integer lanes.
-    #[expect(private_bounds)]
-    pub trait BitOps:
-        Sized
-        + private::Sealed
+    pub trait Bitwise:
+        SupportedElement
         + core::ops::Not<Output = Self>
         + core::ops::BitAnd<Output = Self>
         + core::ops::BitOr<Output = Self>
@@ -247,40 +232,28 @@ pub mod marker {
         + core::ops::Shl<Output = Self>
     {
     }
-    impl<T> BitOps for T where
-        T: private::Sealed
-            + core::ops::Not<Output = Self>
-            + core::ops::BitAnd<Output = Self>
-            + core::ops::BitOr<Output = Self>
-            + core::ops::BitXor<Output = Self>
-            + core::ops::Shr<Output = Self>
-            + core::ops::Shl<Output = Self>
-    {
-    }
-
     /// Marks signed scalar lane types.
-    #[expect(private_bounds)]
-    pub trait Signed: private::Sealed + Copy + core::ops::Neg<Output = Self> {}
+    pub trait Signed: SupportedElement + core::ops::Neg<Output = Self> {}
     /// Marks unsigned scalar lane types.
-    #[expect(private_bounds)]
-    pub trait Unsigned: private::Sealed + Copy {}
+    pub trait Unsigned: SupportedElement {}
     /// Associates an integer lane type with its signed and unsigned forms.
-    #[expect(private_bounds)]
-    pub trait Int: private::Sealed + NumOps + BitOps {
+    pub trait Int: Num + Bitwise + core::cmp::Eq + core::cmp::Ord {
         /// The signed type with the same lane width.
-        type Signed: Sint;
+        type Signed: Sint<Unsigned = Self::Unsigned>;
         /// The unsigned type with the same lane width.
-        type Unsigned: Uint;
+        type Unsigned: Uint<Signed = Self::Signed>;
     }
     /// Marks signed integer lane types.
-    pub trait Sint: Signed + Int<Signed = Self, Unsigned: Unsigned + Int<Signed = Self>> {}
+    pub trait Sint: Signed + Int<Signed = Self> {}
     /// Marks unsigned integer lane types.
-    pub trait Uint: Unsigned + Int<Unsigned = Self, Signed: Signed + Int<Unsigned = Self>> {}
+    pub trait Uint: Unsigned + Int<Unsigned = Self> {}
     /// Associates a floating-point lane type with its unsigned bit representation.
-    pub trait Float: Signed + NumOps {
+    pub trait Float: Signed + Num {
         /// The unsigned integer type containing this type's representation bits.
         type Bits: Uint;
     }
+    impl_marker_trait!(Num for [f32, f64, i32, i64, u32, u64]);
+    impl_marker_trait!(Bitwise for [i32, i64, u32, u64]);
     impl_marker_trait!(Signed for [f32, f64, i32, i64]);
     impl_marker_trait!(Unsigned for [u32, u64]);
     impl_marker_trait!(Int for [
@@ -319,15 +292,15 @@ pub mod marker {
     // value duplication, rather than solely for downstream convenience.
     /// Associates a scalar lane with the scalar type used by its comparison mask.
     #[expect(private_bounds)]
-    pub trait Lane: Copy + private::Sealed {
+    pub trait SupportedElement:
+        Copy + Default + core::fmt::Debug + private::SealedSupportedElement
+    {
         /// The signed integer scalar used to represent mask lanes.
-        type Mask: MaskLane + SupportedElement;
+        type Mask: SupportedMaskElement;
     }
     /// Marks a signed integer lane that serves as its own comparison mask type.
-    pub trait MaskLane: Sint + Lane<Mask = Self> {}
-    // The required bound depends on the shape, so it cannot be expressed as
-    // `Float: HasBits<Bits: SimdElement<D>>`; `FloatElement<D>` carries it instead.
-    impl_marker_trait!(Lane for [
+    pub trait SupportedMaskElement: Sint<Mask = Self> {}
+    impl_marker_trait!(SupportedElement for [
         f32 { type Mask = i32; },
         f64 { type Mask = i64; },
         i32 { type Mask = i32; },
@@ -335,16 +308,7 @@ pub mod marker {
         u32 { type Mask = i32; },
         u64 { type Mask = i64; },
     ]);
-    impl_marker_trait!(MaskLane for [i32, i64]);
-}
-
-/// Dimension-dependent traits used to express supported vector and matrix types.
-pub mod support {
-    use crate::{Vector, marker::*, private};
-
-    /// Marks a scalar lane supported by the library's vectors and matrices.
-    #[expect(private_bounds)]
-    pub trait SupportedElement: Lane + private::SealedSupportedElement {}
+    impl_marker_trait!(SupportedMaskElement for [i32, i64]);
 
     /// Marks a dimension supported by the library's vectors and matrices.
     #[expect(private_bounds)]
@@ -353,7 +317,6 @@ pub mod support {
     /// Represents a vector or matrix dimension as a type.
     pub enum Dimension<const D: usize> {}
 
-    impl_marker_trait!(SupportedElement for [f32, f64, i32, i64, u32, u64]);
     impl_marker_trait! {
         SupportedDimension for [
             Dimension<1> {},
@@ -382,46 +345,8 @@ pub mod support {
     {
     }
     /// Marks a signed integer scalar supported as a mask for the given shape.
-    #[expect(private_bounds)]
     pub trait MaskElement<const D0: usize = 1, const D1: usize = 1>:
-        SupportedElement
-        + MaskLane
-        + private::SealedDimensionWitness<
-            D0,
-            Dimension = Dimension<D0>,
-            Dimension: SupportedDimension,
-        > + private::SealedDimensionWitness<
-            D1,
-            Dimension = Dimension<D1>,
-            Dimension: SupportedDimension,
-        >
-    {
-    }
-    /// Marks a floating-point scalar supported for the given shape, including
-    /// its corresponding integer representation.
-    pub trait FloatElement<const D0: usize = 1, const D1: usize = 1>:
-        Element<D0, D1> + Float<Bits: SupportedElement + Uint<Signed: SupportedElement>>
-    {
-    }
-    // `Mask` could be fixed to an integer type's signed counterpart, but doing the same through a
-    // float's bit type would overconstrain this marker, so the association remains explicit.
-    /// Marks an integer scalar supported for the given shape.
-    pub trait IntElement<const D0: usize = 1, const D1: usize = 1>:
-        Element<D0, D1>
-        + Int<
-            Signed: SupportedElement + Sint<Unsigned: SupportedElement>,
-            Unsigned: SupportedElement + Uint<Signed: SupportedElement>,
-        >
-    {
-    }
-    /// Marks a signed integer scalar supported for the given shape.
-    pub trait SintElement<const D0: usize = 1, const D1: usize = 1>:
-        Element<D0, D1> + Sint<Unsigned: SupportedElement>
-    {
-    }
-    /// Marks an unsigned integer scalar supported for the given shape.
-    pub trait UintElement<const D0: usize = 1, const D1: usize = 1>:
-        Element<D0, D1> + Uint<Signed: SupportedElement>
+        SupportedMaskElement + Element<D0, D1>
     {
     }
 
@@ -434,39 +359,7 @@ pub mod support {
     }
     impl<T, const D0: usize, const D1: usize> MaskElement<D0, D1> for T
     where
-        T: SupportedElement + MaskLane,
-        Dimension<D0>: SupportedDimension,
-        Dimension<D1>: SupportedDimension,
-    {
-    }
-    impl<T, const D0: usize, const D1: usize> FloatElement<D0, D1> for T
-    where
-        T: SupportedElement + Float<Bits: SupportedElement + Uint<Signed: SupportedElement>>,
-        Dimension<D0>: SupportedDimension,
-        Dimension<D1>: SupportedDimension,
-    {
-    }
-    impl<T, const D0: usize, const D1: usize> IntElement<D0, D1> for T
-    where
-        T: SupportedElement
-            + Int<
-                Signed: SupportedElement + Sint<Unsigned: SupportedElement>,
-                Unsigned: SupportedElement + Uint<Signed: SupportedElement>,
-            >,
-        Dimension<D0>: SupportedDimension,
-        Dimension<D1>: SupportedDimension,
-    {
-    }
-    impl<T, const D0: usize, const D1: usize> SintElement<D0, D1> for T
-    where
-        T: SupportedElement + Sint<Unsigned: SupportedElement>,
-        Dimension<D0>: SupportedDimension,
-        Dimension<D1>: SupportedDimension,
-    {
-    }
-    impl<T, const D0: usize, const D1: usize> UintElement<D0, D1> for T
-    where
-        T: SupportedElement + Uint<Signed: SupportedElement>,
+        T: SupportedElement + SupportedMaskElement,
         Dimension<D0>: SupportedDimension,
         Dimension<D1>: SupportedDimension,
     {
@@ -474,6 +367,7 @@ pub mod support {
 
     mod integer_element_compile_checks {
         use super::*;
+        use crate::Vector;
 
         fn _assert_element_mask_relationship<T: Element>() {
             _assert_mask_element_relationship::<T::Mask>();
@@ -482,24 +376,18 @@ pub mod support {
             _assert_element_mask_relationship::<T>();
         }
 
-        fn _assert_unsigned_cast_relationships<T: UintElement>(a: Vector<T, 1>) {
+        fn _assert_unsigned_cast_relationships<T: Uint + Element>(a: Vector<T, 1>) {
             // Verify that signed and unsigned casts preserve the corresponding element bounds.
             _ = a.cast_signed().cast_unsigned().cast_signed();
             _accept_integer_vector(a);
             _accept_integer_vector(a.cast_signed());
             _accept_integer_vector(a.cast_signed().cast_unsigned());
         }
-        fn _accept_integer_vector<T: IntElement>(a: Vector<T, 1>) {
+        fn _accept_integer_vector<T: Int + Element>(a: Vector<T, 1>) {
             _assert_unsigned_cast_relationships(a.abs_diff(a))
         }
-        fn _assert_float_bit_pattern_is_unsigned<T: FloatElement>(a: Vector<T, 1>) {
+        fn _assert_float_bit_pattern_is_unsigned<T: Float + Element>(a: Vector<T, 1>) {
             _assert_unsigned_cast_relationships(a.to_bits())
         }
-
-        // TODO(mask-integer-boundary): reconsider whether `Mask::to_vector`
-        // should provide the signed-integer API when its lane is known only as a
-        // `MaskElement`. Making `MaskElement` imply `SintElement` currently
-        // complicates the associated type bounds substantially, and future mask
-        // element types may intentionally have no `SintElement` implementation.
     }
 }

@@ -1,4 +1,7 @@
-use crate::{FloatElement, Vector};
+use crate::{
+    Vector,
+    support::{Element, Float, RowMajor},
+};
 
 /// A fixed-size matrix stored as row vectors.
 ///
@@ -27,7 +30,6 @@ macro_rules! call {
         $w { storage: $crate::row_major::call!(<$t, $r, $c>::$f $(::<$gen>)? $(($($arg),*))?) }
     };
 }
-use crate::marker::RowMajor;
 pub(crate) use call;
 
 /// Enables multiplication of an `R`-lane row vector by an `R × C` matrix with the
@@ -47,7 +49,7 @@ pub(crate) use call;
 /// let matrix = Matrix::<f32, 2, 3>::from_rows([[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
 /// assert_eq!((vector * matrix).to_array(), [29.0, 34.0, 39.0]);
 /// ```
-impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, R, C>>
+impl<T: Float + Element<R, C>, const R: usize, const C: usize> core::ops::Mul<Matrix<T, R, C>>
     for Vector<T, R>
 {
     type Output = Vector<T, C>;
@@ -74,7 +76,7 @@ impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Matri
 /// let row = Vector::<f32, 3>::from([4.0, 5.0, 6.0]);
 /// assert_eq!((column * row).to_rows(), [[8.0, 10.0, 12.0], [12.0, 15.0, 18.0]]);
 /// ```
-impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
+impl<T: Float + Element<R, C>, const R: usize, const C: usize> core::ops::Mul<Vector<T, C>>
     for Matrix<T, R, 1>
 {
     type Output = Matrix<T, R, C>;
@@ -86,7 +88,7 @@ impl<T: FloatElement<R, C>, const R: usize, const C: usize> core::ops::Mul<Vecto
 
 // Vector assignment follows the row-vector orientation. Column-vector multiplication has the
 // matrix on the left and therefore has no symmetric `MulAssign` form.
-impl<T: FloatElement<N>, const N: usize> core::ops::MulAssign<Matrix<T, N, N>> for Vector<T, N> {
+impl<T: Float + Element<N>, const N: usize> core::ops::MulAssign<Matrix<T, N, N>> for Vector<T, N> {
     #[inline]
     fn mul_assign(&mut self, rhs: Matrix<T, N, N>) { *self = *self * rhs; }
 }
