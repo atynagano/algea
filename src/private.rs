@@ -1,8 +1,16 @@
 pub(crate) use crate::definitions::{SealedStorageElement, SealedSupportedDimension};
 use crate::{
     impl_marker_trait,
-    marker::{ColumnMajor, Float, Int, Lane, RowMajor, StoredVerbatim},
-    support::{Dimension, SupportedDimension, SupportedElement},
+    support::{
+        ColumnMajor,
+        Dimension,
+        Float,
+        Int,
+        RowMajor,
+        StoredVerbatim,
+        SupportedDimension,
+        SupportedElement,
+    },
     utils::{self, ArithOps, CanonicalMask, DimMaskStorage},
 };
 
@@ -329,7 +337,7 @@ pub(crate) trait StorageOps<
         _mask: CanonicalMask<<Self as ArithOps>::Mask>,
     ) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         unimplemented!()
     }
@@ -338,7 +346,7 @@ pub(crate) trait StorageOps<
     /// Implemented for the mask element types alone, where the two are the same type.
     fn from_mask(_mask: DimMaskStorage<T::Mask, R, C>) -> Self
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         unimplemented!()
     }
@@ -348,7 +356,7 @@ pub(crate) trait StorageOps<
         _false_values: Self,
     ) -> Self
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         unimplemented!()
     }
@@ -358,7 +366,7 @@ pub(crate) trait StorageOps<
         _false_values: Self,
     ) -> Self
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         unimplemented!()
     }
@@ -428,44 +436,44 @@ pub(crate) trait StorageOps<
 
     fn each_eq(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::eq_(a, b))
     }
     fn each_ne(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::ne_(a, b))
     }
     fn each_lt(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::lt_(a, b))
     }
     fn each_le(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::le_(a, b))
     }
     fn each_gt(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::gt_(a, b))
     }
     fn each_ge(a: Self, b: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::ge_(a, b))
     }
     #[expect(dead_code)]
     fn is_nan(_a: Self) -> DimMaskStorage<T::Mask, R, C>
     where
-        T: Lane<Mask: SealedSupportedElement>,
+        T: SupportedElement,
     {
         Self::substantiate_mask(ArithOps::is_nan_(_a))
     }

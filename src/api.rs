@@ -4,20 +4,24 @@ use crate::{
     Select,
     Vector,
     column_major,
-    marker::{CastFrom, Lane, MatrixLayout, Signed, StoredVerbatim},
     private,
     row_major,
     support::{
+        CastFrom,
         Dimension,
         Element,
-        FloatElement,
-        IntElement,
+        Float,
+        Int,
         MaskElement,
-        SintElement,
+        MatrixLayout,
+        Num,
+        Signed,
+        Sint,
+        StoredVerbatim,
         SupportedDimension,
-        UintElement,
+        SupportedElement,
+        Uint,
     },
-    utils,
 };
 
 pub(crate) mod vector {
@@ -66,11 +70,6 @@ macro_rules! impl_from_array {
 }
 
 impl<T: Element<D>, const D: usize> Vector<T, D> {
-    /// A vector with all lanes set to zero.
-    pub const ZERO: Self = Self { storage: utils::ArithOps::ZERO_ };
-    /// A vector with all lanes set to one.
-    pub const ONE: Self = Self { storage: utils::ArithOps::ONE_ };
-
     /// Constructs a vector with every lane set to `value`.
     #[inline]
     pub fn splat(value: T) -> Self { vector::call!(Self(<T, D>::filled(value))) }
@@ -114,7 +113,14 @@ impl<T: Element<D>, const D: usize> Vector<T, D> {
     }
 }
 
-impl<T: FloatElement<D>, const D: usize> Vector<T, D> {
+impl<T: Num + Element<D>, const D: usize> Vector<T, D> {
+    /// A vector with all lanes set to zero.
+    pub const ZERO: Self = vector::call!(Self(<T, D>::ZERO));
+    /// A vector with all lanes set to one.
+    pub const ONE: Self = vector::call!(Self(<T, D>::ONE));
+}
+
+impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
     // TODO(integer-dot): when dot products support integer elements, add debug-mode overflow tests
     // that verify the operation wraps without panicking.
     /// Returns the dot product of `self` and `rhs`.
@@ -245,7 +251,7 @@ where
     pub const NEG_W: Self = vector::call!(Self(<T, D>::NEG_W));
 }
 
-impl<T: IntElement<D>, const D: usize> Vector<T, D> {
+impl<T: Int + Element<D>, const D: usize> Vector<T, D> {
     /// Computes the absolute difference between corresponding lanes.
     ///
     /// The result uses the unsigned counterpart of `T`, so every difference is
@@ -269,7 +275,7 @@ impl<T: IntElement<D>, const D: usize> Vector<T, D> {
     }
 }
 
-impl<T: SintElement<D>, const D: usize> Vector<T, D> {
+impl<T: Sint + Element<D>, const D: usize> Vector<T, D> {
     /// Reinterprets each lane as the corresponding unsigned integer type.
     #[inline]
     pub fn cast_unsigned(self) -> Vector<T::Unsigned, D> {
@@ -277,7 +283,7 @@ impl<T: SintElement<D>, const D: usize> Vector<T, D> {
     }
 }
 
-impl<T: UintElement<D>, const D: usize> Vector<T, D> {
+impl<T: Uint + Element<D>, const D: usize> Vector<T, D> {
     /// Reinterprets each lane as the corresponding signed integer type.
     #[inline]
     pub fn cast_signed(self) -> Vector<T::Signed, D> {
@@ -305,12 +311,6 @@ macro_rules! impl_matrix_from_array {
 }
 
 impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> crate::Matrix<T, R, C, L> {
-    /// A matrix with all elements set to zero.
-    pub const ZERO: Self = matrix::call!(Self(<T, R, C>::ZERO));
-
-    /// A matrix with all elements set to one.
-    pub const ONE: Self = matrix::call!(Self(<T, R, C>::ONE));
-
     /// Constructs a matrix with every element set to `value`.
     #[inline]
     pub fn filled(value: T) -> Self { matrix::call!(Self(<T, R, C>::filled(value))) }
@@ -328,6 +328,15 @@ impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> crate::M
         use crate::Matrix;
         matrix::call!(Matrix(<U, R, C>::cast_from::<T>(self.storage)))
     }
+}
+impl<T: Num + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    crate::Matrix<T, R, C, L>
+{
+    /// A matrix with all elements set to zero.
+    pub const ZERO: Self = matrix::call!(Self(<T, R, C>::ZERO));
+
+    /// A matrix with all elements set to one.
+    pub const ONE: Self = matrix::call!(Self(<T, R, C>::ONE));
 }
 impl<T: Element<R, C>, const R: usize, const C: usize> row_major::Matrix<T, R, C> {
     /// Constructs a matrix from its logical rows.
@@ -748,7 +757,7 @@ impl_mask_binop! {
     ]
 }
 
-impl<T: FloatElement<N>, const N: usize, L: MatrixLayout> core::iter::Product
+impl<T: Float + Element<N>, const N: usize, L: MatrixLayout> core::iter::Product
     for crate::Matrix<T, N, N, L>
 {
     #[inline]
@@ -765,9 +774,7 @@ impl<T: FloatElement<N>, const N: usize, L: MatrixLayout> core::iter::Product
         }
     }
 }
-impl<T: Element<D> + core::ops::Mul<Output = T>, const D: usize> core::iter::Product
-    for Vector<T, D>
-{
+impl<T: Num + Element<D>, const D: usize> core::iter::Product for Vector<T, D> {
     #[inline]
     fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
@@ -783,8 +790,8 @@ impl<T: Element<D> + core::ops::Mul<Output = T>, const D: usize> core::iter::Pro
     }
 }
 
-impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usize, L: MatrixLayout>
-    core::iter::Sum for crate::Matrix<T, R, C, L>
+impl<T: Num + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> core::iter::Sum
+    for crate::Matrix<T, R, C, L>
 {
     #[inline]
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
@@ -800,7 +807,7 @@ impl<T: Element<R, C> + core::ops::Add<Output = T>, const R: usize, const C: usi
         }
     }
 }
-impl<T: Element<D> + core::ops::Add<Output = T>, const D: usize> core::iter::Sum for Vector<T, D> {
+impl<T: Num + Element<D>, const D: usize> core::iter::Sum for Vector<T, D> {
     #[inline]
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut iter = iter.into_iter();
@@ -821,11 +828,14 @@ impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Default
 {
     /// Returns the zero matrix.
     #[inline]
-    fn default() -> Self { Self::ZERO }
+    fn default() -> Self {
+        // Zero is also the default value for every currently supported element type.
+        matrix::call!(Self(<T, R, C>::ZERO))
+    }
 }
 impl<T: Element<D>, const D: usize> Default for Vector<T, D> {
     #[inline]
-    fn default() -> Self { Self::ZERO }
+    fn default() -> Self { vector::call!(Self(<T, D>::ZERO)) }
 }
 impl<T: MaskElement<D>, const D: usize> Default for Mask<T, D> {
     #[inline]
@@ -899,36 +909,36 @@ impl<T: Eq + Element<D>, const D: usize> Eq for Vector<T, D> {}
 impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
     /// Tests each lane for equality.
     #[inline]
-    pub fn each_eq(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_eq(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_eq(self.storage, rhs.storage)))
     }
     /// Tests each lane for inequality.
     #[inline]
-    pub fn each_ne(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_ne(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_ne(self.storage, rhs.storage)))
     }
 }
 impl<T: PartialOrd + Element<D>, const D: usize> Vector<T, D> {
     /// Tests whether each lane is less than the corresponding lane of `rhs`.
     #[inline]
-    pub fn each_lt(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_lt(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_lt(self.storage, rhs.storage)))
     }
     /// Tests whether each lane is less than or equal to the corresponding lane of
     /// `rhs`.
     #[inline]
-    pub fn each_le(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_le(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_le(self.storage, rhs.storage)))
     }
     /// Tests whether each lane is greater than the corresponding lane of `rhs`.
     #[inline]
-    pub fn each_gt(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_gt(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_gt(self.storage, rhs.storage)))
     }
     /// Tests whether each lane is greater than or equal to the corresponding lane
     /// of `rhs`.
     #[inline]
-    pub fn each_ge(self, rhs: Self) -> Mask<<T as Lane>::Mask, D> {
+    pub fn each_ge(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_ge(self.storage, rhs.storage)))
     }
 }
@@ -946,7 +956,7 @@ impl<T: Ord + Element<D>, const D: usize> crate::EachOrd for Vector<T, D> {
         vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
     }
 }
-impl<T: FloatElement<D>, const D: usize> Vector<T, D> {
+impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
     /// Returns the lane-wise maximum of `self` and `rhs`.
     #[inline]
     pub fn each_max(self, rhs: Self) -> Self {
@@ -1204,9 +1214,10 @@ where
 /// let b = Matrix::<f32, 3, 2>::from_columns([[7.0, 9.0, 11.0], [8.0, 10.0, 12.0]]);
 /// assert_eq!((a * b).to_columns(), [[58.0, 139.0], [64.0, 154.0]]);
 /// ```
-impl<T: FloatElement, const R: usize, const K: usize, const C: usize, L: MatrixLayout>
+impl<T, const R: usize, const K: usize, const C: usize, L: MatrixLayout>
     core::ops::Mul<crate::Matrix<T, K, C, L>> for crate::Matrix<T, R, K, L>
 where
+    T: Float,
     Dimension<R>: SupportedDimension,
     Dimension<K>: SupportedDimension,
     Dimension<C>: SupportedDimension,
@@ -1219,17 +1230,19 @@ where
     }
 }
 
-impl<T: FloatElement<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+impl<T: Float + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
     core::ops::MulAssign<crate::Matrix<T, C, C, L>> for crate::Matrix<T, R, C, L>
 {
     #[inline]
     fn mul_assign(&mut self, rhs: crate::Matrix<T, C, C, L>) { *self = *self * rhs; }
 }
 
-impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
+impl<T: Num + Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
     /// The identity matrix.
     pub const IDENTITY: Self = matrix::call!(Self(<T, D, D>::IDENTITY));
+}
 
+impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L> {
     /// Returns the main diagonal as a vector.
     #[inline]
     pub fn diagonal(self) -> Vector<T, D> {
@@ -1237,7 +1250,7 @@ impl<T: Element<D, D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L
     }
 }
 
-impl<T: FloatElement<D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L>
+impl<T: Float + Element<D>, const D: usize, L: MatrixLayout> crate::Matrix<T, D, D, L>
 where
     Dimension<D>: __internal::AtMost<4>,
 {
