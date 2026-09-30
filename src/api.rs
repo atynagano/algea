@@ -186,6 +186,26 @@ impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
     pub fn to_bits(self) -> Vector<T::Bits, D> {
         vector::call!(Vector(<T, D>::to_bits(self.storage)))
     }
+    /// Returns the lane-wise maximum of `self` and `rhs`.
+    #[inline]
+    pub fn each_max(self, rhs: Self) -> Self {
+        vector::call!(Self(<T, D>::each_max(self.storage, rhs.storage)))
+    }
+    /// Returns the lane-wise minimum of `self` and `rhs`.
+    #[inline]
+    pub fn each_min(self, rhs: Self) -> Self {
+        vector::call!(Self(<T, D>::each_min(self.storage, rhs.storage)))
+    }
+    /// Restricts every lane to the corresponding inclusive range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any minimum is greater than its corresponding maximum, or if a
+    /// bound is NaN.
+    #[inline]
+    pub fn each_clamp(self, min: Self, max: Self) -> Self {
+        vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
+    }
 }
 
 impl<T: Signed + Element<D>, const D: usize> Vector<T, D> {
@@ -946,26 +966,6 @@ impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
         vector::call!(Mask(<T, D>::each_ne(self.storage, rhs.storage)))
     }
 }
-impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
-    /// Tests each lane for equality.
-    #[inline]
-    pub fn each_eq(self, rhs: Self) -> Self { self.to_vector().each_eq(rhs.to_vector()) }
-    /// Tests each lane for inequality.
-    #[inline]
-    pub fn each_ne(self, rhs: Self) -> Self { self ^ rhs }
-    /// Tests whether each lane is less than the corresponding lane of `rhs`.
-    #[inline]
-    pub fn each_lt(self, rhs: Self) -> Self { !self & rhs }
-    /// Tests whether each lane is less than or equal to the corresponding lane of `rhs`.
-    #[inline]
-    pub fn each_le(self, rhs: Self) -> Self { !self | rhs }
-    /// Tests whether each lane is greater than the corresponding lane of `rhs`.
-    #[inline]
-    pub fn each_gt(self, rhs: Self) -> Self { self & !rhs }
-    /// Tests whether each lane is greater than or equal to the corresponding lane of `rhs`.
-    #[inline]
-    pub fn each_ge(self, rhs: Self) -> Self { self | !rhs }
-}
 impl<T: PartialOrd + Element<D>, const D: usize> Vector<T, D> {
     /// Tests whether each lane is less than the corresponding lane of `rhs`.
     #[inline]
@@ -1019,29 +1019,6 @@ impl<T: MaskElement<D>, const D: usize> crate::EachOrd for Mask<T, D> {
         (self | min) & max
     }
 }
-impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
-    /// Returns the lane-wise maximum of `self` and `rhs`.
-    #[inline]
-    pub fn each_max(self, rhs: Self) -> Self {
-        vector::call!(Self(<T, D>::each_max(self.storage, rhs.storage)))
-    }
-    /// Returns the lane-wise minimum of `self` and `rhs`.
-    #[inline]
-    pub fn each_min(self, rhs: Self) -> Self {
-        vector::call!(Self(<T, D>::each_min(self.storage, rhs.storage)))
-    }
-    /// Restricts every lane to the corresponding inclusive range.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any minimum is greater than its corresponding maximum, or if a
-    /// bound is NaN.
-    #[inline]
-    pub fn each_clamp(self, min: Self, max: Self) -> Self {
-        vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
-    }
-}
-
 impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Clone
     for crate::Matrix<T, R, C, L>
 {
@@ -1232,6 +1209,24 @@ impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
     pub fn to_vector(self) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::from_mask(self.storage)))
     }
+    /// Tests each lane for equality.
+    #[inline]
+    pub fn each_eq(self, rhs: Self) -> Self { self.to_vector().each_eq(rhs.to_vector()) }
+    /// Tests each lane for inequality.
+    #[inline]
+    pub fn each_ne(self, rhs: Self) -> Self { self ^ rhs }
+    /// Tests whether each lane is less than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_lt(self, rhs: Self) -> Self { !self & rhs }
+    /// Tests whether each lane is less than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_le(self, rhs: Self) -> Self { !self | rhs }
+    /// Tests whether each lane is greater than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_gt(self, rhs: Self) -> Self { self & !rhs }
+    /// Tests whether each lane is greater than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_ge(self, rhs: Self) -> Self { self | !rhs }
     /// Returns `true` if every lane is true.
     #[inline]
     pub fn all(self) -> bool { vector::call!(<T, D>::all(self.storage)) }
