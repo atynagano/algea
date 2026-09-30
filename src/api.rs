@@ -857,7 +857,7 @@ impl<T: core::hash::Hash + Element<D>, const D: usize> core::hash::Hash for Vect
     #[allow(clippy::missing_inline_in_public_items)]
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
 }
-impl<T: core::hash::Hash + MaskElement<D>, const D: usize> core::hash::Hash for Mask<T, D> {
+impl<T: MaskElement<D>, const D: usize> core::hash::Hash for Mask<T, D> {
     #[allow(clippy::missing_inline_in_public_items)]
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
 }
@@ -920,11 +920,19 @@ impl<T: PartialEq + Element<D>, const D: usize> PartialEq for Vector<T, D> {
     #[inline]
     fn ne(&self, other: &Self) -> bool { vector::call!(<T, D>::ne(self.storage, other.storage)) }
 }
+#[allow(clippy::partialeq_ne_impl)] // Preserve the lane-wise `ne` reduction instead of negating `eq`.
+impl<T: MaskElement<D>, const D: usize> PartialEq for Mask<T, D> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool { self.each_eq(*other).all() }
+    #[inline]
+    fn ne(&self, other: &Self) -> bool { self.each_ne(*other).any() }
+}
 impl<T: Eq + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Eq
     for crate::Matrix<T, R, C, L>
 {
 }
 impl<T: Eq + Element<D>, const D: usize> Eq for Vector<T, D> {}
+impl<T: MaskElement<D>, const D: usize> Eq for Mask<T, D> {}
 
 impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
     /// Tests each lane for equality.
@@ -937,6 +945,26 @@ impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
     pub fn each_ne(self, rhs: Self) -> Mask<<T as SupportedElement>::Mask, D> {
         vector::call!(Mask(<T, D>::each_ne(self.storage, rhs.storage)))
     }
+}
+impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
+    /// Tests each lane for equality.
+    #[inline]
+    pub fn each_eq(self, rhs: Self) -> Self { self.to_vector().each_eq(rhs.to_vector()) }
+    /// Tests each lane for inequality.
+    #[inline]
+    pub fn each_ne(self, rhs: Self) -> Self { self ^ rhs }
+    /// Tests whether each lane is less than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_lt(self, rhs: Self) -> Self { !self & rhs }
+    /// Tests whether each lane is less than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_le(self, rhs: Self) -> Self { !self | rhs }
+    /// Tests whether each lane is greater than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_gt(self, rhs: Self) -> Self { self & !rhs }
+    /// Tests whether each lane is greater than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_ge(self, rhs: Self) -> Self { self | !rhs }
 }
 impl<T: PartialOrd + Element<D>, const D: usize> Vector<T, D> {
     /// Tests whether each lane is less than the corresponding lane of `rhs`.
@@ -974,6 +1002,21 @@ impl<T: Ord + Element<D>, const D: usize> crate::EachOrd for Vector<T, D> {
     #[inline]
     fn each_clamp(self, min: Self, max: Self) -> Self {
         vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
+    }
+}
+impl<T: MaskElement<D>, const D: usize> crate::EachOrd for Mask<T, D> {
+    #[inline]
+    fn each_max(self, rhs: Self) -> Self { self | rhs }
+    #[inline]
+    fn each_min(self, rhs: Self) -> Self { self & rhs }
+    #[inline]
+    fn each_clamp(self, min: Self, max: Self) -> Self {
+        assert!(
+            min.each_le(max).all(),
+            "each lane in `min` must be less than or equal to the corresponding lane in `max`. \
+             min = {min:?}, max = {max:?}",
+        );
+        (self | min) & max
     }
 }
 impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
