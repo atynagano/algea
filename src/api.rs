@@ -20,6 +20,7 @@ use crate::{
         StoredVerbatim,
         SupportedDimension,
         SupportedElement,
+        SupportedMaskElement,
         Uint,
     },
 };
@@ -185,6 +186,26 @@ impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
     #[inline]
     pub fn to_bits(self) -> Vector<T::Bits, D> {
         vector::call!(Vector(<T, D>::to_bits(self.storage)))
+    }
+    /// Returns the lane-wise maximum of `self` and `rhs`.
+    #[inline]
+    pub fn each_max(self, rhs: Self) -> Self {
+        vector::call!(Self(<T, D>::each_max(self.storage, rhs.storage)))
+    }
+    /// Returns the lane-wise minimum of `self` and `rhs`.
+    #[inline]
+    pub fn each_min(self, rhs: Self) -> Self {
+        vector::call!(Self(<T, D>::each_min(self.storage, rhs.storage)))
+    }
+    /// Restricts every lane to the corresponding inclusive range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any minimum is greater than its corresponding maximum, or if a
+    /// bound is NaN.
+    #[inline]
+    pub fn each_clamp(self, min: Self, max: Self) -> Self {
+        vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
     }
 }
 
@@ -757,6 +778,9 @@ impl_mask_binop! {
     ]
 }
 
+// TODO: Implement `BitAnd`, `BitOr`, and `BitXor` between masks and `bool` in both
+// operand orders, plus the corresponding mask assignment operators.
+
 impl<T: Float + Element<N>, const N: usize, L: MatrixLayout> core::iter::Product
     for crate::Matrix<T, N, N, L>
 {
@@ -842,6 +866,34 @@ impl<T: MaskElement<D>, const D: usize> Default for Mask<T, D> {
     fn default() -> Self { Self::splat(false) }
 }
 
+impl<T: core::hash::Hash + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout>
+    core::hash::Hash for crate::Matrix<T, R, C, L>
+{
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // The layout is part of the matrix type, so each layout may hash its own major vectors.
+        matrix::call!(<T, R, C>::with_major_slices(self.storage, |major_vectors| {
+            major_vectors.hash(state)
+        }))
+    }
+}
+impl<T: core::hash::Hash + Element<D>, const D: usize> core::hash::Hash for Vector<T, D> {
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // TODO: Determine whether hashing through `as_array` would be more efficient.
+        self.to_array().hash(state);
+    }
+}
+impl<T: MaskElement<D>, const D: usize> core::hash::Hash for Mask<T, D> {
+    #[allow(clippy::missing_inline_in_public_items)]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // TODO: Choose between `to_array`, `to_vector`, and `to_bitmask`; changing the
+        // implementation is not considered a breaking change.
+        // TODO: Document that the hashing implementation may change.
+        self.to_array().hash(state);
+    }
+}
+
 struct CompactRow<'a, T>(&'a [T]);
 
 impl<T: core::fmt::Debug> core::fmt::Debug for CompactRow<'_, T> {
@@ -900,11 +952,19 @@ impl<T: PartialEq + Element<D>, const D: usize> PartialEq for Vector<T, D> {
     #[inline]
     fn ne(&self, other: &Self) -> bool { vector::call!(<T, D>::ne(self.storage, other.storage)) }
 }
+#[allow(clippy::partialeq_ne_impl)] // Preserve the lane-wise `ne` reduction instead of negating `eq`.
+impl<T: MaskElement<D>, const D: usize> PartialEq for Mask<T, D> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool { self.each_eq(*other).all() }
+    #[inline]
+    fn ne(&self, other: &Self) -> bool { self.each_ne(*other).any() }
+}
 impl<T: Eq + Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Eq
     for crate::Matrix<T, R, C, L>
 {
 }
 impl<T: Eq + Element<D>, const D: usize> Eq for Vector<T, D> {}
+impl<T: MaskElement<D>, const D: usize> Eq for Mask<T, D> {}
 
 impl<T: PartialEq + Element<D>, const D: usize> Vector<T, D> {
     /// Tests each lane for equality.
@@ -956,29 +1016,21 @@ impl<T: Ord + Element<D>, const D: usize> crate::EachOrd for Vector<T, D> {
         vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
     }
 }
-impl<T: Float + Element<D>, const D: usize> Vector<T, D> {
-    /// Returns the lane-wise maximum of `self` and `rhs`.
+impl<T: MaskElement<D>, const D: usize> crate::EachOrd for Mask<T, D> {
     #[inline]
-    pub fn each_max(self, rhs: Self) -> Self {
-        vector::call!(Self(<T, D>::each_max(self.storage, rhs.storage)))
-    }
-    /// Returns the lane-wise minimum of `self` and `rhs`.
+    fn each_max(self, rhs: Self) -> Self { self | rhs }
     #[inline]
-    pub fn each_min(self, rhs: Self) -> Self {
-        vector::call!(Self(<T, D>::each_min(self.storage, rhs.storage)))
-    }
-    /// Restricts every lane to the corresponding inclusive range.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any minimum is greater than its corresponding maximum, or if a
-    /// bound is NaN.
+    fn each_min(self, rhs: Self) -> Self { self & rhs }
     #[inline]
-    pub fn each_clamp(self, min: Self, max: Self) -> Self {
-        vector::call!(Self(<T, D>::each_clamp::<private::VectorFmt>(self.storage, min.storage, max.storage)))
+    fn each_clamp(self, min: Self, max: Self) -> Self {
+        assert!(
+            min.each_le(max).all(),
+            "each lane in `min` must be less than or equal to the corresponding lane in `max`. \
+             min = {min:?}, max = {max:?}",
+        );
+        (self | min) & max
     }
 }
-
 impl<T: Element<R, C>, const R: usize, const C: usize, L: MatrixLayout> Clone
     for crate::Matrix<T, R, C, L>
 {
@@ -1056,6 +1108,24 @@ impl<T: Element<D>, const D: usize> From<Vector<T, D>> for [T; D] {
 impl<T: MaskElement<D>, const D: usize> From<[bool; D]> for Mask<T, D> {
     #[inline]
     fn from(value: [bool; D]) -> Self { vector::call!(Self(<T, D>::from_bool_array([value]))) }
+}
+impl<T: MaskElement<D>, const D: usize> From<Mask<T, D>> for [bool; D] {
+    #[inline]
+    fn from(value: Mask<T, D>) -> Self { value.to_array() }
+}
+impl<const D: usize> From<Mask<i64, D>> for Mask<i32, D>
+where
+    Dimension<D>: SupportedDimension,
+{
+    #[inline]
+    fn from(value: Mask<i64, D>) -> Self { vector::call!(Self(<i64, D>::cast_i32(value.storage))) }
+}
+impl<const D: usize> From<Mask<i32, D>> for Mask<i64, D>
+where
+    Dimension<D>: SupportedDimension,
+{
+    #[inline]
+    fn from(value: Mask<i32, D>) -> Self { vector::call!(Self(<i32, D>::cast_i64(value.storage))) }
 }
 
 impl<T: Element<2> + StoredVerbatim> core::ops::Deref for Vector<T, 2> {
@@ -1169,6 +1239,39 @@ impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
     pub fn to_vector(self) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::from_mask(self.storage)))
     }
+    /// Returns the mask as a bitmask whose bit `i` represents lane `i`.
+    ///
+    /// Bits at positions greater than or equal to `D` are zero.
+    #[inline]
+    pub fn to_bitmask(self) -> u8 { vector::call!(<T, D>::to_bitmask(self.storage)) }
+    /// Constructs a mask from the low `D` bits of `bitmask`.
+    ///
+    /// Bit `i` determines lane `i`; bits at positions greater than or equal to `D` are ignored.
+    #[inline]
+    pub fn from_bitmask(bitmask: u8) -> Self { vector::call!(Self(<T, D>::from_bitmask(bitmask))) }
+    /// Converts this mask to the same lanes represented by another supported mask element type.
+    #[inline]
+    pub fn cast<U: SupportedMaskElement>(self) -> Mask<U, D> {
+        vector::call!(Mask(<U, D>::cast_mask(self.storage)))
+    }
+    /// Tests each lane for equality.
+    #[inline]
+    pub fn each_eq(self, rhs: Self) -> Self { self.to_vector().each_eq(rhs.to_vector()) }
+    /// Tests each lane for inequality.
+    #[inline]
+    pub fn each_ne(self, rhs: Self) -> Self { self ^ rhs }
+    /// Tests whether each lane is less than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_lt(self, rhs: Self) -> Self { !self & rhs }
+    /// Tests whether each lane is less than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_le(self, rhs: Self) -> Self { !self | rhs }
+    /// Tests whether each lane is greater than the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_gt(self, rhs: Self) -> Self { self & !rhs }
+    /// Tests whether each lane is greater than or equal to the corresponding lane of `rhs`.
+    #[inline]
+    pub fn each_ge(self, rhs: Self) -> Self { self | !rhs }
     /// Returns `true` if every lane is true.
     #[inline]
     pub fn all(self) -> bool { vector::call!(<T, D>::all(self.storage)) }
@@ -1195,6 +1298,26 @@ where
     #[inline]
     fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::select_any_mask::<U>(self.storage, true_values.storage, false_values.storage)))
+    }
+}
+impl<T: MaskElement<D>, const D: usize> Select<Mask<T, D>> for u8 {
+    #[inline]
+    fn select(self, true_values: Mask<T, D>, false_values: Mask<T, D>) -> Mask<T, D> {
+        vector::call!(Mask(<T, D>::mask_select_bitmask(
+            self,
+            true_values.storage,
+            false_values.storage
+        )))
+    }
+}
+impl<T: Element<D>, const D: usize> Select<Vector<T, D>> for u8 {
+    #[inline]
+    fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
+        vector::call!(Vector(<T, D>::select_bitmask(
+            self,
+            true_values.storage,
+            false_values.storage
+        )))
     }
 }
 

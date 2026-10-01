@@ -346,6 +346,16 @@ macro_rules! impl_layout {
                         false_values,
                     )
                 }
+                #[cfg(target_feature = "avx512vl")]
+                #[inline(always)]
+                fn select_bitmask(mask: u8, true_values: Self, false_values: Self) -> Self {
+                    paste::paste!(kernels::select::[<select_bitmask_ $bits bit>](
+                        mask,
+                        true_values.load(),
+                        false_values.load(),
+                    )).store()
+                }
+
 
                 #[inline(always)]
                 fn each_clamp<F: private::Fmt>(a: Self, min: Self, max: Self) -> Self {
@@ -566,22 +576,28 @@ macro_rules! impl_layout {
                         paste::paste!(kernels::matmul::[<_ $bits bit>]:: [<matmul1x $m x1>] (a.load(), b.load()).store())
                     }
                 }}
+                if_! { $signed $int == signed int {
+                    #[inline(always)]
+                    fn from_bitmask(bitmask: u8) -> ConstMaskStorage<$t, $m, $n> {
+                        CanonicalMask::store_mask(paste::paste!(kernels::mask::[<i $bits>]:: [<from_bitmask_ $m>] (bitmask)))
+                    }
+                }}
             }}
             if_! { $m == 1 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner() < 0)
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u8 {
+                        u8::from(mask.into_inner() < 0)
                     }
                 }}
             }}
             if_! { $m == 2 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u8 {
                         // TODO(to-bitmask-lane-width): NEON and the 64-bit types hold two
                         // lanes outright, so masking is only needed elsewhere.
-                        u64::from(mask.into_inner().load().to_bitmask() & 0b11)
+                        (mask.into_inner().load().to_bitmask() & 0b11) as u8
                     }
                 }}
                 const POS_X: Self = $primitive::new([1 as _, 0 as _]);
@@ -594,8 +610,8 @@ macro_rules! impl_layout {
             if_! { $m == 3 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner().to_bitmask() & 0b111)
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u8 {
+                        (mask.into_inner().to_bitmask() & 0b111) as u8
                     }
                 }}
                 const POS_X: Self = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
@@ -610,8 +626,8 @@ macro_rules! impl_layout {
             if_! { $m == 4 and $n == 1 {
                 if_! { $signed $int == signed int {
                     #[inline(always)]
-                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u64 {
-                        u64::from(mask.into_inner().to_bitmask())
+                    fn to_bitmask(mask: ConstMaskStorage<$t, $m, $n>) -> u8 {
+                        mask.into_inner().to_bitmask() as u8
                     }
                 }}
                 const POS_X: Self = $primitive::new([1 as _, 0 as _, 0 as _, 0 as _]);
@@ -801,6 +817,10 @@ macro_rules! impl_layouts_i32 {
                 #[inline(always)]
                 fn cast_i64(mask: ConstMaskStorage<i32, $m, $n>) -> ConstMaskStorage<i64, $m, $n> { mask.cast_i64() }
                 #[inline(always)]
+                fn cast_mask<U: SealedSupportedElement>(mask: ConstMaskStorage<U, $m, $n>) -> ConstMaskStorage<i32, $m, $n> {
+                    ConstStorage::<U, $m, $n>::cast_i32(mask)
+                }
+                #[inline(always)]
                 fn mask_select_any<Mask: SealedSupportedElement>(
                     mask: ConstMaskStorage<Mask, $m, $n>,
                     true_values: ConstMaskStorage<i32, $m, $n>,
@@ -815,6 +835,20 @@ macro_rules! impl_layouts_i32 {
                         .load_mask()
                         .select(true_values.load_mask(), false_values.load_mask());
                     CanonicalMask::store_mask(mask)
+                }
+                #[inline(always)]
+                fn mask_select_bitmask(
+                    mask: u8,
+                    true_values: ConstMaskStorage<i32, $m, $n>,
+                    false_values: ConstMaskStorage<i32, $m, $n>,
+                ) -> ConstMaskStorage<i32, $m, $n> {
+                    let selected = <Self as private::StorageOps<i32, Dimension<$m>, Dimension<$n>>>::select_bitmask(
+                        mask,
+                        true_values.into_inner(),
+                        false_values.into_inner(),
+                    );
+                    // SAFETY: selecting between canonical masks preserves canonical lanes.
+                    unsafe { CanonicalMask::new_unchecked(selected) }
                 }
             }}
             $($item)*
@@ -839,12 +873,34 @@ macro_rules! impl_layouts_i64 {
                 #[inline(always)]
                 fn cast_i64(mask: ConstMaskStorage<i64, $m, $n>) -> ConstMaskStorage<i64, $m, $n> { mask }
                 #[inline(always)]
+                fn cast_mask<U: SealedSupportedElement>(mask: ConstMaskStorage<U, $m, $n>) -> ConstMaskStorage<i64, $m, $n> {
+                    ConstStorage::<U, $m, $n>::cast_i64(mask)
+                }
+                #[inline(always)]
                 fn mask_select_any<Mask: SealedSupportedElement>(
                     mask: ConstMaskStorage<Mask, $m, $n>,
                     true_values: ConstMaskStorage<i64, $m, $n>,
                     false_values: ConstMaskStorage<i64, $m, $n>,
                 ) -> ConstMaskStorage<i64, $m, $n> {
                     <Mask as SealedSimdElement<$m, $n>>::Storage::cast_i64(mask).select(true_values, false_values)
+                }
+                #[inline(always)]
+                fn mask_select_bitmask(
+                    mask: u8,
+                    true_values: ConstMaskStorage<i64, $m, $n>,
+                    false_values: ConstMaskStorage<i64, $m, $n>,
+                ) -> ConstMaskStorage<i64, $m, $n> {
+                    let selected = <Self as private::StorageOps<
+                        i64,
+                        Dimension<$m>,
+                        Dimension<$n>,
+                    >>::select_bitmask(
+                        mask,
+                        true_values.into_inner(),
+                        false_values.into_inner(),
+                    );
+                    // SAFETY: selecting between canonical masks preserves canonical lanes.
+                    unsafe { CanonicalMask::new_unchecked(selected) }
                 }
             }}
             $($item)*

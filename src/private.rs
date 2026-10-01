@@ -370,11 +370,21 @@ pub(crate) trait StorageOps<
     {
         unimplemented!()
     }
-    #[expect(dead_code)]
-    fn select_u64(_mask: u64, _true_values: Self, _false_values: Self) -> Self { unimplemented!() }
+    fn select_bitmask(bitmask: u8, true_values: Self, false_values: Self) -> Self
+    where
+        T: SupportedElement,
+    {
+        let mask = <DimStorage<T::Mask, R, C> as StorageOps<T::Mask, R, C>>::from_bitmask(bitmask);
+        Self::select_mask(mask, true_values, false_values)
+    }
 
     fn cast_i32(_mask: DimMaskStorage<T, R, C>) -> DimMaskStorage<i32, R, C> { unimplemented!() }
     fn cast_i64(_mask: DimMaskStorage<T, R, C>) -> DimMaskStorage<i64, R, C> { unimplemented!() }
+    fn cast_mask<U: SealedSupportedElement>(
+        _mask: DimMaskStorage<U, R, C>,
+    ) -> DimMaskStorage<T, R, C> {
+        unimplemented!()
+    }
 
     #[allow(clippy::wrong_self_convention)]
     fn to_bool_array(_mask: DimMaskStorage<T, R, C>) -> DimArray<DimArray<bool, R>, C>
@@ -394,8 +404,8 @@ pub(crate) trait StorageOps<
     fn all(_mask: DimMaskStorage<T, R, C>) -> bool { unimplemented!() }
     fn any(_mask: DimMaskStorage<T, R, C>) -> bool { unimplemented!() }
     #[allow(clippy::wrong_self_convention)]
-    #[expect(dead_code)]
-    fn to_bitmask(_mask: DimMaskStorage<T, R, C>) -> u64 { unimplemented!() }
+    fn to_bitmask(_mask: DimMaskStorage<T, R, C>) -> u8 { unimplemented!() }
+    fn from_bitmask(_bitmask: u8) -> DimMaskStorage<T, R, C> { unimplemented!() }
 
     // The four operations below take a mask and return a mask of the same element type, so
     // widening and narrowing both happen here and the backends need no hook. The comparisons
@@ -428,6 +438,13 @@ pub(crate) trait StorageOps<
     }
     fn mask_select_any<Mask: SealedSupportedElement>(
         _mask: DimMaskStorage<Mask, R, C>,
+        _true_values: DimMaskStorage<T, R, C>,
+        _false_values: DimMaskStorage<T, R, C>,
+    ) -> DimMaskStorage<T, R, C> {
+        unimplemented!()
+    }
+    fn mask_select_bitmask(
+        _mask: u8,
         _true_values: DimMaskStorage<T, R, C>,
         _false_values: DimMaskStorage<T, R, C>,
     ) -> DimMaskStorage<T, R, C> {

@@ -2,16 +2,11 @@
 
 use algea::{Mask, MaskElement, Select, Vector};
 
-fn mask_bits<M, const D: usize>(mask: Mask<M, D>) -> u64
+fn mask_bits<M, const D: usize>(mask: Mask<M, D>) -> u8
 where
     M: MaskElement<D>,
-    i32: algea::Element<D>,
 {
-    let lanes: [i32; D] = mask.select(Vector::from([1; D]), Vector::from([0; D])).into();
-    lanes
-        .into_iter()
-        .enumerate()
-        .fold(0, |bits, (lane, value)| bits | (u64::from(value != 0) << lane))
+    mask.to_bitmask()
 }
 
 macro_rules! assert_mask {
@@ -84,7 +79,7 @@ macro_rules! mask_core_tests {
             #[test]
             fn mask_not_inverts_active_lanes() {
                 let selector = Vector::<$t, $d>::from($a).each_eq(Vector::<$t, $d>::from($partial));
-                let expected = ((1_u64 << $d) - 1) ^ $partial_bitmask;
+                let expected = ((1_u8 << $d) - 1) ^ $partial_bitmask;
                 assert_eq!(mask_bits(!selector), expected);
             }
         }

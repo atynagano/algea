@@ -237,7 +237,7 @@ pub mod support {
     /// Marks unsigned scalar lane types.
     pub trait Unsigned: SupportedElement {}
     /// Associates an integer lane type with its signed and unsigned forms.
-    pub trait Int: Num + Bitwise + core::cmp::Eq + core::cmp::Ord {
+    pub trait Int: Num + Bitwise + core::cmp::Eq + core::cmp::Ord + core::hash::Hash {
         /// The signed type with the same lane width.
         type Signed: Sint<Unsigned = Self::Unsigned>;
         /// The unsigned type with the same lane width.

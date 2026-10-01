@@ -311,19 +311,24 @@ pub(crate) mod from_array {
 }
 
 pub(crate) mod select {
-    #[expect(dead_code)]
     #[inline(always)]
-    pub fn select_u64<T: Copy, const N: usize>(
-        mask: u64,
-        true_values: [[T; N]; 1],
-        false_values: [[T; N]; 1],
-    ) -> [[T; N]; 1] {
-        [core::array::from_fn(
-            #[inline(always)]
-            |i| {
-                if (mask & (1 << i)) != 0 { true_values[0][i] } else { false_values[0][i] }
-            },
-        )]
+    pub fn select_bitmask<T: Copy, const M: usize, const N: usize>(
+        mask: u8,
+        true_values: [[T; M]; N],
+        false_values: [[T; M]; N],
+    ) -> [[T; M]; N] {
+        core::array::from_fn(|column| {
+            core::array::from_fn(
+                #[inline(always)]
+                |row| {
+                    if (mask & (1 << row)) != 0 {
+                        true_values[column][row]
+                    } else {
+                        false_values[column][row]
+                    }
+                },
+            )
+        })
     }
 }
 

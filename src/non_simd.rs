@@ -265,6 +265,10 @@ macro_rules! impl_layout {
                     false_values,
                 )
             }
+            #[inline(always)]
+            fn select_bitmask(mask: u8, true_values: Self, false_values: Self) -> Self {
+                kernels::select::select_bitmask(mask, true_values, false_values)
+            }
             // A mask is stored at the width of the element it selects, which without vector
             // instructions means one `i32` or `i64` per lane in the same shape as the storage.
             // That is the same type the shared comparison bodies produce, so this is the identity
@@ -353,11 +357,11 @@ macro_rules! impl_layout {
                     map1(a, $t::cast_unsigned)
                 }
                 #[inline(always)]
-                fn to_bitmask(mask: ConstMaskStorage<$t, M, N>) -> u64 {
+                fn to_bitmask(mask: ConstMaskStorage<$t, M, N>) -> u8 {
                     let col = mask.into_inner()[0];
-                    let mut bitmask = 0u64;
+                    let mut bitmask = 0u8;
                     for i in 0..M {
-                        bitmask |= u64::from(col[i] < 0) << i;
+                        bitmask |= u8::from(col[i] < 0) << i;
                     }
                     bitmask
                 }
@@ -464,9 +468,28 @@ impl_layout!((
     fn substantiate_i32(a: Self) -> ConstStorage<i32, M, N> { a }
 
     #[inline(always)]
+    fn from_bitmask(bitmask: u8) -> ConstMaskStorage<i32, M, N> {
+        CanonicalMask::from_parts(core::array::from_fn(
+            #[inline(always)]
+            |column| {
+                CanonicalMask::from_parts(core::array::from_fn(
+                    #[inline(always)]
+                    |row| CanonicalMask::<i32>::new(column == 0 && bitmask & (1 << row) != 0),
+                ))
+            },
+        ))
+    }
+
+    #[inline(always)]
     fn cast_i32(a: CanonicalMask<Self>) -> ConstMaskStorage<i32, M, N> { a }
     #[inline(always)]
     fn cast_i64(a: CanonicalMask<Self>) -> ConstMaskStorage<i64, M, N> { a.cast_i64() }
+    #[inline(always)]
+    fn cast_mask<U: SealedSupportedElement>(
+        mask: ConstMaskStorage<U, M, N>,
+    ) -> ConstMaskStorage<i32, M, N> {
+        ConstStorage::<U, M, N>::cast_i32(mask)
+    }
     #[inline(always)]
     fn mask_select_any<Mask: SealedSupportedElement>(
         mask: ConstMaskStorage<Mask, M, N>,
@@ -474,6 +497,21 @@ impl_layout!((
         false_values: CanonicalMask<Self>,
     ) -> CanonicalMask<Self> {
         ConstStorage::<Mask, M, N>::cast_i32(mask).select(true_values, false_values)
+    }
+    #[inline(always)]
+    fn mask_select_bitmask(
+        mask: u8,
+        true_values: CanonicalMask<Self>,
+        false_values: CanonicalMask<Self>,
+    ) -> CanonicalMask<Self> {
+        // SAFETY: selecting between canonical masks preserves canonical lanes.
+        unsafe {
+            CanonicalMask::new_unchecked(kernels::select::select_bitmask(
+                mask,
+                true_values.into_inner(),
+                false_values.into_inner(),
+            ))
+        }
     }
 });
 impl_layout!((
@@ -484,9 +522,28 @@ impl_layout!((
     fn substantiate_i64(a: Self) -> ConstStorage<i64, M, N> { a }
 
     #[inline(always)]
+    fn from_bitmask(bitmask: u8) -> ConstMaskStorage<i64, M, N> {
+        CanonicalMask::from_parts(core::array::from_fn(
+            #[inline(always)]
+            |column| {
+                CanonicalMask::from_parts(core::array::from_fn(
+                    #[inline(always)]
+                    |row| CanonicalMask::<i64>::new(column == 0 && bitmask & (1 << row) != 0),
+                ))
+            },
+        ))
+    }
+
+    #[inline(always)]
     fn cast_i32(a: CanonicalMask<Self>) -> ConstMaskStorage<i32, M, N> { a.cast_i32() }
     #[inline(always)]
     fn cast_i64(a: CanonicalMask<Self>) -> ConstMaskStorage<i64, M, N> { a }
+    #[inline(always)]
+    fn cast_mask<U: SealedSupportedElement>(
+        mask: ConstMaskStorage<U, M, N>,
+    ) -> ConstMaskStorage<i64, M, N> {
+        ConstStorage::<U, M, N>::cast_i64(mask)
+    }
     #[inline(always)]
     fn mask_select_any<Mask: SealedSupportedElement>(
         mask: ConstMaskStorage<Mask, M, N>,
@@ -494,6 +551,21 @@ impl_layout!((
         false_values: CanonicalMask<Self>,
     ) -> CanonicalMask<Self> {
         ConstStorage::<Mask, M, N>::cast_i64(mask).select(true_values, false_values)
+    }
+    #[inline(always)]
+    fn mask_select_bitmask(
+        mask: u8,
+        true_values: CanonicalMask<Self>,
+        false_values: CanonicalMask<Self>,
+    ) -> CanonicalMask<Self> {
+        // SAFETY: selecting between canonical masks preserves canonical lanes.
+        unsafe {
+            CanonicalMask::new_unchecked(kernels::select::select_bitmask(
+                mask,
+                true_values.into_inner(),
+                false_values.into_inner(),
+            ))
+        }
     }
 });
 impl_layout!((
