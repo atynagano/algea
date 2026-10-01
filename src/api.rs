@@ -20,6 +20,7 @@ use crate::{
         StoredVerbatim,
         SupportedDimension,
         SupportedElement,
+        SupportedMaskElement,
         Uint,
     },
 };
@@ -777,6 +778,9 @@ impl_mask_binop! {
     ]
 }
 
+// TODO: Implement `BitAnd`, `BitOr`, and `BitXor` between masks and `bool` in both
+// operand orders, plus the corresponding mask assignment operators.
+
 impl<T: Float + Element<N>, const N: usize, L: MatrixLayout> core::iter::Product
     for crate::Matrix<T, N, N, L>
 {
@@ -875,11 +879,19 @@ impl<T: core::hash::Hash + Element<R, C>, const R: usize, const C: usize, L: Mat
 }
 impl<T: core::hash::Hash + Element<D>, const D: usize> core::hash::Hash for Vector<T, D> {
     #[allow(clippy::missing_inline_in_public_items)]
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // TODO: Determine whether hashing through `as_array` would be more efficient.
+        self.to_array().hash(state);
+    }
 }
 impl<T: MaskElement<D>, const D: usize> core::hash::Hash for Mask<T, D> {
     #[allow(clippy::missing_inline_in_public_items)]
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) { self.to_array().hash(state); }
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        // TODO: Choose between `to_array`, `to_vector`, and `to_bitmask`; changing the
+        // implementation is not considered a breaking change.
+        // TODO: Document that the hashing implementation may change.
+        self.to_array().hash(state);
+    }
 }
 
 struct CompactRow<'a, T>(&'a [T]);
@@ -1097,6 +1109,24 @@ impl<T: MaskElement<D>, const D: usize> From<[bool; D]> for Mask<T, D> {
     #[inline]
     fn from(value: [bool; D]) -> Self { vector::call!(Self(<T, D>::from_bool_array([value]))) }
 }
+impl<T: MaskElement<D>, const D: usize> From<Mask<T, D>> for [bool; D] {
+    #[inline]
+    fn from(value: Mask<T, D>) -> Self { value.to_array() }
+}
+impl<const D: usize> From<Mask<i64, D>> for Mask<i32, D>
+where
+    Dimension<D>: SupportedDimension,
+{
+    #[inline]
+    fn from(value: Mask<i64, D>) -> Self { vector::call!(Self(<i64, D>::cast_i32(value.storage))) }
+}
+impl<const D: usize> From<Mask<i32, D>> for Mask<i64, D>
+where
+    Dimension<D>: SupportedDimension,
+{
+    #[inline]
+    fn from(value: Mask<i32, D>) -> Self { vector::call!(Self(<i32, D>::cast_i64(value.storage))) }
+}
 
 impl<T: Element<2> + StoredVerbatim> core::ops::Deref for Vector<T, 2> {
     type Target = private::XY<T>;
@@ -1209,6 +1239,21 @@ impl<T: MaskElement<D>, const D: usize> Mask<T, D> {
     pub fn to_vector(self) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::from_mask(self.storage)))
     }
+    /// Returns the mask as a bitmask whose bit `i` represents lane `i`.
+    ///
+    /// Bits at positions greater than or equal to `D` are zero.
+    #[inline]
+    pub fn to_bitmask(self) -> u8 { vector::call!(<T, D>::to_bitmask(self.storage)) }
+    /// Constructs a mask from the low `D` bits of `bitmask`.
+    ///
+    /// Bit `i` determines lane `i`; bits at positions greater than or equal to `D` are ignored.
+    #[inline]
+    pub fn from_bitmask(bitmask: u8) -> Self { vector::call!(Self(<T, D>::from_bitmask(bitmask))) }
+    /// Converts this mask to the same lanes represented by another supported mask element type.
+    #[inline]
+    pub fn cast<U: SupportedMaskElement>(self) -> Mask<U, D> {
+        vector::call!(Mask(<U, D>::cast_mask(self.storage)))
+    }
     /// Tests each lane for equality.
     #[inline]
     pub fn each_eq(self, rhs: Self) -> Self { self.to_vector().each_eq(rhs.to_vector()) }
@@ -1253,6 +1298,26 @@ where
     #[inline]
     fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
         vector::call!(Vector(<T, D>::select_any_mask::<U>(self.storage, true_values.storage, false_values.storage)))
+    }
+}
+impl<T: MaskElement<D>, const D: usize> Select<Mask<T, D>> for u8 {
+    #[inline]
+    fn select(self, true_values: Mask<T, D>, false_values: Mask<T, D>) -> Mask<T, D> {
+        vector::call!(Mask(<T, D>::mask_select_bitmask(
+            self,
+            true_values.storage,
+            false_values.storage
+        )))
+    }
+}
+impl<T: Element<D>, const D: usize> Select<Vector<T, D>> for u8 {
+    #[inline]
+    fn select(self, true_values: Vector<T, D>, false_values: Vector<T, D>) -> Vector<T, D> {
+        vector::call!(Vector(<T, D>::select_bitmask(
+            self,
+            true_values.storage,
+            false_values.storage
+        )))
     }
 }
 

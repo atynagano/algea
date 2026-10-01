@@ -193,6 +193,48 @@ macro_rules! mask_methods {
     };
 }
 
+macro_rules! mask_bitmask_methods {
+    ($t:ty, $d:literal) => {
+        paste! {
+            #[unsafe(no_mangle)]
+            pub fn [<mask_ $t _ $d _from_bitmask>](bitmask: u8) -> Mask<$t, $d> {
+                Mask::from_bitmask(bitmask)
+            }
+            #[unsafe(no_mangle)]
+            pub fn [<mask_ $t _ $d _to_bitmask>](mask: Mask<$t, $d>) -> u8 {
+                mask.to_bitmask()
+            }
+            #[unsafe(no_mangle)]
+            pub fn [<scalar_u8_mask_ $t _ $d _select>](
+                bitmask: u8,
+                true_values: Mask<$t, $d>,
+                false_values: Mask<$t, $d>,
+            ) -> Mask<$t, $d> {
+                bitmask.select(true_values, false_values)
+            }
+            #[unsafe(no_mangle)]
+            pub fn [<scalar_u8_vector_ $t _ $d _select>](
+                bitmask: u8,
+                true_values: Vector<$t, $d>,
+                false_values: Vector<$t, $d>,
+            ) -> Vector<$t, $d> {
+                bitmask.select(true_values, false_values)
+            }
+        }
+    };
+}
+
+macro_rules! mask_cast {
+    ($source:ty, $target:ty, $d:literal) => {
+        paste! {
+            #[unsafe(no_mangle)]
+            pub fn [<mask_ $source _ $d _cast_ $target>](mask: Mask<$source, $d>) -> Mask<$target, $d> {
+                mask.cast()
+            }
+        }
+    };
+}
+
 macro_rules! mask_select {
     ($m:ty, $t:ty, $d:literal) => {
         paste! {
@@ -292,6 +334,12 @@ macro_rules! dimension {
         vector_unsigned_int!(u64, i64, $d);
         mask_methods!(i32, $d);
         mask_methods!(i64, $d);
+        mask_cast!(i32, i32, $d);
+        mask_cast!(i32, i64, $d);
+        mask_cast!(i64, i32, $d);
+        mask_cast!(i64, i64, $d);
+        mask_bitmask_methods!(i32, $d);
+        mask_bitmask_methods!(i64, $d);
         mask_select_mask!(i32, i32, $d);
         mask_select_mask!(i32, i64, $d);
         mask_select_mask!(i64, i32, $d);

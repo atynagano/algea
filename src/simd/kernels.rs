@@ -322,8 +322,12 @@ pub(crate) mod mask {
         use super::*;
 
         #[inline(always)]
-        fn from_array<const N: usize>(array: [bool; 4]) -> CanonicalMask<i32x4> {
+        fn from_array<const N: usize>(array: [bool; N]) -> CanonicalMask<i32x4> {
             std::assert_matches!(N, 2..=4);
+            let array: [bool; 4] = core::array::from_fn(
+                #[inline(always)]
+                |i| array.get(i).copied().unwrap_or(false),
+            );
             #[rustfmt::skip]
             let inner = cfg_select! {
                 all(target_feature = "avx512bw", target_feature = "avx512vl") => unsafe {
@@ -374,17 +378,13 @@ pub(crate) mod mask {
                     // that `0`/`1` lane is nonzero, and `vreinterpret_s32_u32` preserves those bits.
                     CanonicalMask::new_unchecked(result.into())
                 },
-                _ => from_array::<2>([array[0], array[1], false, false]),
+                _ => from_array(array),
             }
         }
         #[inline(always)]
-        fn from_array_3(array: [bool; 3]) -> CanonicalMask<i32x4> {
-            from_array::<3>([array[0], array[1], array[2], false])
-        }
+        fn from_array_3(array: [bool; 3]) -> CanonicalMask<i32x4> { from_array(array) }
         #[inline(always)]
-        pub(super) fn from_array_4(array: [bool; 4]) -> CanonicalMask<i32x4> {
-            from_array::<4>(array)
-        }
+        pub(super) fn from_array_4(array: [bool; 4]) -> CanonicalMask<i32x4> { from_array(array) }
 
         #[inline(always)]
         fn to_array<const N: usize>(mask: CanonicalMask<i32x4>) -> [bool; N] {
@@ -451,6 +451,49 @@ pub(crate) mod mask {
         pub(crate) use to_array_2x3_in_vec4 as to_array_2x3;
 
         impl_matrix_conversion!(i32, compute_i32x2, i32x4);
+
+        #[inline(always)]
+        fn from_bitmask(bitmask: u8) -> CanonicalMask<i32x4> {
+            #[rustfmt::skip]
+            let inner = cfg_select! {
+                all(target_feature = "avx512dq", target_feature = "avx512vl") => unsafe {
+                    i32x4::from(avx512_dq_vl::_mm_movm_epi32(bitmask))
+                },
+                _ => {{
+                    const LANE_BITS: i32x4 = i32x4::new([1, 2, 4, 8]);
+                    LANE_BITS.simd_eq(LANE_BITS & i32x4::splat(i32::from(bitmask)))
+                }}
+            };
+            // SAFETY: `_mm_movm_epi32` expands each active mask bit to an all-zero or all-one
+            // lane. The fallback compares each lane's single-bit value with that bit extracted
+            // from `bitmask`, so its comparison result has the same canonical form. Unused lanes
+            // may reflect higher input bits because they are not observable through `Mask`.
+            unsafe { CanonicalMask::new_unchecked(inner) }
+        }
+
+        #[inline(always)]
+        pub fn from_bitmask_1(bitmask: u8) -> CanonicalMask<i32> {
+            let inner = -(1 & i32::from(bitmask));
+            // SAFETY: `1 & bitmask` is either zero or one, so negating it produces exactly the
+            // canonical false or true representation.
+            unsafe { CanonicalMask::new_unchecked(inner) }
+        }
+        #[inline(always)]
+        pub fn from_bitmask_2(bitmask: u8) -> CanonicalMask<compute_i32x2> {
+            cfg_select! {
+                all(target_feature = "neon", target_arch = "aarch64") => {
+                    use crate::utils::ArithOps;
+                    const LANE_BITS: compute_i32x2 = compute_i32x2::new([1, 2]);
+                    let bitmask = compute_i32x2::filled_(i32::from(bitmask));
+                    ArithOps::eq_(LANE_BITS & bitmask, LANE_BITS)
+                }
+                _ => from_bitmask(bitmask),
+            }
+        }
+        #[inline(always)]
+        pub fn from_bitmask_3(bitmask: u8) -> CanonicalMask<i32x4> { from_bitmask(bitmask) }
+        #[inline(always)]
+        pub fn from_bitmask_4(bitmask: u8) -> CanonicalMask<i32x4> { from_bitmask(bitmask) }
     }
 
     pub(crate) mod i64 {
@@ -529,6 +572,25 @@ pub(crate) mod mask {
         }
 
         impl_matrix_conversion!(i64, i64x2, i64x4);
+
+        #[inline(always)]
+        pub fn from_bitmask_1(bitmask: u8) -> CanonicalMask<i64> {
+            super::i32::from_bitmask_1(bitmask).cast_i64()
+        }
+        #[inline(always)]
+        pub fn from_bitmask_2(bitmask: u8) -> CanonicalMask<i64x2> {
+            let narrow: CanonicalMask<i32x2> =
+                CanonicalMask::store_mask(super::i32::from_bitmask_2(bitmask));
+            narrow.cast_i64()
+        }
+        #[inline(always)]
+        pub fn from_bitmask_3(bitmask: u8) -> CanonicalMask<i64x4> {
+            super::i32::from_bitmask_3(bitmask).cast_i64()
+        }
+        #[inline(always)]
+        pub fn from_bitmask_4(bitmask: u8) -> CanonicalMask<i64x4> {
+            super::i32::from_bitmask_4(bitmask).cast_i64()
+        }
     }
 }
 
@@ -2605,42 +2667,128 @@ pub(crate) mod round {
     }
 }
 
-// Kept but disabled: porting this to aarch64's `i32x2` is nontrivial, and `u64::select` is
-// currently private and unreferenced.
-#[cfg(false)]
+#[cfg(target_feature = "avx512vl")]
 pub(crate) mod select {
-    use wide::{f32x4, i32x4, u32x4};
+    use crate::arch::{
+        avx512_vl::{_mm_mask_blend_epi32, _mm_mask_blend_epi64, _mm256_mask_blend_epi64},
+        sse2::{_mm_cvtsi128_si32, _mm_cvtsi128_si64, _mm_set1_epi32, _mm_set1_epi64x},
+        x86_64::{__m128i, __m256i},
+    };
+    use wide::{bytemuck::cast, f32x4, f64x2, f64x4, i32x4, i64x2, i64x4, u32x4, u64x2, u64x4};
 
-    #[expect(dead_code)]
-    #[inline(always)]
-    pub fn i32x4_f32x4(mask: i32x4, true_values: f32x4, false_values: f32x4) -> f32x4 {
-        f32x4::from_bits(mask.cast_unsigned()).select(true_values, false_values)
+    pub(crate) trait SelectBitmask32: Copy {
+        fn into_m128i(self) -> __m128i;
+        fn from_m128i(value: __m128i) -> Self;
     }
-    #[expect(dead_code)]
-    #[inline(always)]
-    pub fn i32x4_i32x4(mask: i32x4, true_values: i32x4, false_values: i32x4) -> i32x4 {
-        mask.select(true_values, false_values)
+
+    macro_rules! impl_select_bitmask_32 {
+        (vector: $($type:ty),+ $(,)?) => {$(
+            impl SelectBitmask32 for $type {
+                #[inline(always)]
+                fn into_m128i(self) -> __m128i { cast(self) }
+                #[inline(always)]
+                fn from_m128i(value: __m128i) -> Self { cast(value) }
+            }
+        )+};
+        (scalar: $($type:ty),+ $(,)?) => {$(
+            impl SelectBitmask32 for $type {
+                #[inline(always)]
+                fn into_m128i(self) -> __m128i { unsafe { _mm_set1_epi32(cast(self)) } }
+                #[inline(always)]
+                fn from_m128i(value: __m128i) -> Self {
+                    unsafe { cast(_mm_cvtsi128_si32(value)) }
+                }
+            }
+        )+};
     }
-    #[expect(dead_code)]
-    #[inline(always)]
-    pub fn i32x4_u32x4(mask: i32x4, true_values: u32x4, false_values: u32x4) -> u32x4 {
-        mask.cast_unsigned().select(true_values, false_values)
+
+    impl_select_bitmask_32!(vector: f32x4, i32x4, u32x4);
+    impl_select_bitmask_32!(scalar: f32, i32, u32);
+
+    pub(crate) trait SelectBitmask64: Copy {
+        fn select_bitmask(bitmask: u8, true_values: Self, false_values: Self) -> Self;
     }
-    #[inline(always)]
-    pub fn u64_f32x4(mask: u64, true_values: f32x4, false_values: f32x4) -> f32x4 {
-        f32x4::from_bits(u64_u32x4(mask, true_values.to_bits(), false_values.to_bits()))
+
+    macro_rules! impl_select_bitmask_64 {
+        (vector2: $($type:ty),+ $(,)?) => {$(
+            impl SelectBitmask64 for $type {
+                #[inline(always)]
+                fn select_bitmask(bitmask: u8, true_values: Self, false_values: Self) -> Self {
+                    // SAFETY: this module is compiled only with AVX-512VL, and the casts preserve
+                    // each value's 64-bit lane representation.
+                    unsafe {
+                        cast(_mm_mask_blend_epi64(
+                            bitmask,
+                            cast::<Self, __m128i>(false_values),
+                            cast::<Self, __m128i>(true_values),
+                        ))
+                    }
+                }
+            }
+        )+};
+        (vector4: $($type:ty),+ $(,)?) => {$(
+            impl SelectBitmask64 for $type {
+                #[inline(always)]
+                fn select_bitmask(bitmask: u8, true_values: Self, false_values: Self) -> Self {
+                    // SAFETY: this module is compiled only with AVX-512VL, and the casts preserve
+                    // each value's 64-bit lane representation.
+                    unsafe {
+                        cast(_mm256_mask_blend_epi64(
+                            bitmask,
+                            cast::<Self, __m256i>(false_values),
+                            cast::<Self, __m256i>(true_values),
+                        ))
+                    }
+                }
+            }
+        )+};
+        (scalar: $($type:ty),+ $(,)?) => {$(
+            impl SelectBitmask64 for $type {
+                #[inline(always)]
+                fn select_bitmask(bitmask: u8, true_values: Self, false_values: Self) -> Self {
+                    // SAFETY: this module is compiled only with AVX-512VL. Broadcasting and
+                    // extracting preserve the scalar's 64-bit representation.
+                    unsafe {
+                        cast(_mm_cvtsi128_si64(_mm_mask_blend_epi64(
+                            bitmask,
+                            _mm_set1_epi64x(cast(false_values)),
+                            _mm_set1_epi64x(cast(true_values)),
+                        )))
+                    }
+                }
+            }
+        )+};
     }
+
+    impl_select_bitmask_64!(vector2: f64x2, i64x2, u64x2);
+    impl_select_bitmask_64!(vector4: f64x4, i64x4, u64x4);
+    impl_select_bitmask_64!(scalar: f64, i64, u64);
+
     #[inline(always)]
-    pub fn u64_i32x4(mask: u64, true_values: i32x4, false_values: i32x4) -> i32x4 {
-        const LANE_MASK: i32x4 = i32x4::new([0b0001, 0b0010, 0b0100, 0b1000]);
-        let mask = (i32x4::splat(mask as i32) & LANE_MASK).simd_eq(LANE_MASK);
-        mask.select(true_values, false_values)
+    pub(crate) fn select_bitmask_32bit<T: SelectBitmask32>(
+        bitmask: u8,
+        true_values: T,
+        false_values: T,
+    ) -> T {
+        // SAFETY: this module is compiled only with AVX-512F+VL. The conversion trait preserves
+        // each value's 32-bit lane representation, and the intrinsic selects `true_values` for
+        // every set low mask bit and `false_values` otherwise.
+        unsafe {
+            T::from_m128i(_mm_mask_blend_epi32(
+                bitmask,
+                false_values.into_m128i(),
+                true_values.into_m128i(),
+            ))
+        }
     }
+
     #[inline(always)]
-    pub fn u64_u32x4(mask: u64, true_values: u32x4, false_values: u32x4) -> u32x4 {
-        const LANE_MASK: u32x4 = u32x4::new([0b0001, 0b0010, 0b0100, 0b1000]);
-        let mask = (u32x4::splat(mask as u32) & LANE_MASK).simd_eq(LANE_MASK);
-        mask.select(true_values, false_values)
+    pub(crate) fn select_bitmask_64bit<T: SelectBitmask64>(
+        bitmask: u8,
+        true_values: T,
+        false_values: T,
+    ) -> T {
+        T::select_bitmask(bitmask, true_values, false_values)
     }
 }
 
